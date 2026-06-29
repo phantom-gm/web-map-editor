@@ -1,0 +1,33 @@
+{
+  "name": "msw-web-map-editor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MSW iso-RPG web map editor — Next.js (App Router) + Canvas 2D. Vercel 배포 + RUID 백엔드.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^20.16.10",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "eslint": "^10.6.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.7.0",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.62.0",
+    "vitest": "^2.0.5"
+  }
+}
