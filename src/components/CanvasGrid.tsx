@@ -10,6 +10,7 @@ import {
   type Dims,
 } from "../lib/grid";
 import { parseCellKey } from "../lib/cell";
+import { KEY_TO_TOOL } from "../lib/shortcuts";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
@@ -378,18 +379,9 @@ export function CanvasGrid() {
           e.preventDefault();
           useEditorStore.getState().removeEntity(sel);
         }
-      } else if (!mod && (e.key === "v" || e.key === "V")) {
-        useEditorStore.getState().setTool("cursor");
-      } else if (!mod && (e.key === "b" || e.key === "B")) {
-        useEditorStore.getState().setTool("brush");
-      } else if (!mod && (e.key === "p" || e.key === "P")) {
-        useEditorStore.getState().setTool("portal");
-      } else if (!mod && (e.key === "m" || e.key === "M")) {
-        useEditorStore.getState().setTool("monster");
-      } else if (!mod && (e.key === "n" || e.key === "N")) {
-        useEditorStore.getState().setTool("npc");
-      } else if (!mod && (e.key === "o" || e.key === "O")) {
-        useEditorStore.getState().setTool("object");
+      } else if (!mod) {
+        const t = KEY_TO_TOOL[e.key.toLowerCase()];
+        if (t) useEditorStore.getState().setTool(t);
       }
     };
     const ku = (e: KeyboardEvent) => {

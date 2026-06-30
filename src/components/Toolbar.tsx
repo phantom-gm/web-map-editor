@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool } from "../store/editorStore";
-import { ENTITY_KINDS, ENTITY_META, type EntityKind } from "../types/entity";
+import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
+import { TOOL_SHORTCUTS } from "../lib/shortcuts";
 
-// 엔티티 배치 도구 단축키 (CanvasGrid keydown 과 일치).
-const ENTITY_SHORTCUT: Record<EntityKind, string> = {
-  portal: "P",
-  monster: "M",
-  npc: "N",
-  object: "O",
+// 라벨에 단축키 힌트 부착 — "커서" → "커서 (V)". 단축키는 shortcuts.ts 단일 출처.
+const withShortcut = (label: string, tool: Tool) => {
+  const sc = TOOL_SHORTCUTS[tool];
+  return sc ? `${label} (${sc})` : label;
 };
 
 // 16/24 viewBox, stroke=currentColor — 선택 시 .sel 의 흰색을 그대로 따른다.
@@ -58,8 +57,8 @@ const ICONS: Partial<Record<Tool, ReactNode>> = {
 };
 
 const TOOLS: Array<{ id: Tool; label: string }> = [
-  { id: "cursor", label: "커서 (V)" },
-  { id: "brush", label: "브러시 (B)" },
+  { id: "cursor", label: "커서" },
+  { id: "brush", label: "브러시" },
   { id: "rect", label: "사각" },
   { id: "eraser", label: "지우개" },
   { id: "block", label: "이동불가 — 좌클릭 생성·우클릭 지우기" },
@@ -79,22 +78,25 @@ export function Toolbar() {
 
   return (
     <div className="toolbar">
-      {TOOLS.map((t) => (
-        <button
-          key={t.id}
-          className={"tool-btn" + (tool === t.id ? " sel" : "")}
-          data-label={t.label}
-          aria-label={t.label}
-          aria-pressed={tool === t.id}
-          onClick={() => setTool(t.id)}
-        >
-          {ICONS[t.id]}
-        </button>
-      ))}
+      {TOOLS.map((t) => {
+        const label = withShortcut(t.label, t.id);
+        return (
+          <button
+            key={t.id}
+            className={"tool-btn" + (tool === t.id ? " sel" : "")}
+            data-label={label}
+            aria-label={label}
+            aria-pressed={tool === t.id}
+            onClick={() => setTool(t.id)}
+          >
+            {ICONS[t.id]}
+          </button>
+        );
+      })}
       <span className="sep" />
       {ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
-        const label = `${meta.label} 배치 (${ENTITY_SHORTCUT[k]})`;
+        const label = withShortcut(`${meta.label} 배치`, k);
         return (
           <button
             key={k}

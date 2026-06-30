@@ -41,6 +41,7 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
           secret,
         );
         setItems((prev) => (reset ? res.items : [...prev, ...res.items]));
+        if (reset) setAnchor(null); // 목록이 갈리면 Shift 기준 인덱스 무효화
         setCursor(res.nextCursor);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
