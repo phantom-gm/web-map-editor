@@ -88,6 +88,37 @@ body {
   border-color: #4a86e8;
   color: #fff;
 }
+/* 아이콘 도구 버튼 — 정사각, hover 시 라벨 툴팁 */
+.toolbar .tool-btn {
+  position: relative;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.toolbar .tool-btn::after {
+  content: attr(data-label);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0e0f12;
+  color: #dfe2ea;
+  border: 1px solid #343846;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+  z-index: 30;
+}
+.toolbar .tool-btn:hover::after {
+  opacity: 1;
+}
 .toolbar button:disabled {
   opacity: 0.45;
   cursor: default;
@@ -112,7 +143,7 @@ body {
 }
 
 .palette {
-  flex: 0 0 180px;
+  flex: 0 0 200px;
   display: flex;
   flex-direction: column;
   background: #16181d;
@@ -122,14 +153,17 @@ body {
 .palette-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid #2a2d36;
   font-size: 13px;
   color: #b9bfce;
 }
+.palette-head > span {
+  margin-right: auto;
+}
 .palette-head button {
-  margin-left: auto;
   background: #2a2d36;
   color: #dfe2ea;
   border: 1px solid #3a3e4a;
@@ -168,9 +202,52 @@ body {
 .palette-subhead .reg-count .new {
   color: #e8b54a;
 }
-.palette-grid {
+.palette-body {
   flex: 1 1 auto;
   overflow-y: auto;
+  min-height: 0;
+}
+.palette-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: #1a1c22;
+  border: none;
+  border-top: 1px solid #2a2d36;
+  color: #b9bfce;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.palette-section-head:hover {
+  background: #1f222a;
+}
+.palette-section-head .sec-chev {
+  font-size: 10px;
+  transition: transform 0.12s;
+}
+.palette-section-head .sec-chev.col {
+  transform: rotate(-90deg);
+}
+.palette-section-head .sec-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-section-head .sec-count {
+  margin-left: auto;
+  color: #7b8194;
+  background: #23262f;
+  border-radius: 8px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+.palette-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
@@ -178,7 +255,6 @@ body {
   align-content: start;
 }
 .palette-empty {
-  grid-column: 1 / -1;
   color: #6b7180;
   font-size: 12px;
   text-align: center;
@@ -255,6 +331,187 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── resource browser modal ── */
+.rb-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.rb-modal {
+  width: 640px;
+  max-width: calc(100vw - 32px);
+  height: 560px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: #16181d;
+  border: 1px solid #343846;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.rb-head {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2d36;
+  font-size: 13px;
+  color: #cfd4e0;
+}
+.rb-close {
+  margin-left: auto;
+  background: transparent;
+  color: #9aa0b0;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+}
+.rb-controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2d36;
+}
+.rb-controls select,
+.rb-controls input {
+  background: #1d1f26;
+  color: #dfe2ea;
+  border: 1px solid #343846;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.rb-controls input {
+  flex: 1 1 auto;
+}
+.rb-controls button {
+  background: #2a2d36;
+  color: #dfe2ea;
+  border: 1px solid #3a3e4a;
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.rb-err {
+  padding: 6px 12px;
+  color: #e0604f;
+  font-size: 12px;
+}
+.rb-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 12px;
+  align-content: start;
+}
+.rb-empty {
+  grid-column: 1 / -1;
+  color: #6b7180;
+  font-size: 12px;
+  text-align: center;
+  padding: 24px;
+}
+.rb-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: #1d1f26;
+  border: 1px solid #2c2f3a;
+  border-radius: 4px;
+  padding: 6px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.rb-item.sel {
+  border-color: #5aa0ff;
+  box-shadow: 0 0 0 1px #5aa0ff inset;
+}
+.rb-item.dim {
+  opacity: 0.5;
+  cursor: default;
+}
+.rb-thumb {
+  position: relative;
+  width: 100%;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(45deg, #15161a 25%, transparent 25%) 0 0/12px 12px,
+    linear-gradient(-45deg, #15161a 25%, transparent 25%) 0 0/12px 12px,
+    #1a1c22;
+}
+.rb-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: pixelated;
+}
+.rb-nothumb {
+  font-size: 10px;
+  color: #6b7180;
+}
+.rb-have {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: #5fcf86;
+  color: #0e0f12;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  font-weight: 700;
+}
+.rb-name {
+  font-size: 10px;
+  color: #9aa0b0;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rb-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid #2a2d36;
+}
+.rb-foot button {
+  background: #2a2d36;
+  color: #dfe2ea;
+  border: 1px solid #3a3e4a;
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.rb-foot button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rb-foot .rb-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: #9aa0b0;
+}
+.rb-foot .rb-add {
+  background: #2f6f44;
+  border-color: #3c8a56;
+  color: #eafff0;
 }
 
 /* ── canvas ── */

@@ -10,6 +10,7 @@ import { NextResponse } from "next/server";
 import { parseRegistry, resolveTile } from "../../../src/lib/registry";
 import { getStore, storeKind, type RegistryEntry } from "../../../src/server/registryStore";
 import { withMcpClient, createSpriteResource } from "../../../src/server/mswMcp";
+import { runPool } from "../../../src/lib/pool";
 
 const UPLOAD_CONCURRENCY = 5;
 
@@ -61,26 +62,22 @@ export async function POST(req: Request) {
 
   // 2) 업로드 — 커넥션 1개 재사용 + 제한 동시성(JS 단일스레드라 push 안전).
   if (targets.length > 0) {
-    await withMcpClient(async (client) => {
-      let next = 0;
-      const worker = async () => {
-        while (next < targets.length) {
-          const t = targets[next++];
-          try {
-            const { ruid } = await createSpriteResource(client, {
-              name: t.name,
-              subcategory: t.subcategory,
-              bytes: t.bytes,
-            });
-            newEntries.push({ name: t.name, ruid, hash: t.hash });
-            uploaded.push({ name: t.name, ruid });
-          } catch (e) {
-            failed.push({ name: t.name, error: e instanceof Error ? e.message : String(e) });
-          }
+    await withMcpClient((client) =>
+      runPool(UPLOAD_CONCURRENCY, targets.length, async (i) => {
+        const t = targets[i];
+        try {
+          const { ruid } = await createSpriteResource(client, {
+            name: t.name,
+            subcategory: t.subcategory,
+            bytes: t.bytes,
+          });
+          newEntries.push({ name: t.name, ruid, hash: t.hash });
+          uploaded.push({ name: t.name, ruid });
+        } catch (e) {
+          failed.push({ name: t.name, error: e instanceof Error ? e.message : String(e) });
         }
-      };
-      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, targets.length) }, worker));
-    });
+      }),
+    );
   }
 
   if (newEntries.length) await store.appendMany(newEntries);

@@ -152,6 +152,7 @@ export function CanvasGrid() {
   const blockedVer = useEditorStore((s) => s.blockedVer);
   const palette = useEditorStore((s) => s.palette);
   const rectPreview = useEditorStore((s) => s.rectPreview);
+  const activeTool = useEditorStore((s) => s.activeTool);
   const setCamera = useEditorStore((s) => s.setCamera);
 
   useEffect(() => {
@@ -231,6 +232,7 @@ export function CanvasGrid() {
       }
       if (e.button !== 0) return;
       const tool = st.activeTool;
+      if (tool === "cursor") return; // 일반 커서: 좌클릭으로 칠하지 않음(hover·팬만)
       if (tool === "eyedropper") {
         st.pickAt(gx, gy);
       } else if (tool === "rect") {
@@ -314,7 +316,7 @@ export function CanvasGrid() {
 
   return (
     <div ref={wrapRef} className="canvas-wrap">
-      <canvas ref={canvasRef} />
+      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" ? "default" : "crosshair" }} />
     </div>
   );
 }

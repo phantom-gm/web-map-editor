@@ -9,6 +9,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const MCP_URL = process.env.MSW_MCP_URL || "https://msw-mcp.nexon.com/mcp";
 const GROUP = process.env.MSW_GROUP_CODE || "43bIK";
 const PUT_TIMEOUT_MS = 15000;
+// 스프라이트 .mod 바이너리 CDN. .mod = 작은 헤더 + 임베드 PNG (인증 불필요).
+const MOD_CDN = process.env.MSW_MOD_CDN || "https://mod-ugc.dn.nexoncdn.co.kr";
+const MOD_TIMEOUT_MS = 15000;
 
 function authHeader(): string {
   const t = (process.env.MSW_MCP_TOKEN || "").trim();
@@ -52,6 +55,77 @@ function deepFind(obj: unknown, keys: string[]): string | null {
 
 export interface CreateResult {
   ruid: string;
+}
+
+export interface GroupResource {
+  ruid: string;
+  name: string;
+  category: string;
+  subcategory: string;
+  modPath: string | null; // modFiles.win.path — .mod 바이너리 CDN 상대경로
+}
+
+/**
+ * 그룹 소유 리소스 목록 조회(읽기 전용). subcategory="all" 로 전체, 또는 "object" 등으로 필터.
+ * cursor 는 이전 응답의 nextCursor 를 넘겨 다음 페이지를 받는다.
+ */
+export async function listGroupResources(
+  client: Client,
+  args: { category?: string; subcategory?: string; count?: number; searchWord?: string | null; cursor?: string | null },
+): Promise<{ items: GroupResource[]; nextCursor: string | null }> {
+  const res = await client.callTool({
+    name: "asset_list_group_resources",
+    arguments: {
+      groupCode: GROUP,
+      category: args.category ?? "sprite",
+      subcategory: args.subcategory ?? "all",
+      count: args.count ?? 24,
+      searchWord: args.searchWord ?? null,
+      cursor: args.cursor ?? null,
+    },
+  });
+  const j = parseToolJson(res) as { resourceList?: Array<Record<string, unknown>>; nextCursor?: string | null } | null;
+  const list = j?.resourceList ?? [];
+  const items: GroupResource[] = list.map((r) => {
+    const win = (r.modFiles as { win?: { path?: string } } | undefined)?.win;
+    return {
+      ruid: String(r.ruid ?? ""),
+      name: String(r.name ?? ""),
+      category: String(r.category ?? ""),
+      subcategory: String(r.subcategory ?? ""),
+      modPath: win?.path ?? null,
+    };
+  });
+  return { items, nextCursor: j?.nextCursor ?? null };
+}
+
+const PNG_MAGIC = Buffer.from("89504e470d0a1a0a", "hex");
+const PNG_IEND = Buffer.from("49454e44ae426082", "hex"); // IEND chunk type + CRC
+
+/** .mod 바이트에서 임베드된 첫 PNG(매직~IEND)를 잘라낸다. 없으면 null. */
+function extractPng(mod: Buffer): Buffer | null {
+  const s = mod.indexOf(PNG_MAGIC);
+  if (s < 0) return null;
+  const ie = mod.indexOf(PNG_IEND, s);
+  const e = ie < 0 ? mod.length : ie + PNG_IEND.length;
+  return mod.subarray(s, e);
+}
+
+/**
+ * 스프라이트 .mod 를 CDN 에서 받아 임베드 PNG 를 추출 → base64(접두사 없음).
+ * 썸네일이 없는 정적 스프라이트(foothold 타일 등)의 실제 이미지를 얻는 경로.
+ * 추출 실패/네트워크 오류면 null.
+ */
+export async function fetchSpritePngBase64(modPath: string): Promise<string | null> {
+  try {
+    const r = await fetch(`${MOD_CDN}/${modPath}`, { signal: AbortSignal.timeout(MOD_TIMEOUT_MS) });
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    const png = extractPng(buf);
+    return png ? png.toString("base64") : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

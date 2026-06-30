@@ -40,3 +40,22 @@ export async function uploadTiles(
 ): Promise<UploadResult> {
   return (await postJson("/api/upload", { tiles }, secret)) as UploadResult;
 }
+
+export interface ResourceItem {
+  ruid: string;
+  name: string;
+  subcategory: string;
+  imageUrl: string | null; // .mod 추출 PNG 의 dataURL (없으면 null)
+}
+export interface ResourceListResult {
+  items: ResourceItem[];
+  nextCursor: string | null;
+}
+
+/** 그룹 소유 리소스 목록 + 썸네일 URL 조회(읽기 전용). cursor 로 페이지네이션. */
+export async function listResources(
+  params: { category?: string; subcategory?: string; count?: number; searchWord?: string | null; cursor?: string | null },
+  secret: string,
+): Promise<ResourceListResult> {
+  return (await postJson("/api/resources", params, secret)) as ResourceListResult;
+}

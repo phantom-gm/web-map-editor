@@ -17,8 +17,8 @@ export default tseslint.config(
     },
   },
   {
-    // 설정/테스트 파일은 Node 컨텍스트
-    files: ["*.{js,mjs,ts}", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
+    // 설정/테스트/스크립트 파일은 Node 컨텍스트
+    files: ["*.{js,mjs,ts}", "scripts/**/*.{js,mjs}", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
     languageOptions: { globals: { ...globals.node } },
   },
 );

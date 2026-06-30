@@ -21,7 +21,7 @@ const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export type Tool = "brush" | "eraser" | "rect" | "eyedropper" | "block";
+export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block";
 type Ground = Map<CellKey, number>;
 type Blocked = Set<CellKey>;
 export interface Snapshot {
@@ -74,6 +74,8 @@ export interface EditorState {
   requestFit: () => void;
 
   addTiles: (tiles: PaletteTile[]) => void;
+  addResolvedTiles: (tiles: PaletteTile[]) => void;
+  hydratePalette: (tiles: PaletteTile[]) => void;
   loadRegistry: (json: unknown) => void;
   applyResolutions: (results: Array<{ name: string; status: RegStatus; ruid: string | null }>) => void;
   exportPaletteRuids: () => { map: string; ruids: Record<string, string> };
@@ -136,6 +138,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       palette: [...s.palette, ...resolvePalette(tiles, s.registry)],
       activeIdx: s.palette.length === 0 && tiles.length > 0 ? 0 : s.activeIdx,
     })),
+  // 이미 ruid/regStatus 가 채워진 타일(리소스 스토리지에서 불러온 것)을 그대로 append.
+  // resolvePalette 를 거치지 않아 등록 정보가 보존된다(registry 미로드여도 ruid 유지).
+  addResolvedTiles: (tiles) =>
+    set((s) => {
+      // 동일 ruid 중복 추가 방지(이미 팔레트에 있으면 제외).
+      const have = new Set(s.palette.map((t) => t.ruid).filter(Boolean));
+      const fresh = tiles.filter((t) => !t.ruid || !have.has(t.ruid));
+      if (fresh.length === 0) return {};
+      return {
+        palette: [...s.palette, ...fresh],
+        activeIdx: s.palette.length === 0 ? 0 : s.activeIdx,
+      };
+    }),
+  // 영속 저장에서 복원 — 팔레트가 비어 있을 때만 교체(사용자 추가분 덮어쓰기 방지).
+  hydratePalette: (tiles) =>
+    set((s) => (s.palette.length > 0 || tiles.length === 0 ? {} : { palette: tiles, activeIdx: 0 })),
   loadRegistry: (json) =>
     set((s) => {
       const reg = parseRegistry(json);

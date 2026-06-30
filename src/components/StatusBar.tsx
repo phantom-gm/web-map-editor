@@ -1,6 +1,7 @@
 import { useEditorStore, type Tool } from "../store/editorStore";
 
 const TOOL_LABEL: Record<Tool, string> = {
+  cursor: "커서",
   brush: "브러시",
   rect: "사각",
   eraser: "지우개",

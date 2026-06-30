@@ -1,18 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
-import { loadTiles, fallbackColor, type PaletteTile } from "../lib/palette";
+import { loadTiles, fallbackColor, DEFAULT_CATEGORY, type PaletteTile } from "../lib/palette";
 import type { RegStatus } from "../lib/registry";
 import { resolveTiles, uploadTiles } from "../lib/apiClient";
-
-// 공유 시크릿 — 세션 보관. 없으면 1회 프롬프트.
-function getSecret(): string {
-  let s = sessionStorage.getItem("editorSecret") ?? "";
-  if (!s) {
-    s = window.prompt("백엔드 공유 시크릿 입력 (x-editor-secret)") ?? "";
-    if (s) sessionStorage.setItem("editorSecret", s);
-  }
-  return s;
-}
+import { getSecret } from "../lib/secret";
+import { ResourceBrowser } from "./ResourceBrowser";
 
 const BADGE: Record<RegStatus, { sym: string; cls: string; label: string }> = {
   registered: { sym: "✓", cls: "reg", label: "리소스 스토리지 등록됨" },
@@ -29,6 +21,7 @@ function tileTitle(t: PaletteTile): string {
 
 export function PalettePanel() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const dirRef = useRef<HTMLInputElement>(null);
   const regRef = useRef<HTMLInputElement>(null);
   const palette = useEditorStore((s) => s.palette);
   const activeIdx = useEditorStore((s) => s.activeIdx);
@@ -38,11 +31,27 @@ export function PalettePanel() {
   const loadRegistry = useEditorStore((s) => s.loadRegistry);
   const applyResolutions = useEditorStore((s) => s.applyResolutions);
   const [busy, setBusy] = useState<"" | "resolve" | "upload">("");
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // 폴더 선택 인풋 — webkitdirectory 는 React 타입에 없어 ref 로 부여.
+  useEffect(() => {
+    if (dirRef.current) {
+      dirRef.current.setAttribute("webkitdirectory", "");
+      dirRef.current.setAttribute("directory", "");
+    }
+  }, []);
 
   const onFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const tiles = await loadTiles(Array.from(files));
+    // 폴더 선택은 OS 순서가 비결정적 → 경로 기준 자연 정렬로 인덱스 안정화.
+    const sorted = Array.from(files).sort((a, b) => {
+      const pa = (a as File & { webkitRelativePath?: string }).webkitRelativePath || a.name;
+      const pb = (b as File & { webkitRelativePath?: string }).webkitRelativePath || b.name;
+      return pa.localeCompare(pb, undefined, { numeric: true });
+    });
+    const tiles = await loadTiles(sorted);
     addTiles(tiles);
     e.target.value = "";
   };
@@ -108,12 +117,36 @@ export function PalettePanel() {
   const registered = palette.filter((t) => t.ruid).length;
   const isNew = palette.filter((t) => t.regStatus === "new").length;
 
+  // 카테고리별 그룹 — 표시용. 원래 인덱스(paletteIdx)는 보존(ground/export 가 그 인덱스를 씀).
+  const groups = useMemo(() => {
+    const m = new Map<string, Array<{ t: PaletteTile; i: number }>>();
+    palette.forEach((t, i) => {
+      const c = t.category || DEFAULT_CATEGORY;
+      const arr = m.get(c);
+      if (arr) arr.push({ t, i });
+      else m.set(c, [{ t, i }]);
+    });
+    return [...m.entries()];
+  }, [palette]);
+
+  const toggleCat = (c: string) =>
+    setCollapsed((prev) => {
+      const n = new Set(prev);
+      if (n.has(c)) n.delete(c);
+      else n.add(c);
+      return n;
+    });
+
   return (
     <div className="palette">
       <div className="palette-head">
         <span>팔레트 ({palette.length})</span>
         <button onClick={() => fileRef.current?.click()}>+ PNG</button>
+        <button onClick={() => dirRef.current?.click()} title="폴더 선택 — 폴더명이 카테고리가 됩니다">
+          + 폴더
+        </button>
         <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
+        <input ref={dirRef} type="file" multiple hidden onChange={onFiles} />
       </div>
       <div className="palette-subhead">
         <button className="reg-load" onClick={() => regRef.current?.click()} title="오프라인: tile_registry.json / palette_ruids.json">
@@ -126,33 +159,53 @@ export function PalettePanel() {
         <button className="reg-load" onClick={onUploadNew} disabled={busy !== "" || isNew === 0} title="신규 타일 /api/upload (외부 동작)">
           {busy === "upload" ? "업로드중…" : `업로드(${isNew})`}
         </button>
+        <button className="reg-load" onClick={() => setBrowseOpen(true)} disabled={busy !== ""} title="그룹 소유 리소스 스토리지에서 불러오기">
+          스토리지
+        </button>
         <span className="reg-count">
           <span className="reg">✓{registered}</span> · <span className="new">●{isNew}</span>
         </span>
       </div>
-      <div className="palette-grid">
+      <div className="palette-body">
         {palette.length === 0 && <div className="palette-empty">PNG 타일을 추가하세요</div>}
-        {palette.map((t, i) => (
-          <button
-            key={i}
-            className={"ptile" + (i === activeIdx && activeTool === "brush" ? " sel" : "")}
-            title={tileTitle(t)}
-            onClick={() => setActiveIdx(i)}
-          >
-            <span className="ptile-thumb">
-              {t.url ? (
-                <img src={t.url} alt={t.name} />
-              ) : (
-                <span className="ptile-swatch" style={{ background: fallbackColor(i) }} />
+        {groups.map(([cat, items]) => {
+          const isCol = collapsed.has(cat);
+          return (
+            <div className="palette-section" key={cat}>
+              <button className="palette-section-head" onClick={() => toggleCat(cat)}>
+                <span className={"sec-chev" + (isCol ? " col" : "")}>▾</span>
+                <span className="sec-name">{cat}</span>
+                <span className="sec-count">{items.length}</span>
+              </button>
+              {!isCol && (
+                <div className="palette-grid">
+                  {items.map(({ t, i }) => (
+                    <button
+                      key={i}
+                      className={"ptile" + (i === activeIdx && activeTool === "brush" ? " sel" : "")}
+                      title={tileTitle(t)}
+                      onClick={() => setActiveIdx(i)}
+                    >
+                      <span className="ptile-thumb">
+                        {t.url ? (
+                          <img src={t.url} alt={t.name} />
+                        ) : (
+                          <span className="ptile-swatch" style={{ background: fallbackColor(i) }} />
+                        )}
+                        {t.regStatus && (
+                          <span className={"ptile-badge " + BADGE[t.regStatus].cls}>{BADGE[t.regStatus].sym}</span>
+                        )}
+                      </span>
+                      <span className="ptile-name">{t.name}</span>
+                    </button>
+                  ))}
+                </div>
               )}
-              {t.regStatus && (
-                <span className={"ptile-badge " + BADGE[t.regStatus].cls}>{BADGE[t.regStatus].sym}</span>
-              )}
-            </span>
-            <span className="ptile-name">{t.name}</span>
-          </button>
-        ))}
+            </div>
+          );
+        })}
       </div>
+      {browseOpen && <ResourceBrowser onClose={() => setBrowseOpen(false)} />}
     </div>
   );
 }
