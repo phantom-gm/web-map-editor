@@ -1,6 +1,14 @@
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool } from "../store/editorStore";
-import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
+import { ENTITY_KINDS, ENTITY_META, type EntityKind } from "../types/entity";
+
+// 엔티티 배치 도구 단축키 (CanvasGrid keydown 과 일치).
+const ENTITY_SHORTCUT: Record<EntityKind, string> = {
+  portal: "P",
+  monster: "M",
+  npc: "N",
+  object: "O",
+};
 
 // 16/24 viewBox, stroke=currentColor — 선택 시 .sel 의 흰색을 그대로 따른다.
 const I = (children: ReactNode) => (
@@ -86,12 +94,13 @@ export function Toolbar() {
       <span className="sep" />
       {ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
+        const label = `${meta.label} 배치 (${ENTITY_SHORTCUT[k]})`;
         return (
           <button
             key={k}
             className={"tool-btn ent-btn" + (tool === k ? " sel" : "")}
-            data-label={`${meta.label} 배치`}
-            aria-label={`${meta.label} 배치`}
+            data-label={label}
+            aria-label={label}
             aria-pressed={tool === k}
             onClick={() => setTool(k)}
           >

@@ -382,6 +382,14 @@ export function CanvasGrid() {
         useEditorStore.getState().setTool("cursor");
       } else if (!mod && (e.key === "b" || e.key === "B")) {
         useEditorStore.getState().setTool("brush");
+      } else if (!mod && (e.key === "p" || e.key === "P")) {
+        useEditorStore.getState().setTool("portal");
+      } else if (!mod && (e.key === "m" || e.key === "M")) {
+        useEditorStore.getState().setTool("monster");
+      } else if (!mod && (e.key === "n" || e.key === "N")) {
+        useEditorStore.getState().setTool("npc");
+      } else if (!mod && (e.key === "o" || e.key === "O")) {
+        useEditorStore.getState().setTool("object");
       }
     };
     const ku = (e: KeyboardEvent) => {
