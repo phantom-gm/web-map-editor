@@ -17,6 +17,10 @@ export interface MapEntity {
   spawnCount?: number; // monster: 동시 스폰 수
   respawnSec?: number; // monster: 리젠 간격(초)
   dialogId?: string; // npc: 대사/스크립트 id
+
+  // 스프라이트(object/monster/npc) 표시 크기 — 타일 폭 단위. 높이는 이미지 비율로 자동.
+  // 베이스 셀 바닥에 앵커되어 세워 그려진다. 배치 시 이미지 픽셀폭/타일폭으로 자동 산출.
+  tilesW?: number;
 }
 
 export interface EntityKindMeta {

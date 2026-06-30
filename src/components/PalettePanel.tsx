@@ -71,9 +71,15 @@ export function PalettePanel() {
   const onResolveOnline = async () => {
     const secret = getSecret();
     if (!secret || palette.length === 0) return;
+    // 이미 RUID 보유한 타일(스토리지에서 가져온 등록 타일)은 조회 제외 — 권위 있는 RUID 유지.
+    const targets = palette.filter((t) => !t.ruid);
+    if (targets.length === 0) {
+      alert("미등록 타일이 없습니다 — 모두 등록 상태입니다.");
+      return;
+    }
     setBusy("resolve");
     try {
-      const results = await resolveTiles(palette.map((t) => ({ name: t.name, hash: t.hash })), secret);
+      const results = await resolveTiles(targets.map((t) => ({ name: t.name, hash: t.hash })), secret);
       applyResolutions(results);
     } catch (err) {
       alert("서버 조회 실패: " + (err instanceof Error ? err.message : String(err)));

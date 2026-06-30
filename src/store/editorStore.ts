@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Camera } from "../lib/grid";
+import { TW, type Camera } from "../lib/grid";
 import { toStoredTile, type PaletteTile } from "../lib/palette";
 import type { Blueprint, Layer } from "../types/blueprint";
 import { emptyLayer } from "../types/blueprint";
@@ -11,8 +11,11 @@ import { isEntityKind, newEntityId, type EntityKind, type MapEntity } from "../t
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
-  if (!reg) return palette.map((t) => ({ ...t, ruid: undefined, regStatus: undefined }));
+  // 레지스트리 없으면 기존 판정 유지(스토리지에서 온 RUID 보존 — 권위 있음).
+  if (!reg) return palette;
   return palette.map((t) => {
+    // 이미 RUID 보유(스토리지/이전 조회로 등록 확인됨) → 로컬 레지스트리에 없어도 강등 금지.
+    if (t.ruid) return t;
     const r = resolveTile(reg, t.name, t.hash);
     return { ...t, ruid: r.ruid, regStatus: r.status };
   });
@@ -104,7 +107,6 @@ export interface EditorState {
   removeEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
   selectEntity: (id: string | null) => void;
-  entityAt: (gx: number, gy: number) => MapEntity | null;
 
   commitStroke: (before: Snapshot) => void;
   undo: () => void;
@@ -190,7 +192,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         palette: s.palette.map((t) => {
           const r = byName.get(t.name);
-          return r ? { ...t, ruid: r.ruid ?? undefined, regStatus: r.status } : t;
+          if (!r) return t;
+          // 서버가 RUID 를 못 찾았는데 이미 RUID 보유(스토리지 등록 타일)면 강등하지 않음.
+          if (!r.ruid && t.ruid) return t;
+          return { ...t, ruid: r.ruid ?? undefined, regStatus: r.status };
         }),
       };
     }),
@@ -285,14 +290,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const before = snap(s.ground, s.blocked, s.entities);
       let name: string | undefined;
       let ruid: string | undefined;
+      let tilesW: number | undefined;
       if (kind === "portal") {
         name = "portal";
       } else {
         const t = s.palette[s.activeIdx];
         name = t?.name;
         ruid = t?.ruid;
+        // 타일 폭 단위 기본 크기 — 이미지 픽셀폭 / 타일폭(반올림, 최소 1).
+        const nw = t?.img?.naturalWidth ?? 0;
+        tilesW = nw > 0 ? Math.max(1, Math.round(nw / TW)) : 1;
       }
-      const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid };
+      const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid, tilesW };
       if (kind === "monster") ent.spawnCount = 1;
       return {
         entities: [...s.entities, ent],
@@ -339,11 +348,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
     }),
   selectEntity: (id) => set({ selectedEntityId: id }),
-  entityAt: (gx, gy) => {
-    const es = get().entities;
-    for (let i = es.length - 1; i >= 0; i--) if (es[i].gx === gx && es[i].gy === gy) return es[i];
-    return null;
-  },
 
   commitStroke: (before) =>
     set((s) => {

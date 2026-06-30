@@ -73,6 +73,19 @@ export function EntityInspector() {
         </label>
       )}
 
+      {entity.kind !== "portal" && (
+        <label className="ei-row">
+          <span>크기 (타일 폭) — 높이는 이미지 비율 자동</span>
+          <input
+            type="number"
+            min={0.5}
+            step={0.5}
+            value={entity.tilesW ?? 1}
+            onChange={(e) => setNum("tilesW", e.target.value)}
+          />
+        </label>
+      )}
+
       <button className="ei-delete" onClick={() => removeEntity(entity.id)}>
         삭제 (Del)
       </button>

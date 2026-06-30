@@ -23,6 +23,65 @@ function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: 
   ctx.closePath();
 }
 
+/**
+ * 엔티티의 화면 사각형 [x0,y0,x1,y1].
+ * 스프라이트(이미지 보유): 비율 유지 빌보드 — 폭 = tilesW*TW*zoom(=tilesW*2*hw), 베이스 셀 바닥 앵커.
+ * 마커/포탈: 타일 다이아몬드 bbox.
+ */
+function entityRect(
+  e: MapEntity,
+  cx: number,
+  cy: number,
+  hw: number,
+  hh: number,
+  img: HTMLImageElement | null,
+): [number, number, number, number] {
+  if (img) {
+    const wpx = Math.max(0.25, e.tilesW ?? 1) * 2 * hw;
+    const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
+    const bottom = cy + hh;
+    return [cx - wpx / 2, bottom - hpx, cx + wpx / 2, bottom];
+  }
+  return [cx - hw, cy - hh, cx + hw, cy + hh];
+}
+
+/** 엔티티 깊이 정렬(뒤→앞): gy 우선, gx 차선. draw/히트테스트 공용. */
+const byEntityDepth = (a: MapEntity, b: MapEntity) => a.gy - b.gy || a.gx - b.gx;
+
+/** 팔레트에서 엔티티 에셋 이미지를 찾는 조회 함수 생성(ruid 우선, name 차선). 포탈은 항상 null. */
+function makeEntityImageLookup(palette: PaletteTile[]): (e: MapEntity) => HTMLImageElement | null {
+  const byRuid = new Map<string, HTMLImageElement>();
+  const byName = new Map<string, HTMLImageElement>();
+  for (const t of palette) {
+    if (!t.img) continue;
+    if (t.ruid) byRuid.set(t.ruid, t.img);
+    if (t.name) byName.set(t.name, t.img);
+  }
+  return (e) =>
+    e.kind !== "portal" ? (e.ruid && byRuid.get(e.ruid)) || (e.name && byName.get(e.name)) || null : null;
+}
+
+/** 화면 점(px)이 닿는 최상단(앞쪽) 엔티티. 스프라이트는 빌보드 사각형, 마커는 셀 다이아 bbox 기준. */
+function findEntityHit(
+  px: number,
+  py: number,
+  entities: MapEntity[],
+  palette: PaletteTile[],
+  cam: Camera,
+): MapEntity | null {
+  const hw = (TW / 2) * cam.zoom;
+  const hh = (TH / 2) * cam.zoom;
+  const lookup = makeEntityImageLookup(palette);
+  const sorted = [...entities].sort(byEntityDepth);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const e = sorted[i];
+    const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
+    const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, lookup(e));
+    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) return e;
+  }
+  return null;
+}
+
 function draw(
   ctx: CanvasRenderingContext2D,
   dims: Dims,
@@ -101,26 +160,37 @@ function draw(
 
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   if (entities.length > 0) {
-    const byRuid = new Map<string, HTMLImageElement>();
-    const byName = new Map<string, HTMLImageElement>();
-    for (const t of palette) {
-      if (!t.img) continue;
-      if (t.ruid) byRuid.set(t.ruid, t.img);
-      if (t.name) byName.set(t.name, t.img);
-    }
-    const sorted = [...entities].sort((a, b) => a.gy - b.gy || a.gx - b.gx);
+    const lookup = makeEntityImageLookup(palette);
+    const sorted = [...entities].sort(byEntityDepth);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
       if (!vis(cx, cy)) continue;
       const meta = ENTITY_META[e.kind];
-      const img =
-        e.kind !== "portal"
-          ? (e.ruid && byRuid.get(e.ruid)) || (e.name && byName.get(e.name)) || null
-          : null;
+      const img = lookup(e);
+      const sel = e.id === selectedEntityId;
+
+      // 베이스 셀 표시(앵커 위치) — 항상.
+      diamondPath(ctx, cx, cy, hw, hh);
+      ctx.strokeStyle = meta.color;
+      ctx.globalAlpha = sel ? 1 : 0.7;
+      ctx.lineWidth = sel ? 2.5 : 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      let labelTop = cy - hh;
       if (img) {
-        ctx.drawImage(img, cx - hw, cy - hh, hw * 2, hh * 2);
+        // 비율 유지 빌보드 — 바닥 앵커.
+        const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, img);
+        ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+        labelTop = y0;
+        if (sel) {
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2);
+        }
       } else {
+        // 이미지 없음 → 종류색 마커 + 글자.
         diamondPath(ctx, cx, cy, hw * 0.78, hh * 0.78);
         ctx.fillStyle = meta.color + "d0";
         ctx.fill();
@@ -129,18 +199,14 @@ function draw(
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(meta.marker, cx, cy);
+        if (sel) {
+          diamondPath(ctx, cx, cy, hw + 4, hh + 4);
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
       }
-      // 종류색 외곽 링 + 선택 강조
-      diamondPath(ctx, cx, cy, hw, hh);
-      ctx.strokeStyle = meta.color;
-      ctx.lineWidth = e.id === selectedEntityId ? 3 : 1.5;
-      ctx.stroke();
-      if (e.id === selectedEntityId) {
-        diamondPath(ctx, cx, cy, hw + 4, hh + 4);
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
+
       // 라벨
       if (e.name && cam.zoom > 0.4) {
         ctx.font = "11px sans-serif";
@@ -148,9 +214,9 @@ function draw(
         ctx.textBaseline = "bottom";
         const w = ctx.measureText(e.name).width;
         ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fillRect(cx - w / 2 - 3, cy - hh - 16, w + 6, 14);
+        ctx.fillRect(cx - w / 2 - 3, labelTop - 16, w + 6, 14);
         ctx.fillStyle = meta.color;
-        ctx.fillText(e.name, cx, cy - hh - 3);
+        ctx.fillText(e.name, cx, labelTop - 3);
       }
     }
   }
@@ -303,8 +369,8 @@ export function CanvasGrid() {
       if (e.button !== 0) return;
       const tool = st.activeTool;
       if (tool === "cursor") {
-        // 커서 모드: 엔티티 클릭 → 선택·이동. 빈 곳 → 맵 팬. 칠하지 않음.
-        const hit = st.entityAt(gx, gy);
+        // 커서 모드: 엔티티(스프라이트 본체 포함) 클릭 → 선택·이동. 빈 곳 → 맵 팬.
+        const hit = findEntityHit(p.x, p.y, st.entities, st.palette, st.camera);
         if (hit) {
           st.selectEntity(hit.id);
           mode.current = "moveEntity";
