@@ -3,6 +3,7 @@ import { useEditorStore } from "../store/editorStore";
 import { parseBlueprint, downloadText } from "../lib/blueprintIO";
 import { validateMap } from "../lib/validate";
 import { FileMenu } from "./FileMenu";
+import { NumberField } from "./NumberField";
 
 export function TopBar() {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -62,24 +63,10 @@ export function TopBar() {
         맵 <input value={mapName} onChange={(e) => setMapName(e.target.value)} />
       </label>
       <label>
-        W{" "}
-        <input
-          className="num"
-          type="number"
-          min={1}
-          value={size[0]}
-          onChange={(e) => setSize(parseInt(e.target.value, 10) || 1, size[1])}
-        />
+        W <NumberField value={size[0]} min={1} onCommit={(w) => setSize(w, size[1])} />
       </label>
       <label>
-        H{" "}
-        <input
-          className="num"
-          type="number"
-          min={1}
-          value={size[1]}
-          onChange={(e) => setSize(size[0], parseInt(e.target.value, 10) || 1)}
-        />
+        H <NumberField value={size[1]} min={1} onCommit={(h) => setSize(size[0], h)} />
       </label>
       <FileMenu />
       <span className="topbar-sep" />

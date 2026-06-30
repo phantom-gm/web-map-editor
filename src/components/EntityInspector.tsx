@@ -1,5 +1,6 @@
 import { useEditorStore } from "../store/editorStore";
 import { ENTITY_META, type MapEntity } from "../types/entity";
+import { NumberField } from "./NumberField";
 
 // 선택된 엔티티의 속성 편집 패널(캔버스 우상단 플로팅). 종류별 필드 표시.
 export function EntityInspector() {
@@ -78,19 +79,17 @@ export function EntityInspector() {
         <label className="ei-row">
           <span>타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절</span>
           <div className="ei-grid2">
-            <input
-              type="number"
-              min={1}
-              step={1}
+            <NumberField
+              className=""
               value={entity.tilesW ?? 1}
-              onChange={(e) => setNum("tilesW", e.target.value)}
-            />
-            <input
-              type="number"
               min={1}
-              step={1}
+              onCommit={(w) => updateEntity(entity.id, { tilesW: w })}
+            />
+            <NumberField
+              className=""
               value={entity.tilesH ?? 1}
-              onChange={(e) => setNum("tilesH", e.target.value)}
+              min={1}
+              onCommit={(h) => updateEntity(entity.id, { tilesH: h })}
             />
           </div>
         </label>
