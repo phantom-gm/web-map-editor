@@ -301,7 +301,7 @@ export function CanvasGrid() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "rect" | "moveEntity" | "resizeEntity" | null>(null);
+  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "resizeEntity" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
@@ -378,6 +378,10 @@ export function CanvasGrid() {
           e.preventDefault();
           useEditorStore.getState().removeEntity(sel);
         }
+      } else if (!mod && (e.key === "v" || e.key === "V")) {
+        useEditorStore.getState().setTool("cursor");
+      } else if (!mod && (e.key === "b" || e.key === "B")) {
+        useEditorStore.getState().setTool("brush");
       }
     };
     const ku = (e: KeyboardEvent) => {
@@ -411,6 +415,15 @@ export function CanvasGrid() {
       if (e.button === 1 || spaceDown.current) {
         mode.current = "pan";
         drag.current = p;
+        return;
+      }
+      if (e.button === 2) {
+        // 우클릭: 이동불가 도구일 때만 지우기 스트로크(드래그 지속).
+        if (st.activeTool === "block") {
+          mode.current = "blockErase";
+          strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+          st.setBlockedAt(gx, gy, false);
+        }
         return;
       }
       if (e.button !== 0) return;
@@ -483,6 +496,8 @@ export function CanvasGrid() {
         drag.current = p;
       } else if (mode.current === "paint") {
         st.applyTool(gx, gy);
+      } else if (mode.current === "blockErase") {
+        st.setBlockedAt(gx, gy, false);
       } else if (mode.current === "rect" && rectStart.current) {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
       } else if (mode.current === "moveEntity" && movingId.current) {
@@ -496,7 +511,7 @@ export function CanvasGrid() {
     };
     const onUp = () => {
       const st = useEditorStore.getState();
-      if (mode.current === "paint" && strokeBefore.current) {
+      if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if ((mode.current === "moveEntity" || mode.current === "resizeEntity") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
@@ -515,17 +530,20 @@ export function CanvasGrid() {
     const onLeave = () => {
       useEditorStore.getState().setHover(null);
     };
+    const onContext = (e: MouseEvent) => e.preventDefault(); // 우클릭 지우기 — 브라우저 메뉴 차단
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     canvas.addEventListener("mouseleave", onLeave);
+    canvas.addEventListener("contextmenu", onContext);
     return () => {
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       canvas.removeEventListener("mouseleave", onLeave);
+      canvas.removeEventListener("contextmenu", onContext);
     };
   }, []);
 

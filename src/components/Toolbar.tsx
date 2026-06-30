@@ -50,11 +50,11 @@ const ICONS: Partial<Record<Tool, ReactNode>> = {
 };
 
 const TOOLS: Array<{ id: Tool; label: string }> = [
-  { id: "cursor", label: "커서" },
-  { id: "brush", label: "브러시" },
+  { id: "cursor", label: "커서 (V)" },
+  { id: "brush", label: "브러시 (B)" },
   { id: "rect", label: "사각" },
   { id: "eraser", label: "지우개" },
-  { id: "block", label: "이동불가" },
+  { id: "block", label: "이동불가 — 좌클릭 생성·우클릭 지우기" },
   { id: "eyedropper", label: "스포이드" },
 ];
 

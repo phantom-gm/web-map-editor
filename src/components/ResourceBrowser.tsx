@@ -19,6 +19,7 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<number | null>(null); // Shift 범위 선택 기준 인덱스
 
   const havePalette = new Set(inPalette.map((t) => t.ruid).filter(Boolean));
 
@@ -57,13 +58,29 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subcategory]);
 
-  const toggle = (ruid: string) =>
-    setSelected((prev) => {
-      const n = new Set(prev);
-      if (n.has(ruid)) n.delete(ruid);
-      else n.add(ruid);
-      return n;
-    });
+  // 클릭 선택. Shift+클릭이면 직전 기준(anchor)부터 현재까지 범위를 한꺼번에 선택.
+  const pick = (e: React.MouseEvent, idx: number) => {
+    if (e.shiftKey && anchor !== null) {
+      const [lo, hi] = anchor < idx ? [anchor, idx] : [idx, anchor];
+      setSelected((prev) => {
+        const n = new Set(prev);
+        for (let i = lo; i <= hi; i++) {
+          const it = items[i];
+          if (it && !havePalette.has(it.ruid)) n.add(it.ruid);
+        }
+        return n;
+      });
+    } else {
+      const ruid = items[idx].ruid;
+      setSelected((prev) => {
+        const n = new Set(prev);
+        if (n.has(ruid)) n.delete(ruid);
+        else n.add(ruid);
+        return n;
+      });
+      setAnchor(idx);
+    }
+  };
 
   const addSelected = async () => {
     const picks = items.filter((it) => selected.has(it.ruid));
@@ -111,15 +128,15 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
 
         <div className="rb-grid">
           {items.length === 0 && !busy && <div className="rb-empty">결과 없음</div>}
-          {items.map((it) => {
+          {items.map((it, idx) => {
             const already = havePalette.has(it.ruid);
             const sel = selected.has(it.ruid);
             return (
               <button
                 key={it.ruid}
                 className={"rb-item" + (sel ? " sel" : "") + (already ? " dim" : "")}
-                title={`${it.name}\n${it.subcategory}\nRUID: ${it.ruid}${already ? "\n(이미 팔레트에 있음)" : ""}`}
-                onClick={() => !already && toggle(it.ruid)}
+                title={`${it.name}\n${it.subcategory}\nRUID: ${it.ruid}${already ? "\n(이미 팔레트에 있음)" : "\n(Shift+클릭: 범위 선택)"}`}
+                onClick={(e) => !already && pick(e, idx)}
               >
                 <span className="rb-thumb">
                   {it.imageUrl ? (

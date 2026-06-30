@@ -9,6 +9,7 @@ export function FileMenu() {
   const [fileName, setFileName] = useState<string | null>(currentFileName());
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const doSaveRef = useRef<((forceNew: boolean) => Promise<void>) | null>(null);
   const mapName = useEditorStore((s) => s.mapName);
   const dirty = useEditorStore((s) => s.dirty);
 
@@ -21,6 +22,18 @@ export function FileMenu() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  // Cmd/Ctrl+S → 저장 (브라우저 기본 저장 다이얼로그 차단).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        void doSaveRef.current?.(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const suggestedName = () => `${(mapName || "project").replace(/[^\w.-]+/g, "_")}.json`;
 
@@ -63,6 +76,11 @@ export function FileMenu() {
     }
   };
 
+  // 단축키가 항상 최신 doSave 를 참조하도록 ref 동기화(렌더 중 변경 금지 → 이펙트).
+  useEffect(() => {
+    doSaveRef.current = doSave;
+  });
+
   const doOpen = async () => {
     setOpen(false);
     if (fsaAvailable) {
@@ -92,7 +110,7 @@ export function FileMenu() {
         <div className="fm-menu">
           <button onClick={doNew}>새로 만들기</button>
           <button onClick={doOpen}>열기…</button>
-          <button onClick={() => doSave(false)}>저장</button>
+          <button onClick={() => doSave(false)}>저장 (⌘/Ctrl+S)</button>
           <button onClick={() => doSave(true)}>다른 이름으로 저장…</button>
           {fileName && <div className="fm-current" title={fileName}>📄 {fileName}</div>}
         </div>

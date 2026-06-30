@@ -167,6 +167,7 @@ export interface EditorState {
   setActiveIdx: (i: number) => void;
   setTool: (t: Tool) => void;
   applyTool: (gx: number, gy: number) => void;
+  setBlockedAt: (gx: number, gy: number, on: boolean) => void;
   fillRect: (x0: number, y0: number, x1: number, y1: number) => void;
   pickAt: (gx: number, gy: number) => void;
   setRectPreview: (r: [number, number, number, number] | null) => void;
@@ -315,6 +316,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (s.ground.get(key) === s.activeIdx) return {};
       s.ground.set(key, s.activeIdx);
       return { groundVer: s.groundVer + 1 };
+    }),
+
+  // 이동불가 단일 셀 on/off — block 도구 좌클릭(생성)/우클릭(지우기)에 사용.
+  setBlockedAt: (gx, gy, on) =>
+    set((s) => {
+      const [W, H] = s.size;
+      if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
+      const key = cellKey(gx, gy);
+      if (on) {
+        if (s.blocked.has(key)) return {};
+        s.blocked.add(key);
+      } else if (!s.blocked.delete(key)) {
+        return {};
+      }
+      return { blockedVer: s.blockedVer + 1 };
     }),
 
   fillRect: (x0, y0, x1, y1) =>
