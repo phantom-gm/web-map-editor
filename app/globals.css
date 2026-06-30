@@ -338,6 +338,41 @@ body {
   border-color: #5aa0ff;
   box-shadow: 0 0 0 1px #5aa0ff inset;
 }
+/* 다중선택(삭제 대상) — 주황 윤곽으로 활성(파랑)과 구분 */
+.ptile.msel {
+  border-color: #ff9f43;
+  box-shadow: 0 0 0 1px #ff9f43 inset;
+}
+.ptile.sel.msel {
+  box-shadow: 0 0 0 1px #5aa0ff inset, 0 0 0 2px #ff9f43;
+}
+
+/* 팔레트 우클릭 컨텍스트 메뉴 */
+.palette-menu {
+  position: fixed;
+  z-index: 50;
+  background: #20232c;
+  border: 1px solid #3a3f4c;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  min-width: 120px;
+}
+.palette-menu .pm-del {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: #ff7b72;
+  padding: 7px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.palette-menu .pm-del:hover {
+  background: #3a2326;
+}
 .ptile-thumb {
   position: relative;
   width: 100%;

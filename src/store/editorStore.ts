@@ -160,6 +160,7 @@ export interface EditorState {
 
   addTiles: (tiles: PaletteTile[]) => void;
   addResolvedTiles: (tiles: PaletteTile[]) => void;
+  removeTiles: (indices: number[]) => void;
   hydratePalette: (tiles: PaletteTile[]) => void;
   loadRegistry: (json: unknown) => void;
   applyResolutions: (results: Array<{ name: string; status: RegStatus; ruid: string | null }>) => void;
@@ -255,6 +256,33 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         palette: [...s.palette, ...fresh],
         activeIdx: s.palette.length === 0 ? 0 : s.activeIdx,
+      };
+    }),
+  // 팔레트 타일 삭제(여러 개). ground 가 팔레트 인덱스를 참조하므로 인덱스 리맵 필수:
+  // 삭제된 타일을 쓰던 셀은 제거하고, 남은 타일 인덱스를 앞으로 당긴다.
+  // (undo 스냅샷은 팔레트를 담지 않아 인덱스가 어긋나므로 되돌리기 스택을 비운다)
+  removeTiles: (indices) =>
+    set((s) => {
+      const remove = new Set(indices.filter((i) => i >= 0 && i < s.palette.length));
+      if (remove.size === 0) return {};
+      const remap: number[] = []; // old idx → new idx (-1 = 삭제됨)
+      let next = 0;
+      for (let i = 0; i < s.palette.length; i++) remap[i] = remove.has(i) ? -1 : next++;
+      const palette = s.palette.filter((_, i) => !remove.has(i));
+      const ground: Ground = new Map();
+      for (const [k, idx] of s.ground) {
+        const ni = remap[idx];
+        if (ni >= 0) ground.set(k, ni); // 삭제된 타일 셀은 버림
+      }
+      const mappedActive = remap[s.activeIdx];
+      const activeIdx = Math.min(mappedActive >= 0 ? mappedActive : 0, Math.max(0, palette.length - 1));
+      return {
+        palette,
+        ground,
+        activeIdx,
+        groundVer: s.groundVer + 1,
+        undoStack: [],
+        redoStack: [],
       };
     }),
   // 영속 저장에서 복원 — 팔레트가 비어 있을 때만 교체(사용자 추가분 덮어쓰기 방지). 복원은 dirty 아님.

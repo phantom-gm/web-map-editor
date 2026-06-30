@@ -28,11 +28,15 @@ export function PalettePanel() {
   const activeTool = useEditorStore((s) => s.activeTool);
   const setActiveIdx = useEditorStore((s) => s.setActiveIdx);
   const addTiles = useEditorStore((s) => s.addTiles);
+  const removeTiles = useEditorStore((s) => s.removeTiles);
   const loadRegistry = useEditorStore((s) => s.loadRegistry);
   const applyResolutions = useEditorStore((s) => s.applyResolutions);
   const [busy, setBusy] = useState<"" | "resolve" | "upload">("");
   const [browseOpen, setBrowseOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<number>>(new Set()); // 다중선택(팔레트 원본 인덱스)
+  const [anchor, setAnchor] = useState<number | null>(null); // Shift 범위 기준
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null); // 우클릭 컨텍스트 메뉴
 
   // 폴더 선택 인풋 — webkitdirectory 는 React 타입에 없어 ref 로 부여.
   useEffect(() => {
@@ -143,6 +147,71 @@ export function PalettePanel() {
       return n;
     });
 
+  // 화면 표시 순서(접힌 그룹 제외)의 팔레트 인덱스 — Shift 범위는 이 순서를 따른다.
+  const visibleOrder = useMemo(
+    () => groups.filter(([cat]) => !collapsed.has(cat)).flatMap(([, items]) => items.map((x) => x.i)),
+    [groups, collapsed],
+  );
+
+  // 타일 클릭: 일반=단일선택+활성, Shift=직전 기준부터 화면순서 범위 선택.
+  const onTileClick = (e: React.MouseEvent, i: number) => {
+    if (e.shiftKey && anchor !== null) {
+      const a = visibleOrder.indexOf(anchor);
+      const b = visibleOrder.indexOf(i);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected(new Set(visibleOrder.slice(lo, hi + 1)));
+        setActiveIdx(i);
+        return;
+      }
+    }
+    setSelected(new Set([i]));
+    setAnchor(i);
+    setActiveIdx(i);
+  };
+
+  // 우클릭: 선택에 없던 타일이면 그것만 선택한 뒤 메뉴 표시(파일 탐색기 관례).
+  const onTileContext = (e: React.MouseEvent, i: number) => {
+    e.preventDefault();
+    if (!selected.has(i)) {
+      setSelected(new Set([i]));
+      setAnchor(i);
+      setActiveIdx(i);
+    }
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const deleteSelected = () => {
+    const targets = [...selected];
+    setMenu(null);
+    if (targets.length === 0) return;
+    const names = targets
+      .map((i) => palette[i]?.name)
+      .filter(Boolean)
+      .slice(0, 5)
+      .join(", ");
+    const more = targets.length > 5 ? ` 외 ${targets.length - 5}개` : "";
+    if (!window.confirm(`팔레트 타일 ${targets.length}개(${names}${more})를 삭제할까요?\n이 타일로 칠한 셀도 함께 지워집니다.`)) return;
+    removeTiles(targets);
+    setSelected(new Set());
+    setAnchor(null);
+  };
+
+  // 메뉴 바깥 클릭 / Esc / 스크롤 시 닫기.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [menu]);
+
   return (
     <div className="palette">
       <div className="palette-head">
@@ -190,9 +259,14 @@ export function PalettePanel() {
                   {items.map(({ t, i }) => (
                     <button
                       key={i}
-                      className={"ptile" + (i === activeIdx && activeTool === "brush" ? " sel" : "")}
+                      className={
+                        "ptile" +
+                        (i === activeIdx && activeTool === "brush" ? " sel" : "") +
+                        (selected.has(i) ? " msel" : "")
+                      }
                       title={tileTitle(t)}
-                      onClick={() => setActiveIdx(i)}
+                      onClick={(e) => onTileClick(e, i)}
+                      onContextMenu={(e) => onTileContext(e, i)}
                     >
                       <span className="ptile-thumb">
                         {t.url ? (
@@ -214,6 +288,17 @@ export function PalettePanel() {
         })}
       </div>
       {browseOpen && <ResourceBrowser onClose={() => setBrowseOpen(false)} />}
+      {menu && (
+        <div
+          className="palette-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button className="pm-del" onClick={deleteSelected}>
+            🗑 삭제{selected.size > 1 ? ` (${selected.size}개)` : ""}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
