@@ -94,6 +94,9 @@ const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | EntityKind;
+// 편집용 오버레이 표시 토글 — grid(빈 격자) / blocked(이동불가 빨강) / footprint(오브젝트 점유 표시)
+export type VisualLayer = "grid" | "blocked" | "footprint";
+export type VisualFlags = Record<VisualLayer, boolean>;
 type Ground = Map<CellKey, number>;
 type Blocked = Set<CellKey>;
 type Entities = MapEntity[];
@@ -144,6 +147,8 @@ export interface EditorState {
   entitiesVer: number;
   selectedEntityId: string | null;
 
+  visual: VisualFlags; // 편집 오버레이 표시 여부 (격자/이동불가/점유)
+
   dirty: boolean; // 마지막 저장/불러오기 이후 변경됨 — beforeunload 경고용
   resetNonce: number; // 저장/불러오기/새로만들기 시 증가 → dirty 기준점 리셋 신호
 
@@ -167,6 +172,7 @@ export interface EditorState {
   exportPaletteRuids: () => { map: string; ruids: Record<string, string> };
   setActiveIdx: (i: number) => void;
   setTool: (t: Tool) => void;
+  toggleVisual: (k: VisualLayer) => void;
   applyTool: (gx: number, gy: number) => void;
   setBlockedAt: (gx: number, gy: number, on: boolean) => void;
   fillRect: (x0: number, y0: number, x1: number, y1: number) => void;
@@ -216,6 +222,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   entities: [],
   entitiesVer: 0,
   selectedEntityId: null,
+  visual: { grid: true, blocked: true, footprint: true },
   dirty: false,
   resetNonce: 0,
   undoStack: [],
@@ -320,6 +327,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setActiveIdx: (i) =>
     set((s) => ({ activeIdx: i, activeTool: isEntityKind(s.activeTool) ? s.activeTool : "brush" })),
   setTool: (t) => set({ activeTool: t }),
+
+  toggleVisual: (k) => set((s) => ({ visual: { ...s.visual, [k]: !s.visual[k] } })),
 
   applyTool: (gx, gy) =>
     set((s) => {

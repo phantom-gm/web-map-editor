@@ -187,6 +187,23 @@ body {
   background: #343846;
   margin: 0 4px;
 }
+/* 보기 토글 그룹 — 켜짐(on)=강조, 꺼짐=흐리게 */
+.toolbar .view-group {
+  display: inline-flex;
+  gap: 4px;
+}
+.toolbar .view-group .view-btn {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.toolbar .view-group .view-btn.on {
+  background: #2a3b2e;
+  border-color: #3f7a4f;
+  color: #cdeccf;
+}
+.toolbar .view-group .view-btn:not(.on) {
+  opacity: 0.55;
+}
 .toolbar-info {
   margin-left: auto;
   color: #7b8194;

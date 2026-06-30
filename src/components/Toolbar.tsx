@@ -1,7 +1,14 @@
 import type { ReactNode } from "react";
-import { useEditorStore, type Tool } from "../store/editorStore";
+import { useEditorStore, type Tool, type VisualLayer } from "../store/editorStore";
 import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
 import { TOOL_SHORTCUTS } from "../lib/shortcuts";
+
+// 보기 토글 — 편집 오버레이 표시 on/off
+const VIEW_TOGGLES: Array<{ key: VisualLayer; label: string }> = [
+  { key: "grid", label: "격자" },
+  { key: "blocked", label: "이동불가" },
+  { key: "footprint", label: "점유" },
+];
 
 // 라벨에 단축키 힌트 부착 — "커서" → "커서 (V)". 단축키는 shortcuts.ts 단일 출처.
 const withShortcut = (label: string, tool: Tool) => {
@@ -75,6 +82,8 @@ export function Toolbar() {
   const canRedo = useEditorStore((s) => s.redoStack.length > 0);
   const painted = useEditorStore((s) => s.ground.size);
   const blockedCount = useEditorStore((s) => s.blocked.size);
+  const visual = useEditorStore((s) => s.visual);
+  const toggleVisual = useEditorStore((s) => s.toggleVisual);
 
   return (
     <div className="toolbar">
@@ -112,6 +121,20 @@ export function Toolbar() {
           </button>
         );
       })}
+      <span className="sep" />
+      <span className="view-group" aria-label="보기 토글">
+        {VIEW_TOGGLES.map((v) => (
+          <button
+            key={v.key}
+            className={"view-btn" + (visual[v.key] ? " on" : "")}
+            aria-pressed={visual[v.key]}
+            title={`${v.label} 표시 ${visual[v.key] ? "켜짐 — 클릭하여 숨기기" : "꺼짐 — 클릭하여 표시"}`}
+            onClick={() => toggleVisual(v.key)}
+          >
+            {visual[v.key] ? "👁" : "🚫"} {v.label}
+          </button>
+        ))}
+      </span>
       <span className="sep" />
       <button onClick={undo} disabled={!canUndo} title="실행취소 (⌘/Ctrl+Z)">
         ↶ 취소

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useEditorStore, type Snapshot } from "../store/editorStore";
+import { useEditorStore, type Snapshot, type VisualFlags } from "../store/editorStore";
 import {
   TW,
   TH,
@@ -98,6 +98,7 @@ function draw(
   rectPreview: [number, number, number, number] | null,
   entities: MapEntity[],
   selectedEntityId: string | null,
+  visual: VisualFlags,
 ) {
   ctx.clearRect(0, 0, dims.w, dims.h);
   ctx.fillStyle = "#15161a";
@@ -111,17 +112,19 @@ function draw(
   const vis = (cx: number, cy: number) =>
     cx >= -hw && cx <= dims.w + hw && cy >= -hh && cy <= dims.h + hh;
 
-  // 빈 다이아몬드 그리드
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#2c2f3a";
-  for (let gy = 0; gy < H; gy++) {
-    for (let gx = 0; gx < W; gx++) {
-      const [cx, cy] = cellToScreen(gx, gy, cam);
-      if (!vis(cx, cy)) continue;
-      diamondPath(ctx, cx, cy, hw, hh);
-      ctx.fillStyle = "#1d1f26";
-      ctx.fill();
-      ctx.stroke();
+  // 빈 다이아몬드 그리드 (격자 표시 토글)
+  if (visual.grid) {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#2c2f3a";
+    for (let gy = 0; gy < H; gy++) {
+      for (let gx = 0; gx < W; gx++) {
+        const [cx, cy] = cellToScreen(gx, gy, cam);
+        if (!vis(cx, cy)) continue;
+        diamondPath(ctx, cx, cy, hw, hh);
+        ctx.fillStyle = "#1d1f26";
+        ctx.fill();
+        ctx.stroke();
+      }
     }
   }
 
@@ -146,8 +149,8 @@ function draw(
     }
   }
 
-  // 이동불가 셀 — 빨강 다이아몬드 오버레이
-  if (blocked.size > 0) {
+  // 이동불가 셀 — 빨강 다이아몬드 오버레이 (이동불가 표시 토글)
+  if (visual.blocked && blocked.size > 0) {
     ctx.fillStyle = "rgba(220,70,70,0.32)";
     ctx.strokeStyle = "#e05050";
     ctx.lineWidth = 1.5;
@@ -178,12 +181,14 @@ function draw(
       if (img) {
         const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
 
-        // 1) footprint 채움 — 스프라이트 아래(이동불가 스타일, 옅게).
-        ctx.fillStyle = meta.color + (sel ? "33" : "1f");
-        for (const [gx, gy] of cells) {
-          const [fx, fy] = cellToScreen(gx, gy, cam);
-          diamondPath(ctx, fx, fy, hw, hh);
-          ctx.fill();
+        // 1) footprint 채움 — 스프라이트 아래(이동불가 스타일, 옅게). 점유 표시 토글.
+        if (visual.footprint) {
+          ctx.fillStyle = meta.color + (sel ? "33" : "1f");
+          for (const [gx, gy] of cells) {
+            const [fx, fy] = cellToScreen(gx, gy, cam);
+            diamondPath(ctx, fx, fy, hw, hh);
+            ctx.fill();
+          }
         }
 
         // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. flipX 면 가로 미러.
@@ -199,16 +204,18 @@ function draw(
         }
         labelTop = y0;
 
-        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록).
-        ctx.strokeStyle = meta.color;
-        ctx.globalAlpha = sel ? 0.95 : 0.55;
-        ctx.lineWidth = sel ? 1.6 : 1.2;
-        for (const [gx, gy] of cells) {
-          const [fx, fy] = cellToScreen(gx, gy, cam);
-          diamondPath(ctx, fx, fy, hw, hh);
-          ctx.stroke();
+        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 표시 토글.
+        if (visual.footprint) {
+          ctx.strokeStyle = meta.color;
+          ctx.globalAlpha = sel ? 0.95 : 0.55;
+          ctx.lineWidth = sel ? 1.6 : 1.2;
+          for (const [gx, gy] of cells) {
+            const [fx, fy] = cellToScreen(gx, gy, cam);
+            diamondPath(ctx, fx, fy, hw, hh);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
         }
-        ctx.globalAlpha = 1;
 
         // 4) 선택 시 — 흰 선택 박스 + 리사이즈 핸들(박스 우하단 코너, 통상적 위치).
         if (sel) {
@@ -325,6 +332,7 @@ export function CanvasGrid() {
   const entities = useEditorStore((s) => s.entities);
   const entitiesVer = useEditorStore((s) => s.entitiesVer);
   const selectedEntityId = useEditorStore((s) => s.selectedEntityId);
+  const visual = useEditorStore((s) => s.visual);
   const setCamera = useEditorStore((s) => s.setCamera);
 
   useEffect(() => {
@@ -567,7 +575,7 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId);
+    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual);
   }, [
     dims,
     size,
@@ -582,6 +590,7 @@ export function CanvasGrid() {
     entities,
     entitiesVer,
     selectedEntityId,
+    visual,
   ]);
 
   return (
