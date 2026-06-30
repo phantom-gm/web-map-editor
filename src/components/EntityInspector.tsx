@@ -7,6 +7,7 @@ export function EntityInspector() {
   const entity = useEditorStore((s) => s.entities.find((e) => e.id === s.selectedEntityId) ?? null);
   const updateEntity = useEditorStore((s) => s.updateEntity);
   const removeEntity = useEditorStore((s) => s.removeEntity);
+  const duplicateEntity = useEditorStore((s) => s.duplicateEntity);
   const selectEntity = useEditorStore((s) => s.selectEntity);
 
   if (!selectedId || !entity) return null;
@@ -75,17 +76,34 @@ export function EntityInspector() {
 
       {entity.kind !== "portal" && (
         <label className="ei-row">
-          <span>크기 (타일 폭) — 높이는 이미지 비율 자동</span>
-          <input
-            type="number"
-            min={0.5}
-            step={0.5}
-            value={entity.tilesW ?? 1}
-            onChange={(e) => setNum("tilesW", e.target.value)}
-          />
+          <span>타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절</span>
+          <div className="ei-grid2">
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={entity.tilesW ?? 1}
+              onChange={(e) => setNum("tilesW", e.target.value)}
+            />
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={entity.tilesH ?? 1}
+              onChange={(e) => setNum("tilesH", e.target.value)}
+            />
+          </div>
         </label>
       )}
 
+      <div className="ei-actions">
+        <button onClick={() => duplicateEntity(entity.id)}>복사 (⌘/Ctrl+D)</button>
+        {entity.kind !== "portal" && (
+          <button className={entity.flipX ? "on" : ""} onClick={() => updateEntity(entity.id, { flipX: !entity.flipX })}>
+            ⇄ 좌우반전
+          </button>
+        )}
+      </div>
       <button className="ei-delete" onClick={() => removeEntity(entity.id)}>
         삭제 (Del)
       </button>

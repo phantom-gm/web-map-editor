@@ -18,9 +18,12 @@ export interface MapEntity {
   respawnSec?: number; // monster: 리젠 간격(초)
   dialogId?: string; // npc: 대사/스크립트 id
 
-  // 스프라이트(object/monster/npc) 표시 크기 — 타일 폭 단위. 높이는 이미지 비율로 자동.
-  // 베이스 셀 바닥에 앵커되어 세워 그려진다. 배치 시 이미지 픽셀폭/타일폭으로 자동 산출.
+  // 스프라이트(object/monster/npc) 점유 타일 footprint — tilesW × tilesH 셀.
+  // 베이스 셀(gx,gy)이 뒤(상단) 코너, +gx/+gy 로 확장. 스프라이트는 이 영역을 덮도록 스케일되어
+  // 전면 바닥에 앵커된다. footprint 셀은 점유(이동불가) 표시. 배치 시 W=이미지폭/타일폭, H=1.
   tilesW?: number;
+  tilesH?: number;
+  flipX?: boolean; // 스프라이트 좌우반전
 }
 
 export interface EntityKindMeta {
@@ -40,6 +43,22 @@ export const ENTITY_META: Record<EntityKind, EntityKindMeta> = {
 
 export const isEntityKind = (s: string): s is EntityKind =>
   s === "portal" || s === "monster" || s === "npc" || s === "object";
+
+/** 엔티티 footprint 크기 [W,H] (타일 단위, 최소 1). 미설정이면 [1,1]. */
+export function footprintWH(e: MapEntity): [number, number] {
+  return [Math.max(1, e.tilesW ?? 1), Math.max(1, e.tilesH ?? 1)];
+}
+
+/** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */
+export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
+  if (e.kind === "portal") return [];
+  const [w, h] = footprintWH(e);
+  const out: Array<[number, number]> = [];
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) out.push([e.gx + i, e.gy + j]);
+  }
+  return out;
+}
 
 let _seq = 0;
 /** 인스턴스 고유 id. crypto.randomUUID 우선, 없으면 카운터+시각. */

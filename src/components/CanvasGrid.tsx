@@ -11,7 +11,7 @@ import {
 } from "../lib/grid";
 import { parseCellKey } from "../lib/cell";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
@@ -37,10 +37,13 @@ function entityRect(
   img: HTMLImageElement | null,
 ): [number, number, number, number] {
   if (img) {
-    const wpx = Math.max(0.25, e.tilesW ?? 1) * 2 * hw;
+    // footprint(W×H)을 덮는 빌보드. 폭 = (W+H)*hw, 전면 바닥-중앙 앵커.
+    const [fw, fh] = footprintWH(e);
+    const wpx = (fw + fh) * hw;
     const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
-    const bottom = cy + hh;
-    return [cx - wpx / 2, bottom - hpx, cx + wpx / 2, bottom];
+    const bx = cx + ((fw - fh) / 2) * hw; // footprint 바닥-중앙 x(베이스 셀 기준)
+    const by = cy + (fw + fh - 1) * hh; // footprint 전면 코너 바닥 y
+    return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
   }
   return [cx - hw, cy - hh, cx + hw, cy + hh];
 }
@@ -170,27 +173,63 @@ function draw(
       const img = lookup(e);
       const sel = e.id === selectedEntityId;
 
-      // 베이스 셀 표시(앵커 위치) — 항상.
-      diamondPath(ctx, cx, cy, hw, hh);
-      ctx.strokeStyle = meta.color;
-      ctx.globalAlpha = sel ? 1 : 0.7;
-      ctx.lineWidth = sel ? 2.5 : 1;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-
       let labelTop = cy - hh;
       if (img) {
-        // 비율 유지 빌보드 — 바닥 앵커.
+        const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
+
+        // 1) footprint 채움 — 스프라이트 아래(이동불가 스타일, 옅게).
+        ctx.fillStyle = meta.color + (sel ? "33" : "1f");
+        for (const [gx, gy] of cells) {
+          const [fx, fy] = cellToScreen(gx, gy, cam);
+          diamondPath(ctx, fx, fy, hw, hh);
+          ctx.fill();
+        }
+
+        // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. flipX 면 가로 미러.
         const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, img);
-        ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+        if (e.flipX) {
+          ctx.save();
+          ctx.translate(x0 + x1, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+          ctx.restore();
+        } else {
+          ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+        }
         labelTop = y0;
+
+        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록).
+        ctx.strokeStyle = meta.color;
+        ctx.globalAlpha = sel ? 0.95 : 0.55;
+        ctx.lineWidth = sel ? 1.6 : 1.2;
+        for (const [gx, gy] of cells) {
+          const [fx, fy] = cellToScreen(gx, gy, cam);
+          diamondPath(ctx, fx, fy, hw, hh);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
+        // 4) 선택 시 — 흰 선택 박스 + 리사이즈 핸들(박스 우하단 코너, 통상적 위치).
         if (sel) {
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2);
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = meta.color;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.rect(x1 - 7, y1 - 7, 14, 14);
+          ctx.fill();
+          ctx.stroke();
         }
       } else {
-        // 이미지 없음 → 종류색 마커 + 글자.
+        // 이미지 없음 → 종류색 마커 + 글자 + 베이스 셀 링.
+        diamondPath(ctx, cx, cy, hw, hh);
+        ctx.strokeStyle = meta.color;
+        ctx.globalAlpha = sel ? 1 : 0.7;
+        ctx.lineWidth = sel ? 2.5 : 1;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
         diamondPath(ctx, cx, cy, hw * 0.78, hh * 0.78);
         ctx.fillStyle = meta.color + "d0";
         ctx.fill();
@@ -262,10 +301,12 @@ export function CanvasGrid() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "rect" | "moveEntity" | null>(null);
+  const mode = useRef<"pan" | "paint" | "rect" | "moveEntity" | "resizeEntity" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
+  // 리사이즈 시작 기준: 잡은 셀(gx,gy) + 그 순간 크기(w,h). 델타 기반 → 점프 없음.
+  const resizeStart = useRef<{ gx: number; gy: number; w: number; h: number } | null>(null);
   const spaceDown = useRef(false);
   const didInit = useRef(false);
 
@@ -325,6 +366,12 @@ export function CanvasGrid() {
       } else if (mod && (e.key === "y" || e.key === "Y")) {
         e.preventDefault();
         useEditorStore.getState().redo();
+      } else if (mod && (e.key === "d" || e.key === "D")) {
+        const sel = useEditorStore.getState().selectedEntityId;
+        if (sel) {
+          e.preventDefault();
+          useEditorStore.getState().duplicateEntity(sel);
+        }
       } else if (e.key === "Delete" || e.key === "Backspace") {
         const sel = useEditorStore.getState().selectedEntityId;
         if (sel) {
@@ -369,7 +416,30 @@ export function CanvasGrid() {
       if (e.button !== 0) return;
       const tool = st.activeTool;
       if (tool === "cursor") {
-        // 커서 모드: 엔티티(스프라이트 본체 포함) 클릭 → 선택·이동. 빈 곳 → 맵 팬.
+        // 커서 모드: 선택된 스프라이트의 선택박스 우하단 코너/우·하단 가장자리 → 드래그 리사이즈.
+        const selEnt = st.selectedEntityId ? st.entities.find((e) => e.id === st.selectedEntityId) : null;
+        if (selEnt && selEnt.kind !== "portal") {
+          const img = makeEntityImageLookup(st.palette)(selEnt);
+          if (img) {
+            const z = st.camera.zoom;
+            const hw = (TW / 2) * z;
+            const hh = (TH / 2) * z;
+            const [scx, scy] = cellToScreen(selEnt.gx, selEnt.gy, st.camera);
+            const [x0, y0, x1, y1] = entityRect(selEnt, scx, scy, hw, hh, img);
+            const M = 10;
+            const nearRight = Math.abs(p.x - x1) <= M && p.y >= y0 - M && p.y <= y1 + M;
+            const nearBottom = Math.abs(p.y - y1) <= M && p.x >= x0 - M && p.x <= x1 + M;
+            if (nearRight || nearBottom) {
+              const [fw, fh] = footprintWH(selEnt);
+              mode.current = "resizeEntity";
+              movingId.current = selEnt.id;
+              resizeStart.current = { gx, gy, w: fw, h: fh }; // 잡은 셀 + 현재 크기
+              strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+              return;
+            }
+          }
+        }
+        // 엔티티(스프라이트 본체 포함) 클릭 → 선택·이동. 빈 곳 → 맵 팬.
         const hit = findEntityHit(p.x, p.y, st.entities, st.palette, st.camera);
         if (hit) {
           st.selectEntity(hit.id);
@@ -417,6 +487,10 @@ export function CanvasGrid() {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
       } else if (mode.current === "moveEntity" && movingId.current) {
         st.moveEntityTo(movingId.current, gx, gy);
+      } else if (mode.current === "resizeEntity" && movingId.current && resizeStart.current) {
+        // 델타 기반: 잡은 셀 대비 이동량을 시작 크기에 더함(점프 없음).
+        const rs = resizeStart.current;
+        st.setEntitySize(movingId.current, rs.w + (gx - rs.gx), rs.h + (gy - rs.gy));
       }
       st.setHover([gx, gy]);
     };
@@ -424,7 +498,7 @@ export function CanvasGrid() {
       const st = useEditorStore.getState();
       if (mode.current === "paint" && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
-      } else if (mode.current === "moveEntity" && strokeBefore.current) {
+      } else if ((mode.current === "moveEntity" || mode.current === "resizeEntity") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "rect") {
         const rp = st.rectPreview;
@@ -436,6 +510,7 @@ export function CanvasGrid() {
       strokeBefore.current = null;
       rectStart.current = null;
       movingId.current = null;
+      resizeStart.current = null;
     };
     const onLeave = () => {
       useEditorStore.getState().setHover(null);

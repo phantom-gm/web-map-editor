@@ -1,6 +1,6 @@
 import type { Blueprint, Layer, Cell } from "../types/blueprint";
 import { emptyLayer } from "../types/blueprint";
-import type { MapEntity } from "../types/entity";
+import { entityFootprintCells, type MapEntity } from "../types/entity";
 import { parseCellKey, type CellKey } from "./cell";
 
 export interface ImportResult {
@@ -82,12 +82,22 @@ export function buildBlueprint(args: {
   };
 
   // 이동불가 → TileAttributeTileMap (attributeBase 의 origin/size/palette 보존, cells 만 재생성)
+  // 수동 이동불가 ∪ 모든 오브젝트 footprint 점유 셀(중복 제거). 경계 밖은 무시.
   const ab = args.attributeBase;
   const [aox, aoy] = ab.origin ?? [0, 0];
-  const acells: Cell[] = [];
+  const blockedCells = new Set<string>();
   for (const k of args.blocked) {
     const [gx, gy] = parseCellKey(k);
-    if (!inBounds(gx, gy)) continue; // 경계 클램프
+    if (inBounds(gx, gy)) blockedCells.add(`${gx},${gy}`);
+  }
+  for (const e of args.entities) {
+    for (const [gx, gy] of entityFootprintCells(e)) {
+      if (inBounds(gx, gy)) blockedCells.add(`${gx},${gy}`);
+    }
+  }
+  const acells: Cell[] = [];
+  for (const key of blockedCells) {
+    const [gx, gy] = parseCellKey(key);
     acells.push([gx + aox, gy + aoy, 0]);
   }
   acells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);

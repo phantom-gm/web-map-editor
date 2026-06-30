@@ -7,7 +7,49 @@ import { buildBlueprint, type ImportResult } from "../lib/blueprintIO";
 import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
-import { isEntityKind, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
+import { footprintWH, isEntityKind, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
+
+/** 포탈 외 엔티티 중, 위치(gx,gy)+크기(w,h) footprint 가 excludeId 외 다른 것과 겹치면 true. */
+function overlapsAny(
+  entities: MapEntity[],
+  excludeId: string | null,
+  gx: number,
+  gy: number,
+  w: number,
+  h: number,
+): boolean {
+  for (const o of entities) {
+    if (o.id === excludeId || o.kind === "portal") continue;
+    const [ow, oh] = footprintWH(o);
+    if (gx < o.gx + ow && o.gx < gx + w && gy < o.gy + oh && o.gy < gy + h) return true;
+  }
+  return false;
+}
+
+/** (gx,gy) 에서 바깥으로 링 탐색해 w×h 가 맵 안에 들어가고 겹치지 않는 첫 위치. 없으면 null. */
+function findFreeSpot(
+  entities: MapEntity[],
+  excludeId: string | null,
+  gx: number,
+  gy: number,
+  w: number,
+  h: number,
+  W: number,
+  H: number,
+): [number, number] | null {
+  const fits = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x + w <= W && y + h <= H && !overlapsAny(entities, excludeId, x, y, w, h);
+  if (fits(gx, gy)) return [gx, gy];
+  for (let rad = 1; rad <= Math.max(W, H); rad++) {
+    for (let dy = -rad; dy <= rad; dy++) {
+      for (let dx = -rad; dx <= rad; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== rad) continue; // ring 둘레만
+        if (fits(gx + dx, gy + dy)) return [gx + dx, gy + dy];
+      }
+    }
+  }
+  return null;
+}
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
@@ -104,7 +146,9 @@ export interface EditorState {
 
   placeEntity: (kind: EntityKind, gx: number, gy: number) => void;
   moveEntityTo: (id: string, gx: number, gy: number) => void;
+  setEntitySize: (id: string, tilesW: number, tilesH: number) => void;
   removeEntity: (id: string) => void;
+  duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
   selectEntity: (id: string | null) => void;
 
@@ -297,16 +341,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const t = s.palette[s.activeIdx];
         name = t?.name;
         ruid = t?.ruid;
-        // 타일 폭 단위 기본 크기 — 이미지 픽셀폭 / 타일폭(반올림, 최소 1).
+        // footprint 폭 기본값 — 이미지 픽셀폭 / 타일폭(반올림, 최소 1). 깊이는 1.
         const nw = t?.img?.naturalWidth ?? 0;
         tilesW = nw > 0 ? Math.max(1, Math.round(nw / TW)) : 1;
       }
       const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid, tilesW };
+      if (kind !== "portal") ent.tilesH = 1;
       if (kind === "monster") ent.spawnCount = 1;
+      // 겹침 방지 — 클릭 셀이 다른 오브젝트와 겹치면 가장 가까운 빈 자리로.
+      if (kind !== "portal") {
+        const [fw, fh] = footprintWH(ent);
+        const free = findFreeSpot(s.entities, null, gx, gy, fw, fh, W, H);
+        if (free) {
+          ent.gx = free[0];
+          ent.gy = free[1];
+        }
+      }
       return {
         entities: [...s.entities, ent],
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: ent.id,
+        // 배치 후 즉시 커서(선택) 모드로 — 방금 만든 엔티티를 바로 리사이즈/이동/설정.
+        // 연속 생성이 아니라 "하나 만들고 조작". 또 만들려면 배치 도구를 다시 누른다.
+        activeTool: "cursor",
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
         redoStack: [],
       };
@@ -315,14 +372,33 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const [W, H] = s.size;
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
-      let changed = false;
-      const entities = s.entities.map((e) => {
-        if (e.id !== id || (e.gx === gx && e.gy === gy)) return e;
-        changed = true;
-        return { ...e, gx, gy };
-      });
-      if (!changed) return {};
-      return { entities, entitiesVer: s.entitiesVer + 1 };
+      const ent = s.entities.find((e) => e.id === id);
+      if (!ent || (ent.gx === gx && ent.gy === gy)) return {};
+      // 겹침 방지 — 이동 결과가 다른 오브젝트와 겹치면 이동하지 않음(직전 위치 유지).
+      if (ent.kind !== "portal") {
+        const [w, h] = footprintWH(ent);
+        if (gx + w > W || gy + h > H || overlapsAny(s.entities, id, gx, gy, w, h)) return {};
+      }
+      return {
+        entities: s.entities.map((e) => (e.id === id ? { ...e, gx, gy } : e)),
+        entitiesVer: s.entitiesVer + 1,
+      };
+    }),
+  // 드래그 리사이즈 라이브 갱신(언두 없음 — CanvasGrid 가 mousedown/up 으로 커밋). 경계+겹침으로 막음.
+  setEntitySize: (id, tilesW, tilesH) =>
+    set((s) => {
+      const [W, H] = s.size;
+      const ent = s.entities.find((e) => e.id === id);
+      if (!ent) return {};
+      const w = Math.max(1, Math.min(tilesW, W - ent.gx));
+      const h = Math.max(1, Math.min(tilesH, H - ent.gy));
+      if (ent.tilesW === w && ent.tilesH === h) return {};
+      // 겹침 방지 — 커질 때 다른 오브젝트와 겹치면 적용 안 함(직전 크기 유지).
+      if (ent.kind !== "portal" && overlapsAny(s.entities, id, ent.gx, ent.gy, w, h)) return {};
+      return {
+        entities: s.entities.map((e) => (e.id === id ? { ...e, tilesW: w, tilesH: h } : e)),
+        entitiesVer: s.entitiesVer + 1,
+      };
     }),
   removeEntity: (id) =>
     set((s) => {
@@ -343,6 +419,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
         entitiesVer: s.entitiesVer + 1,
+        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
+        redoStack: [],
+      };
+    }),
+  // 복사 — 같은 속성으로 원본 footprint 옆(+gx)에서 시작해 가장 가까운 빈 자리에 배치(겹침 방지). 선택+커서.
+  duplicateEntity: (id) =>
+    set((s) => {
+      const src = s.entities.find((e) => e.id === id);
+      if (!src) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
+      const [W, H] = s.size;
+      const [fw, fh] = footprintWH(src);
+      const startX = src.gx + fw; // 원본 footprint 바로 옆부터 탐색
+      const free = src.kind === "portal"
+        ? [Math.min(W - 1, src.gx + 1), src.gy] as [number, number]
+        : findFreeSpot(s.entities, null, startX, src.gy, fw, fh, W, H) ??
+          [Math.min(W - 1, startX), src.gy] as [number, number];
+      const copy: MapEntity = { ...src, id: newEntityId(), gx: free[0], gy: free[1] };
+      return {
+        entities: [...s.entities, copy],
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: copy.id,
+        activeTool: "cursor",
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
         redoStack: [],
       };

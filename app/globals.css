@@ -662,6 +662,30 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.entity-inspector .ei-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.entity-inspector .ei-actions button {
+  flex: 1 1 0;
+  background: #23262f;
+  color: #dfe2ea;
+  border: 1px solid #343846;
+  border-radius: 4px;
+  padding: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.entity-inspector .ei-actions button:hover {
+  background: #2c303a;
+}
+.entity-inspector .ei-actions button.on {
+  background: #2f6bd0;
+  border-color: #4a86e8;
+  color: #fff;
+}
 .entity-inspector .ei-delete {
   margin-top: 2px;
   background: #5a2424;
