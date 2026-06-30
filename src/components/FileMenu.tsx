@@ -10,6 +10,7 @@ export function FileMenu() {
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const mapName = useEditorStore((s) => s.mapName);
+  const dirty = useEditorStore((s) => s.dirty);
 
   // 바깥 클릭 시 닫기.
   useEffect(() => {
@@ -53,7 +54,10 @@ export function FileMenu() {
     const json = JSON.stringify(useEditorStore.getState().exportProject(), null, 2);
     try {
       const name = await saveProject(json, suggestedName(), forceNew);
-      if (name) setFileName(currentFileName() ?? name);
+      if (name) {
+        setFileName(currentFileName() ?? name);
+        useEditorStore.getState().markSaved(); // 저장 완료 → dirty 해제
+      }
     } catch (err) {
       alert("저장 실패: " + (err instanceof Error ? err.message : String(err)));
     }
@@ -77,8 +81,12 @@ export function FileMenu() {
 
   return (
     <div className="filemenu" ref={rootRef}>
-      <button className={open ? "fm-trigger open" : "fm-trigger"} onClick={() => setOpen((v) => !v)} title={fileName ? `현재 파일: ${fileName}` : "프로젝트 파일 (.json)"}>
-        파일 ▾
+      <button
+        className={open ? "fm-trigger open" : "fm-trigger"}
+        onClick={() => setOpen((v) => !v)}
+        title={(dirty ? "● 미저장 변경 있음 — " : "") + (fileName ? `현재 파일: ${fileName}` : "프로젝트 파일 (.json)")}
+      >
+        파일{dirty && <span className="fm-dirty">●</span>} ▾
       </button>
       {open && (
         <div className="fm-menu">

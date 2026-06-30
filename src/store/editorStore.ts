@@ -63,6 +63,31 @@ function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): Palet
   });
 }
 
+/**
+ * 기존 팔레트에 incoming 을 이름 기준으로 병합(중복은 기존 것 재사용, 신규는 append).
+ * 불러오기(프로젝트/blueprint) 시 기존 팔레트를 날리지 않기 위함.
+ * incoming 의 인덱스 → 병합 후 인덱스 매핑(map cells 재배치용)을 함께 반환.
+ */
+function mergePalette(
+  existing: PaletteTile[],
+  incoming: PaletteTile[],
+): { merged: PaletteTile[]; indexMap: number[] } {
+  const merged = [...existing];
+  const idxByName = new Map<string, number>();
+  merged.forEach((t, i) => {
+    if (!idxByName.has(t.name)) idxByName.set(t.name, i);
+  });
+  const indexMap = incoming.map((t) => {
+    const ex = idxByName.get(t.name);
+    if (ex !== undefined) return ex; // 같은 이름 → 기존 타일 재사용(이미지 보존)
+    const ni = merged.length;
+    merged.push(t);
+    idxByName.set(t.name, ni);
+    return ni;
+  });
+  return { merged, indexMap };
+}
+
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
@@ -119,6 +144,9 @@ export interface EditorState {
   entitiesVer: number;
   selectedEntityId: string | null;
 
+  dirty: boolean; // 마지막 저장/불러오기 이후 변경됨 — beforeunload 경고용
+  resetNonce: number; // 저장/불러오기/새로만들기 시 증가 → dirty 기준점 리셋 신호
+
   undoStack: Snapshot[];
   redoStack: Snapshot[];
 
@@ -161,6 +189,7 @@ export interface EditorState {
   exportProject: () => ProjectFile;
   loadProject: (p: ProjectFile, tiles: PaletteTile[]) => void;
   newProject: () => void;
+  markSaved: () => void;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -185,8 +214,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   entities: [],
   entitiesVer: 0,
   selectedEntityId: null,
+  dirty: false,
+  resetNonce: 0,
   undoStack: [],
   redoStack: [],
+
+  // 저장 완료 표시 — dirty 기준점 리셋(resetNonce 증가로 App 구독이 dirty 해제).
+  markSaved: () => set((s) => ({ resetNonce: s.resetNonce + 1 })),
 
   setMapName: (n) => set({ mapName: n }),
   setSize: (w, h) =>
@@ -222,9 +256,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         activeIdx: s.palette.length === 0 ? 0 : s.activeIdx,
       };
     }),
-  // 영속 저장에서 복원 — 팔레트가 비어 있을 때만 교체(사용자 추가분 덮어쓰기 방지).
+  // 영속 저장에서 복원 — 팔레트가 비어 있을 때만 교체(사용자 추가분 덮어쓰기 방지). 복원은 dirty 아님.
   hydratePalette: (tiles) =>
-    set((s) => (s.palette.length > 0 || tiles.length === 0 ? {} : { palette: tiles, activeIdx: 0 })),
+    set((s) =>
+      s.palette.length > 0 || tiles.length === 0
+        ? {}
+        : { palette: tiles, activeIdx: 0, resetNonce: s.resetNonce + 1 },
+    ),
   loadRegistry: (json) =>
     set((s) => {
       const reg = parseRegistry(json);
@@ -504,8 +542,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   importBlueprint: (r) =>
     set((s) => {
+      // 기존 팔레트 유지 + blueprint 팔레트 병합(이름 기준; 같은 이름 기존 타일의 이미지 보존) + cells 인덱스 리맵.
+      const incoming = resolvePalette(
+        r.paletteNames.map((name) => ({ name, url: "", img: null })),
+        s.registry,
+      );
+      const { merged, indexMap } = mergePalette(s.palette, incoming);
       s.ground.clear();
-      for (const [gx, gy, idx] of r.cells) s.ground.set(cellKey(gx, gy), idx);
+      for (const [gx, gy, idx] of r.cells) s.ground.set(cellKey(gx, gy), indexMap[idx] ?? idx);
       s.blocked.clear();
       for (const [gx, gy] of r.blocked) s.blocked.add(cellKey(gx, gy));
       return {
@@ -514,10 +558,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         groundOrigin: r.groundOrigin,
         staticLayer: r.staticLayer,
         attributeBase: r.attributeBase,
-        palette: resolvePalette(
-          r.paletteNames.map((name) => ({ name, url: "", img: null })),
-          s.registry,
-        ),
+        palette: merged,
         entities: r.entities,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
@@ -527,6 +568,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         fitNonce: s.fitNonce + 1,
         undoStack: [],
         redoStack: [],
+        dirty: false,
+        resetNonce: s.resetNonce + 1,
       };
     }),
   exportBlueprint: () => {
@@ -573,10 +616,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   // 프로젝트 열기 — tiles 는 호출측에서 img 까지 로드해 넘긴다(tilesFromStored).
+  // 기존 팔레트는 유지하고 프로젝트 팔레트를 병합(이름 기준) + ground 인덱스를 병합 인덱스로 리맵.
   loadProject: (p, tiles) =>
     set((s) => {
+      const { merged, indexMap } = mergePalette(s.palette, tiles);
       s.ground.clear();
-      for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), idx);
+      for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), indexMap[idx] ?? idx);
       s.blocked.clear();
       for (const [gx, gy] of p.blocked) s.blocked.add(cellKey(gx, gy));
       return {
@@ -585,7 +630,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         groundOrigin: p.groundOrigin,
         staticLayer: p.staticLayer ?? emptyLayer(),
         attributeBase: p.attributeBase ?? emptyLayer(),
-        palette: tiles,
+        palette: merged,
         entities: p.entities ?? [],
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
@@ -595,6 +640,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         fitNonce: s.fitNonce + 1,
         undoStack: [],
         redoStack: [],
+        dirty: false,
+        resetNonce: s.resetNonce + 1,
       };
     }),
 
@@ -618,6 +665,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         fitNonce: s.fitNonce + 1,
         undoStack: [],
         redoStack: [],
+        dirty: false,
+        resetNonce: s.resetNonce + 1,
       };
     }),
 }));
