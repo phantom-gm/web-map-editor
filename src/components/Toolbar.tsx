@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool } from "../store/editorStore";
+import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
 
 // 16/24 viewBox, stroke=currentColor — 선택 시 .sel 의 흰색을 그대로 따른다.
 const I = (children: ReactNode) => (
@@ -8,7 +9,7 @@ const I = (children: ReactNode) => (
   </svg>
 );
 
-const ICONS: Record<Tool, ReactNode> = {
+const ICONS: Partial<Record<Tool, ReactNode>> = {
   // 일반 커서(선택) — 마우스 포인터
   cursor: I(<path d="M5 3l0 14 3.5-3.5 2.5 5 2-1-2.5-5L17 12 5 3z" fill="currentColor" stroke="none" />),
   // 브러시 — 손잡이 + 붓털
@@ -82,6 +83,24 @@ export function Toolbar() {
           {ICONS[t.id]}
         </button>
       ))}
+      <span className="sep" />
+      {ENTITY_KINDS.map((k) => {
+        const meta = ENTITY_META[k];
+        return (
+          <button
+            key={k}
+            className={"tool-btn ent-btn" + (tool === k ? " sel" : "")}
+            data-label={`${meta.label} 배치`}
+            aria-label={`${meta.label} 배치`}
+            aria-pressed={tool === k}
+            onClick={() => setTool(k)}
+          >
+            <span className="ent-badge" style={{ background: meta.color }}>
+              {meta.marker}
+            </span>
+          </button>
+        );
+      })}
       <span className="sep" />
       <button onClick={undo} disabled={!canUndo} title="실행취소 (⌘/Ctrl+Z)">
         ↶ 취소

@@ -63,6 +63,59 @@ body {
   color: #7b8194;
   font-size: 12px;
 }
+.topbar .topbar-sep {
+  width: 1px;
+  height: 20px;
+  background: #343846;
+}
+
+/* ── file menu dropdown ── */
+.filemenu {
+  position: relative;
+  display: inline-flex;
+}
+.filemenu .fm-trigger.open {
+  background: #343846;
+  border-color: #4a86e8;
+}
+.filemenu .fm-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  background: #1d1f26;
+  border: 1px solid #3a3e4a;
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 40;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.filemenu .fm-menu button {
+  background: transparent;
+  border: none;
+  color: #dfe2ea;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.filemenu .fm-menu button:hover {
+  background: #2f6bd0;
+}
+.filemenu .fm-current {
+  border-top: 1px solid #2a2d36;
+  margin-top: 2px;
+  padding: 6px 10px 2px;
+  color: #7b8194;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ── tool bar ── */
 .toolbar {
@@ -175,11 +228,14 @@ body {
 .palette-subhead {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 4px 10px 6px;
   border-bottom: 1px solid #2a2d36;
 }
 .palette-subhead .reg-load {
+  flex: 0 0 auto;
+  white-space: nowrap;
   background: #23262f;
   color: #cfd4e0;
   border: 1px solid #343846;
@@ -193,6 +249,7 @@ body {
 }
 .palette-subhead .reg-count {
   margin-left: auto;
+  white-space: nowrap;
   font-size: 11px;
   color: #9aa0b0;
 }
@@ -514,12 +571,109 @@ body {
   color: #eafff0;
 }
 
+/* 엔티티 배치 도구 버튼 — 종류색 마커 배지 */
+.toolbar .ent-btn .ent-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #0e0f12;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 /* ── canvas ── */
 .canvas-wrap {
   flex: 1 1 auto;
   position: relative;
   overflow: hidden;
   min-width: 0;
+}
+
+/* ── entity inspector (캔버스 우상단 플로팅) ── */
+.entity-inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 230px;
+  background: #16181d;
+  border: 1px solid #3a3e4a;
+  border-radius: 8px;
+  padding: 10px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.entity-inspector .ei-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.entity-inspector .ei-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.entity-inspector .ei-pos {
+  color: #7b8194;
+  font-weight: 400;
+  font-size: 11px;
+}
+.entity-inspector .ei-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #9aa0b0;
+  cursor: pointer;
+  font-size: 13px;
+}
+.entity-inspector .ei-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #9aa0b0;
+}
+.entity-inspector .ei-row input {
+  background: #0e0f12;
+  color: #dfe2ea;
+  border: 1px solid #2a2d36;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+}
+.entity-inspector .ei-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.entity-inspector .ei-ruid {
+  font-size: 10px;
+  color: #6b7180;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entity-inspector .ei-delete {
+  margin-top: 2px;
+  background: #5a2424;
+  color: #ffd9d3;
+  border: 1px solid #8a3636;
+  border-radius: 4px;
+  padding: 5px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.entity-inspector .ei-delete:hover {
+  background: #6f2c2c;
 }
 .canvas-wrap canvas {
   display: block;

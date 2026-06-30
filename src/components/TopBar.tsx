@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { parseBlueprint, downloadText } from "../lib/blueprintIO";
 import { validateMap } from "../lib/validate";
+import { FileMenu } from "./FileMenu";
 
 export function TopBar() {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -80,9 +81,15 @@ export function TopBar() {
           onChange={(e) => setSize(size[0], parseInt(e.target.value, 10) || 1)}
         />
       </label>
-      <button onClick={() => fileRef.current?.click()}>Import</button>
+      <FileMenu />
+      <span className="topbar-sep" />
+      <button onClick={() => fileRef.current?.click()} title="게임 blueprint JSON 가져오기">
+        Import
+      </button>
       <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={onImportFile} />
-      <button onClick={onExport}>Export</button>
+      <button onClick={onExport} title="게임 blueprint JSON 내보내기">
+        Export
+      </button>
       <button onClick={onExportRuids} title="palette_ruids_<Map>.json — build_map.cjs 가 소비">
         RUID export
       </button>

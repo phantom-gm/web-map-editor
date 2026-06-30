@@ -11,6 +11,8 @@ import {
 } from "../lib/grid";
 import { parseCellKey } from "../lib/cell";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
+import { ENTITY_META, type MapEntity } from "../types/entity";
+import { EntityInspector } from "./EntityInspector";
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
   ctx.beginPath();
@@ -31,6 +33,8 @@ function draw(
   blocked: Set<string>,
   palette: PaletteTile[],
   rectPreview: [number, number, number, number] | null,
+  entities: MapEntity[],
+  selectedEntityId: string | null,
 ) {
   ctx.clearRect(0, 0, dims.w, dims.h);
   ctx.fillStyle = "#15161a";
@@ -95,6 +99,62 @@ function draw(
     }
   }
 
+  // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
+  if (entities.length > 0) {
+    const byRuid = new Map<string, HTMLImageElement>();
+    const byName = new Map<string, HTMLImageElement>();
+    for (const t of palette) {
+      if (!t.img) continue;
+      if (t.ruid) byRuid.set(t.ruid, t.img);
+      if (t.name) byName.set(t.name, t.img);
+    }
+    const sorted = [...entities].sort((a, b) => a.gy - b.gy || a.gx - b.gx);
+    for (const e of sorted) {
+      if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
+      const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
+      if (!vis(cx, cy)) continue;
+      const meta = ENTITY_META[e.kind];
+      const img =
+        e.kind !== "portal"
+          ? (e.ruid && byRuid.get(e.ruid)) || (e.name && byName.get(e.name)) || null
+          : null;
+      if (img) {
+        ctx.drawImage(img, cx - hw, cy - hh, hw * 2, hh * 2);
+      } else {
+        diamondPath(ctx, cx, cy, hw * 0.78, hh * 0.78);
+        ctx.fillStyle = meta.color + "d0";
+        ctx.fill();
+        ctx.fillStyle = "#0e0f12";
+        ctx.font = `bold ${Math.max(9, Math.round(hh * 0.9))}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(meta.marker, cx, cy);
+      }
+      // 종류색 외곽 링 + 선택 강조
+      diamondPath(ctx, cx, cy, hw, hh);
+      ctx.strokeStyle = meta.color;
+      ctx.lineWidth = e.id === selectedEntityId ? 3 : 1.5;
+      ctx.stroke();
+      if (e.id === selectedEntityId) {
+        diamondPath(ctx, cx, cy, hw + 4, hh + 4);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      // 라벨
+      if (e.name && cam.zoom > 0.4) {
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        const w = ctx.measureText(e.name).width;
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(cx - w / 2 - 3, cy - hh - 16, w + 6, 14);
+        ctx.fillStyle = meta.color;
+        ctx.fillText(e.name, cx, cy - hh - 3);
+      }
+    }
+  }
+
   // rect 미리보기
   if (rectPreview) {
     const [x0, y0, x1, y1] = rectPreview;
@@ -136,9 +196,10 @@ export function CanvasGrid() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "rect" | null>(null);
+  const mode = useRef<"pan" | "paint" | "rect" | "moveEntity" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
+  const movingId = useRef<string | null>(null);
   const spaceDown = useRef(false);
   const didInit = useRef(false);
 
@@ -153,6 +214,9 @@ export function CanvasGrid() {
   const palette = useEditorStore((s) => s.palette);
   const rectPreview = useEditorStore((s) => s.rectPreview);
   const activeTool = useEditorStore((s) => s.activeTool);
+  const entities = useEditorStore((s) => s.entities);
+  const entitiesVer = useEditorStore((s) => s.entitiesVer);
+  const selectedEntityId = useEditorStore((s) => s.selectedEntityId);
   const setCamera = useEditorStore((s) => s.setCamera);
 
   useEffect(() => {
@@ -195,6 +259,12 @@ export function CanvasGrid() {
       } else if (mod && (e.key === "y" || e.key === "Y")) {
         e.preventDefault();
         useEditorStore.getState().redo();
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        const sel = useEditorStore.getState().selectedEntityId;
+        if (sel) {
+          e.preventDefault();
+          useEditorStore.getState().removeEntity(sel);
+        }
       }
     };
     const ku = (e: KeyboardEvent) => {
@@ -232,7 +302,29 @@ export function CanvasGrid() {
       }
       if (e.button !== 0) return;
       const tool = st.activeTool;
-      if (tool === "cursor") return; // 일반 커서: 좌클릭으로 칠하지 않음(hover·팬만)
+      if (tool === "cursor") {
+        // 커서 모드: 엔티티 클릭 → 선택·이동. 빈 곳 → 맵 팬. 칠하지 않음.
+        const hit = st.entityAt(gx, gy);
+        if (hit) {
+          st.selectEntity(hit.id);
+          mode.current = "moveEntity";
+          movingId.current = hit.id;
+          strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+        } else {
+          st.selectEntity(null);
+          mode.current = "pan";
+          drag.current = p;
+        }
+        return;
+      }
+      if (tool === "portal" || tool === "monster" || tool === "npc" || tool === "object") {
+        if (tool !== "portal" && !st.palette[st.activeIdx]) {
+          alert("먼저 팔레트에서 배치할 스프라이트를 선택하세요 (스토리지에서 불러오기).");
+          return;
+        }
+        st.placeEntity(tool, gx, gy);
+        return;
+      }
       if (tool === "eyedropper") {
         st.pickAt(gx, gy);
       } else if (tool === "rect") {
@@ -240,9 +332,9 @@ export function CanvasGrid() {
         rectStart.current = [gx, gy];
         st.setRectPreview([gx, gy, gx, gy]);
       } else {
-        // brush / eraser / block — 스트로크 단위. 시작 시 ground+blocked 둘 다 스냅샷.
+        // brush / eraser / block — 스트로크 단위. 시작 시 ground+blocked+entities 스냅샷.
         mode.current = "paint";
-        strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked) };
+        strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
         st.applyTool(gx, gy);
       }
     };
@@ -257,12 +349,16 @@ export function CanvasGrid() {
         st.applyTool(gx, gy);
       } else if (mode.current === "rect" && rectStart.current) {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
+      } else if (mode.current === "moveEntity" && movingId.current) {
+        st.moveEntityTo(movingId.current, gx, gy);
       }
       st.setHover([gx, gy]);
     };
     const onUp = () => {
       const st = useEditorStore.getState();
       if (mode.current === "paint" && strokeBefore.current) {
+        st.commitStroke(strokeBefore.current);
+      } else if (mode.current === "moveEntity" && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "rect") {
         const rp = st.rectPreview;
@@ -273,6 +369,7 @@ export function CanvasGrid() {
       drag.current = null;
       strokeBefore.current = null;
       rectStart.current = null;
+      movingId.current = null;
     };
     const onLeave = () => {
       useEditorStore.getState().setHover(null);
@@ -311,12 +408,27 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview);
-  }, [dims, size, camera, hover, ground, groundVer, blocked, blockedVer, palette, rectPreview]);
+    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId);
+  }, [
+    dims,
+    size,
+    camera,
+    hover,
+    ground,
+    groundVer,
+    blocked,
+    blockedVer,
+    palette,
+    rectPreview,
+    entities,
+    entitiesVer,
+    selectedEntityId,
+  ]);
 
   return (
     <div ref={wrapRef} className="canvas-wrap">
-      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" ? "default" : "crosshair" }} />
+      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" ? "grab" : "crosshair" }} />
+      <EntityInspector />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { Blueprint, Layer, Cell } from "../types/blueprint";
 import { emptyLayer } from "../types/blueprint";
+import type { MapEntity } from "../types/entity";
 import { parseCellKey, type CellKey } from "./cell";
 
 export interface ImportResult {
@@ -11,6 +12,7 @@ export interface ImportResult {
   blocked: Array<[number, number]>; // 이동불가 셀(0-based) — TileAttributeTileMap
   staticLayer: Layer; // 에디터 미편집 → verbatim 보존
   attributeBase: Layer; // origin/size/palette 보존(cells 는 blocked 로 재생성)
+  entities: MapEntity[]; // 포탈/몬스터/NPC/오브젝트(0-based 로 변환)
 }
 
 /** blueprint JSON → 에디터용. Ground/Attribute cells 를 origin 빼서 0-based 로 변환. */
@@ -27,6 +29,13 @@ export function parseBlueprint(json: unknown): ImportResult {
   const [aox, aoy] = a.origin ?? [0, 0];
   const blocked = (a.cells ?? []).map(([gx, gy]) => [gx - aox, gy - aoy] as [number, number]);
 
+  // 엔티티 — 절대좌표 → ground origin 빼서 0-based 로.
+  const entities: MapEntity[] = (bp.entities ?? []).map((e) => ({
+    ...e,
+    gx: e.gx - ox,
+    gy: e.gy - oy,
+  }));
+
   return {
     mapName: bp.map ?? "imported",
     size: g.size ?? [20, 20],
@@ -36,6 +45,7 @@ export function parseBlueprint(json: unknown): ImportResult {
     blocked,
     staticLayer: bp.layers?.StaticTileMap ?? emptyLayer(),
     attributeBase: a,
+    entities,
   };
 }
 
@@ -49,6 +59,7 @@ export function buildBlueprint(args: {
   blocked: Set<CellKey>;
   staticLayer: Layer;
   attributeBase: Layer;
+  entities: MapEntity[];
 }): Blueprint {
   const [W, H] = args.size;
   const inBounds = (gx: number, gy: number) => gx >= 0 && gy >= 0 && gx < W && gy < H;
@@ -92,6 +103,11 @@ export function buildBlueprint(args: {
     cells: acells,
   };
 
+  // 엔티티 — 0-based → 절대좌표(ground origin). 경계 밖은 무시.
+  const entities: MapEntity[] = args.entities
+    .filter((e) => inBounds(e.gx, e.gy))
+    .map((e) => ({ ...e, gx: e.gx + ox, gy: e.gy + oy }));
+
   return {
     map: args.mapName,
     layers: {
@@ -99,6 +115,7 @@ export function buildBlueprint(args: {
       StaticTileMap: args.staticLayer,
       TileAttributeTileMap: attribute,
     },
+    entities,
   };
 }
 

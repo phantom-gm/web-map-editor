@@ -141,16 +141,18 @@ export function PalettePanel() {
     <div className="palette">
       <div className="palette-head">
         <span>팔레트 ({palette.length})</span>
-        <button onClick={() => fileRef.current?.click()}>+ PNG</button>
-        <button onClick={() => dirRef.current?.click()} title="폴더 선택 — 폴더명이 카테고리가 됩니다">
+        <button onClick={() => fileRef.current?.click()} title="PNG 이미지 파일 추가 (여러 장 선택)">
+          + PNG
+        </button>
+        <button onClick={() => dirRef.current?.click()} title="폴더 통째로 PNG 추가 — 폴더명이 카테고리가 됩니다">
           + 폴더
         </button>
         <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
         <input ref={dirRef} type="file" multiple hidden onChange={onFiles} />
       </div>
       <div className="palette-subhead">
-        <button className="reg-load" onClick={() => regRef.current?.click()} title="오프라인: tile_registry.json / palette_ruids.json">
-          파일
+        <button className="reg-load" onClick={() => regRef.current?.click()} title="RUID 매핑 JSON 불러오기(이미지 아님) — 오프라인: tile_registry.json / palette_ruids.json">
+          RUID파일
         </button>
         <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={onRegistry} />
         <button className="reg-load" onClick={onResolveOnline} disabled={busy !== "" || palette.length === 0} title="서버 /api/resolve 로 등록여부 조회">

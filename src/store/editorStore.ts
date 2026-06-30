@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import type { Camera } from "../lib/grid";
-import type { PaletteTile } from "../lib/palette";
+import { toStoredTile, type PaletteTile } from "../lib/palette";
 import type { Blueprint, Layer } from "../types/blueprint";
 import { emptyLayer } from "../types/blueprint";
 import { buildBlueprint, type ImportResult } from "../lib/blueprintIO";
-import { cellKey, type CellKey } from "../lib/cell";
+import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
+import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
+import { isEntityKind, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
@@ -21,15 +23,21 @@ const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block";
+export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | EntityKind;
 type Ground = Map<CellKey, number>;
 type Blocked = Set<CellKey>;
+type Entities = MapEntity[];
 export interface Snapshot {
   ground: Ground;
   blocked: Blocked;
+  entities: Entities; // 불변 배열(액션마다 새 배열) → 참조 보관으로 스냅샷
 }
 
-const snap = (g: Ground, b: Blocked): Snapshot => ({ ground: new Map(g), blocked: new Set(b) });
+const snap = (g: Ground, b: Blocked, e: Entities): Snapshot => ({
+  ground: new Map(g),
+  blocked: new Set(b),
+  entities: e,
+});
 function groundEqual(a: Ground, b: Ground): boolean {
   if (a.size !== b.size) return false;
   for (const [k, v] of a) if (b.get(k) !== v) return false;
@@ -62,6 +70,10 @@ export interface EditorState {
   activeIdx: number;
   rectPreview: [number, number, number, number] | null;
 
+  entities: Entities;
+  entitiesVer: number;
+  selectedEntityId: string | null;
+
   undoStack: Snapshot[];
   redoStack: Snapshot[];
 
@@ -87,12 +99,22 @@ export interface EditorState {
   setRectPreview: (r: [number, number, number, number] | null) => void;
   clearAll: () => void;
 
+  placeEntity: (kind: EntityKind, gx: number, gy: number) => void;
+  moveEntityTo: (id: string, gx: number, gy: number) => void;
+  removeEntity: (id: string) => void;
+  updateEntity: (id: string, patch: Partial<MapEntity>) => void;
+  selectEntity: (id: string | null) => void;
+  entityAt: (gx: number, gy: number) => MapEntity | null;
+
   commitStroke: (before: Snapshot) => void;
   undo: () => void;
   redo: () => void;
 
   importBlueprint: (r: ImportResult) => void;
   exportBlueprint: () => Blueprint;
+  exportProject: () => ProjectFile;
+  loadProject: (p: ProjectFile, tiles: PaletteTile[]) => void;
+  newProject: () => void;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -114,6 +136,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   activeTool: "brush",
   activeIdx: 0,
   rectPreview: null,
+  entities: [],
+  entitiesVer: 0,
+  selectedEntityId: null,
   undoStack: [],
   redoStack: [],
 
@@ -175,7 +200,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     for (const t of s.palette) if (t.ruid) ruids[t.name] = t.ruid;
     return { map: s.mapName, ruids };
   },
-  setActiveIdx: (i) => set({ activeIdx: i, activeTool: "brush" }),
+  // 팔레트 타일 선택 — 엔티티 배치 도구가 활성이면 그대로 두고(에셋만 바꿈), 아니면 브러시로.
+  setActiveIdx: (i) =>
+    set((s) => ({ activeIdx: i, activeTool: isEntityKind(s.activeTool) ? s.activeTool : "brush" })),
   setTool: (t) => set({ activeTool: t }),
 
   applyTool: (gx, gy) =>
@@ -206,7 +233,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fillRect: (x0, y0, x1, y1) =>
     set((s) => {
       const [W, H] = s.size;
-      const before = snap(s.ground, s.blocked);
+      const before = snap(s.ground, s.blocked, s.entities);
       const minX = Math.max(0, Math.min(x0, x1));
       const maxX = Math.min(W - 1, Math.max(x0, x1));
       const minY = Math.max(0, Math.min(y0, y1));
@@ -235,11 +262,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   clearAll: () =>
     set((s) => {
-      if (s.ground.size === 0 && s.blocked.size === 0) return {};
-      const before = snap(s.ground, s.blocked);
+      if (s.ground.size === 0 && s.blocked.size === 0 && s.entities.length === 0) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
       s.ground.clear();
       s.blocked.clear();
       return {
+        entities: [],
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
         groundVer: s.groundVer + 1,
         blockedVer: s.blockedVer + 1,
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
@@ -247,9 +277,81 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
     }),
 
+  // 엔티티 배치. monster/npc/object 는 현재 선택 팔레트 타일을 에셋으로 참조. portal 은 마커.
+  placeEntity: (kind, gx, gy) =>
+    set((s) => {
+      const [W, H] = s.size;
+      if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
+      let name: string | undefined;
+      let ruid: string | undefined;
+      if (kind === "portal") {
+        name = "portal";
+      } else {
+        const t = s.palette[s.activeIdx];
+        name = t?.name;
+        ruid = t?.ruid;
+      }
+      const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid };
+      if (kind === "monster") ent.spawnCount = 1;
+      return {
+        entities: [...s.entities, ent],
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: ent.id,
+        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
+        redoStack: [],
+      };
+    }),
+  moveEntityTo: (id, gx, gy) =>
+    set((s) => {
+      const [W, H] = s.size;
+      if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
+      let changed = false;
+      const entities = s.entities.map((e) => {
+        if (e.id !== id || (e.gx === gx && e.gy === gy)) return e;
+        changed = true;
+        return { ...e, gx, gy };
+      });
+      if (!changed) return {};
+      return { entities, entitiesVer: s.entitiesVer + 1 };
+    }),
+  removeEntity: (id) =>
+    set((s) => {
+      if (!s.entities.some((e) => e.id === id)) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
+      return {
+        entities: s.entities.filter((e) => e.id !== id),
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: s.selectedEntityId === id ? null : s.selectedEntityId,
+        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
+        redoStack: [],
+      };
+    }),
+  updateEntity: (id, patch) =>
+    set((s) => {
+      if (!s.entities.some((e) => e.id === id)) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
+      return {
+        entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+        entitiesVer: s.entitiesVer + 1,
+        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
+        redoStack: [],
+      };
+    }),
+  selectEntity: (id) => set({ selectedEntityId: id }),
+  entityAt: (gx, gy) => {
+    const es = get().entities;
+    for (let i = es.length - 1; i >= 0; i--) if (es[i].gx === gx && es[i].gy === gy) return es[i];
+    return null;
+  },
+
   commitStroke: (before) =>
     set((s) => {
-      if (groundEqual(before.ground, s.ground) && blockedEqual(before.blocked, s.blocked)) {
+      if (
+        groundEqual(before.ground, s.ground) &&
+        blockedEqual(before.blocked, s.blocked) &&
+        before.entities === s.entities
+      ) {
         return {};
       }
       return {
@@ -262,12 +364,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (s.undoStack.length === 0) return {};
       const prev = s.undoStack[s.undoStack.length - 1];
-      const cur = snap(s.ground, s.blocked);
+      const cur = snap(s.ground, s.blocked, s.entities);
       s.ground.clear();
       for (const [k, v] of prev.ground) s.ground.set(k, v);
       s.blocked.clear();
       for (const k of prev.blocked) s.blocked.add(k);
       return {
+        entities: prev.entities,
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
         undoStack: s.undoStack.slice(0, -1),
         redoStack: [...s.redoStack, cur].slice(-UNDO_CAP),
         groundVer: s.groundVer + 1,
@@ -278,12 +383,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (s.redoStack.length === 0) return {};
       const next = s.redoStack[s.redoStack.length - 1];
-      const cur = snap(s.ground, s.blocked);
+      const cur = snap(s.ground, s.blocked, s.entities);
       s.ground.clear();
       for (const [k, v] of next.ground) s.ground.set(k, v);
       s.blocked.clear();
       for (const k of next.blocked) s.blocked.add(k);
       return {
+        entities: next.entities,
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
         redoStack: s.redoStack.slice(0, -1),
         undoStack: [...s.undoStack, cur].slice(-UNDO_CAP),
         groundVer: s.groundVer + 1,
@@ -307,6 +415,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           r.paletteNames.map((name) => ({ name, url: "", img: null })),
           s.registry,
         ),
+        entities: r.entities,
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
         activeIdx: 0,
         groundVer: s.groundVer + 1,
         blockedVer: s.blockedVer + 1,
@@ -326,6 +437,84 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       blocked: s.blocked,
       staticLayer: s.staticLayer,
       attributeBase: s.attributeBase,
+      entities: s.entities,
     });
   },
+
+  // 전체 프로젝트(맵 + 팔레트) 직렬화. blueprint Export 와 별개.
+  exportProject: () => {
+    const s = get();
+    const ground: Array<[number, number, number]> = [];
+    for (const [k, idx] of s.ground) {
+      const [gx, gy] = parseCellKey(k);
+      ground.push([gx, gy, idx]);
+    }
+    const blocked: Array<[number, number]> = [];
+    for (const k of s.blocked) {
+      const [gx, gy] = parseCellKey(k);
+      blocked.push([gx, gy]);
+    }
+    return {
+      type: PROJECT_TYPE,
+      version: 1,
+      map: s.mapName,
+      size: s.size,
+      groundOrigin: s.groundOrigin,
+      ground,
+      blocked,
+      palette: s.palette.map(toStoredTile),
+      staticLayer: s.staticLayer,
+      attributeBase: s.attributeBase,
+      entities: s.entities,
+    };
+  },
+
+  // 프로젝트 열기 — tiles 는 호출측에서 img 까지 로드해 넘긴다(tilesFromStored).
+  loadProject: (p, tiles) =>
+    set((s) => {
+      s.ground.clear();
+      for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), idx);
+      s.blocked.clear();
+      for (const [gx, gy] of p.blocked) s.blocked.add(cellKey(gx, gy));
+      return {
+        mapName: p.map,
+        size: p.size,
+        groundOrigin: p.groundOrigin,
+        staticLayer: p.staticLayer ?? emptyLayer(),
+        attributeBase: p.attributeBase ?? emptyLayer(),
+        palette: tiles,
+        entities: p.entities ?? [],
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
+        activeIdx: 0,
+        groundVer: s.groundVer + 1,
+        blockedVer: s.blockedVer + 1,
+        fitNonce: s.fitNonce + 1,
+        undoStack: [],
+        redoStack: [],
+      };
+    }),
+
+  // 새 프로젝트 — 맵(칠한 셀·이동불가·엔티티·이름·크기)만 초기화. 팔레트(자산 라이브러리)는 유지.
+  newProject: () =>
+    set((s) => {
+      s.ground.clear();
+      s.blocked.clear();
+      return {
+        mapName: "newmap",
+        size: [20, 20],
+        groundOrigin: [0, 0],
+        staticLayer: emptyLayer(),
+        attributeBase: emptyLayer(),
+        entities: [],
+        entitiesVer: s.entitiesVer + 1,
+        selectedEntityId: null,
+        camera: { x: 0, y: 0, zoom: 1 },
+        groundVer: s.groundVer + 1,
+        blockedVer: s.blockedVer + 1,
+        fitNonce: s.fitNonce + 1,
+        undoStack: [],
+        redoStack: [],
+      };
+    }),
 }));

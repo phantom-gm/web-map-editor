@@ -19,6 +19,7 @@ export interface Blueprint {
     StaticTileMap: Layer;
     TileAttributeTileMap: Layer;
   };
+  entities?: import("./entity").MapEntity[]; // 포탈/몬스터/NPC/오브젝트(절대좌표)
 }
 
 export const emptyLayer = (): Layer => ({
