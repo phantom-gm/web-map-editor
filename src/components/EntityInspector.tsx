@@ -70,7 +70,7 @@ export function EntityInspector() {
             </label>
           </div>
           <label className="ei-row">
-            <span>도착 방향 (destFacing)</span>
+            <span>도착 방향 (destFacing) — 기본 SE, 신경 안 쓰면 그대로 둬도 됨</span>
             <select value={entity.destFacing ?? ""} onChange={(e) => updateEntity(entity.id, { destFacing: (e.target.value || undefined) as MapEntity["destFacing"] })}>
               <option value="">— 선택 —</option>
               {FACINGS.map((f) => (
@@ -85,27 +85,23 @@ export function EntityInspector() {
 
       {(entity.kind === "monster" || entity.kind === "npc") && (
         <label className="ei-row">
-          <span>NpcClass 종류 (npcClassId)</span>
-          {npcOptions.length > 0 ? (
-            <select value={entity.npcClassId ?? ""} onChange={(e) => setNum("npcClassId", e.target.value)}>
-              <option value="">— 선택 —</option>
+          <span>NpcClass 종류 (npcClassId) — 카탈로그 선택 또는 직접 입력</span>
+          {npcOptions.length > 0 && (
+            <select value={currentInCatalog ? String(entity.npcClassId) : ""} onChange={(e) => setNum("npcClassId", e.target.value)}>
+              <option value="">— 카탈로그에서 선택 —</option>
               {npcOptions.map((n) => (
                 <option key={n.id} value={n.id}>
                   {npcClassLabel(n)}
                 </option>
               ))}
-              {entity.npcClassId != null && !currentInCatalog && (
-                <option value={entity.npcClassId}>{entity.npcClassId} — (카탈로그에 없음)</option>
-              )}
             </select>
-          ) : (
-            <input
-              type="number"
-              value={entity.npcClassId ?? ""}
-              onChange={(e) => setNum("npcClassId", e.target.value)}
-              placeholder="NpcClassID 직접 입력 (카탈로그 없음)"
-            />
           )}
+          <input
+            type="number"
+            value={entity.npcClassId ?? ""}
+            onChange={(e) => setNum("npcClassId", e.target.value)}
+            placeholder="NpcClassID 직접 입력 (예: 1002)"
+          />
         </label>
       )}
 
