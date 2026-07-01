@@ -27,7 +27,8 @@ export function FileMenu() {
   // Cmd/Ctrl+S → 저장 (브라우저 기본 저장 다이얼로그 차단).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+      // e.code(물리 S키) — 한글 IME 에서도 동작.
+      if ((e.metaKey || e.ctrlKey) && e.code === "KeyS") {
         e.preventDefault();
         void doSaveRef.current?.(false);
       }

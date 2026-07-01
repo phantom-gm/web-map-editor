@@ -11,7 +11,8 @@ export const TOOL_SHORTCUTS: Partial<Record<Tool, string>> = {
   object: "O",
 };
 
-// 키(소문자) → 도구 역참조. keydown 에서 e.key.toLowerCase() 로 조회.
-export const KEY_TO_TOOL: Record<string, Tool> = Object.fromEntries(
-  Object.entries(TOOL_SHORTCUTS).map(([tool, key]) => [key.toLowerCase(), tool]),
+// KeyboardEvent.code(물리 키: "KeyV" 등) → 도구. e.key 는 한글 IME/레이아웃에 따라
+// 자모("ㅠ")로 바뀌어 매칭이 깨지므로, IME·레이아웃 무관한 code 로 조회한다.
+export const CODE_TO_TOOL: Record<string, Tool> = Object.fromEntries(
+  Object.entries(TOOL_SHORTCUTS).map(([tool, key]) => [`Key${key}`, tool]),
 ) as Record<string, Tool>;

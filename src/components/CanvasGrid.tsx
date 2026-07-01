@@ -10,7 +10,7 @@ import {
   type Dims,
 } from "../lib/grid";
 import { parseCellKey } from "../lib/cell";
-import { KEY_TO_TOOL } from "../lib/shortcuts";
+import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
@@ -386,15 +386,16 @@ export function CanvasGrid() {
       }
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      // 단축키는 e.code(물리 키)로 판정 — 한글 IME/레이아웃에서 e.key 가 자모로 바뀌어도 동작.
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && (e.key === "z" || e.key === "Z")) {
+      if (mod && e.code === "KeyZ") {
         e.preventDefault();
         if (e.shiftKey) useEditorStore.getState().redo();
         else useEditorStore.getState().undo();
-      } else if (mod && (e.key === "y" || e.key === "Y")) {
+      } else if (mod && e.code === "KeyY") {
         e.preventDefault();
         useEditorStore.getState().redo();
-      } else if (mod && (e.key === "d" || e.key === "D")) {
+      } else if (mod && e.code === "KeyD") {
         const sel = useEditorStore.getState().selectedEntityId;
         if (sel) {
           e.preventDefault();
@@ -407,7 +408,7 @@ export function CanvasGrid() {
           useEditorStore.getState().removeEntity(sel);
         }
       } else if (!mod) {
-        const t = KEY_TO_TOOL[e.key.toLowerCase()];
+        const t = CODE_TO_TOOL[e.code];
         if (t) useEditorStore.getState().setTool(t);
       }
     };
