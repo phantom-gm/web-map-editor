@@ -26,7 +26,8 @@ export function entityIssues(
     if (e.kind === "portal") {
       if (!e.destMap) out.push(`${at}: 목적지 맵(destMap) 없음`);
       if (!e.destCell || e.destCell.length !== 2) out.push(`${at}: 도착 셀(destCell) 없음`);
-      if (!e.destFacing || !facingSet.has(e.destFacing)) out.push(`${at}: 도착 방향(destFacing) 없음`);
+      // destFacing 은 선택(미지정 → 게임 기본 SE). 값이 있을 때만 형식 검사.
+      if (e.destFacing && !facingSet.has(e.destFacing)) out.push(`${at}: 도착 방향(destFacing) 형식 오류`);
     } else if (e.kind === "monster" || e.kind === "npc") {
       if (e.npcClassId == null) out.push(`${at}: NpcClassID 없음`);
       else if (npcClassIds && !npcClassIds.has(e.npcClassId)) out.push(`${at}: NpcClassID ${e.npcClassId} — 카탈로그에 없음`);

@@ -70,9 +70,9 @@ export function EntityInspector() {
             </label>
           </div>
           <label className="ei-row">
-            <span>도착 방향 (destFacing) — 기본 SE, 신경 안 쓰면 그대로 둬도 됨</span>
+            <span>도착 방향 (destFacing) — 선택. 신경 안 쓰면 무관으로 두면 됨</span>
             <select value={entity.destFacing ?? ""} onChange={(e) => updateEntity(entity.id, { destFacing: (e.target.value || undefined) as MapEntity["destFacing"] })}>
-              <option value="">— 선택 —</option>
+              <option value="">무관 (기본 SE)</option>
               {FACINGS.map((f) => (
                 <option key={f} value={f}>
                   {FACING_LABEL[f]}

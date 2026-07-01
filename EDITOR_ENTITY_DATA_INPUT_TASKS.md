@@ -16,8 +16,8 @@
 현재 이 에디터 export 를 변환기에 넣으면:
 
 ```
-❌ 미해결 6 (fail-closed):
-  - portal(2,12): destMap 없음 / destCell 없음 / destFacing 없음
+❌ 미해결 5 (fail-closed):
+  - portal(2,12): destMap 없음 / destCell 없음      ← destFacing 은 선택(기본 SE), 필수 아님
   - monster(3,15): npcClassId 없음 (어떤 monster 인지 특정 불가)
   - monster(7,15): npcClassId 없음
   - monster(6,16): npcClassId 없음
@@ -33,10 +33,10 @@
 
 | kind | 필수 필드 | 타입 | 지금 상태 |
 |---|---|---|---|
-| `portal` | `destMap` | string(맵 이름) | ❌ 없음(내부 `targetMap` 있음) |
-| | `destCell` | `[number, number]` (도착 셀) | ❌ 없음(내부 `targetX/targetY` 있음) |
-| | `destFacing` | `"SE"\|"SW"\|"NE"\|"NW"` | ❌ **완전 없음** |
-| `monster` / `npc` | `npcClassId` | number (예: 1002) | ❌ **완전 없음** |
+| `portal` | `destMap` (필수) | string(맵 이름) | ❌ 없음(내부 `targetMap` 있음) |
+| | `destCell` (필수) | `[number, number]` (도착 셀) | ❌ 없음(내부 `targetX/targetY` 있음) |
+| | `destFacing` **(선택)** | `"SE"\|"SW"\|"NE"\|"NW"`, 미지정=**기본 SE** | 없어도 통과 |
+| `monster` / `npc` | `npcClassId` (필수) | number (예: 1002) | ❌ **완전 없음** |
 | `object` | `ruid`,`tilesW`,`tilesH`,`flipX` | — | ✅ 이미 있음 |
 
 > 좌표는 **에디터 0-based 셀좌표 그대로**(변환기가 정규화한다). 바꾸지 말 것.
@@ -71,14 +71,19 @@
 - 스토어/유틸에서 로드 → 드롭다운. (RUID 레지스트리 코드 `src/lib/registry.ts` / `apiClient.ts` 구조를 참고해 동일 패턴.)
 - 개발자가 게임에 새 몬스터 종류를 등록하면 이 seed 를 갱신(무코드 경계: **기존 등록 종류만** 배치 가능).
 
-### T2 포탈 `destFacing` 입력
+### T2 포탈 `destFacing` 입력 — **선택(필수 아님)**
 **파일**: `src/types/entity.ts`, `src/components/EntityInspector.tsx`
+
+> `destFacing`은 **도착 후 바라볼 방향**이지 진입 제약이 아니다. 포탈은 밟고 지나가는 타일이라 어느
+> 방향에서 걸어와도 진입된다(게임 이동 로직). 그래서 **매번 고를 필요 없음** — 미지정이면 변환기가
+> **기본 SE**로 채운다. 이 필드는 "도착 방향까지 지정하고 싶을 때"만 쓰는 옵션이다.
 
 - `MapEntity`에 추가:
   ```ts
-  destFacing?: "SE" | "SW" | "NE" | "NW"; // 포탈 도착 후 바라볼 방향
+  destFacing?: "SE" | "SW" | "NE" | "NW"; // 도착 후 방향(선택). 미지정 → 게임 기본 SE.
   ```
-- `EntityInspector.tsx` 포탈 블록(현재 `타겟 맵`/`타겟 X`/`타겟 Y` 아래)에 **방향 드롭다운**(SE/SW/NE/NW).
+- `EntityInspector.tsx` 포탈 블록에 **방향 드롭다운**(선택). 첫 옵션 = **"무관 (기본 SE)"**(값 미설정),
+  그 외 SE/SW/NE/NW. 미설정이 기본이므로 기획자는 대부분 손대지 않는다.
 
 ### T3 export 필드명 정렬 (targetMap/targetX/targetY → destMap/destCell)
 현재 내부 필드는 `targetMap`, `targetX`, `targetY`. 변환기 계약은 `destMap`, `destCell:[x,y]`, `destFacing`.
@@ -101,7 +106,7 @@
 **파일**: `src/lib/validate.ts`
 
 - 아래 규칙을 에디터 검증에 추가(변환기 `convert_map.cjs`와 1:1 일치시켜, 에디터 "미완성 N건" = 변환기 "미해결 N건"):
-  - portal: `destMap`(비어있지 않음) + `destCell`(2원소) + `destFacing`(4방향 중 하나)
+  - portal: `destMap`(비어있지 않음) + `destCell`(2원소). `destFacing`은 선택(값 있으면 4방향 검사만)
   - monster/npc: `npcClassId`가 있고 NpcClass 카탈로그에 존재
   - (기존) object `ruid`, 셀 범위, 팔레트 RUID 등록
 
@@ -114,7 +119,7 @@
 - `kind`가 `object|portal|monster|npc` 가 아니면 에러.
 - 셀 `(gx,gy)`가 맵 `size`(W×H) 밖이면 에러.
 - **object**: `ruid` 없으면 에러.
-- **portal**: `destMap` 없음 / `destCell` 길이≠2 / `destFacing` 없음 → 각각 에러.
+- **portal**: `destMap` 없음 / `destCell` 길이≠2 → 에러. `destFacing`은 **선택**(미지정=기본 SE); 값이 있는데 `SE/SW/NE/NW`가 아니면 에러.
 - **monster·npc**: `npcClassId == null` → 에러. 있어도 `DT_NpcClass`에 없는 id → 에러.
 - **palette**: ground 가 참조하는 팔레트 항목에 `ruid` 없으면(미등록) 에러.
 
@@ -125,7 +130,7 @@
 1. 에디터에서 포탈에 **목적지 맵+셀+방향**, 몬스터/NPC에 **NpcClassID**를 입력할 수 있다.
 2. 미완성 엔티티가 **●배지 + export 경고**로 보인다.
 3. 그 맵을 project.json 으로 export → 게임측 `convert_map.cjs <project.json> --report-only` 실행 시
-   **`미해결 0`** 이 나온다(현재는 포탈·몬스터로 6건 나옴).
+   **`미해결 0`** 이 나온다(현재는 포탈 destMap/destCell + 몬스터 npcClassId 로 5건 나옴).
 4. `entity.ts` 필드 추가로 기존 project.json 열기(하위호환) 안 깨짐.
 
 ---

@@ -60,7 +60,8 @@ export function migrateEntity(raw: MapEntity): MapEntity {
 export function isEntityIncomplete(e: MapEntity): boolean {
   switch (e.kind) {
     case "portal":
-      return !e.destMap || !e.destCell || !e.destFacing;
+      // destFacing 은 선택(미지정 → 게임 기본 SE). 필수는 목적지 맵+셀뿐.
+      return !e.destMap || !e.destCell;
     case "monster":
     case "npc":
       return e.npcClassId == null;
