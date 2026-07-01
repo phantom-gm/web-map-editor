@@ -444,7 +444,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid, tilesW };
       if (kind !== "portal") ent.tilesH = 1;
       if (kind === "monster") ent.spawnCount = 1;
-      // 포탈 destFacing 은 미설정(=무관) 으로 둔다 — 변환기가 미지정 시 기본 SE 로 emit.
+      // 포탈 도착 셀 기본값 = 배치 위치(현재 셀). 목적지 맵만 채우면 되도록 하고, 필요 시 변경.
+      // destFacing 은 미설정(=무관) 으로 둔다 — 변환기가 미지정 시 기본 SE 로 emit.
+      if (kind === "portal") ent.destCell = [gx, gy];
       // 겹침 방지 — 클릭 셀이 다른 오브젝트와 겹치면 가장 가까운 빈 자리로.
       if (kind !== "portal") {
         const [fw, fh] = footprintWH(ent);
