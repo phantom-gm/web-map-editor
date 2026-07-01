@@ -12,7 +12,7 @@ import {
 import { parseCellKey } from "../lib/cell";
 import { KEY_TO_TOOL } from "../lib/shortcuts";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
@@ -252,6 +252,25 @@ function draw(
           ctx.lineWidth = 1.5;
           ctx.stroke();
         }
+      }
+
+      // 미완성 배지 — 필수 필드(포탈 목적지/방향, 몬스터·NPC NpcClassID, 오브젝트 RUID) 누락.
+      // 변환기 fail-closed 전에 눈으로 잡도록 항상 표시(오버레이 토글과 무관).
+      if (isEntityIncomplete(e)) {
+        const bx = cx + hw * 0.6;
+        const by = labelTop + 2;
+        ctx.beginPath();
+        ctx.arc(bx, by, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "#ff3b30";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("!", bx, by + 0.5);
       }
 
       // 라벨

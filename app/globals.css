@@ -697,7 +697,8 @@ body {
   font-size: 11px;
   color: #9aa0b0;
 }
-.entity-inspector .ei-row input {
+.entity-inspector .ei-row input,
+.entity-inspector .ei-row select {
   background: #0e0f12;
   color: #dfe2ea;
   border: 1px solid #2a2d36;

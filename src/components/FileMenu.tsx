@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { tilesFromStored } from "../lib/palette";
 import { isProjectFile } from "../lib/projectIO";
+import { entityIssues } from "../lib/validate";
 import { fsaAvailable, saveProject, openProjectViaPicker, resetFileHandle, currentFileName } from "../lib/projectFile";
 
 export function FileMenu() {
@@ -64,6 +65,14 @@ export function FileMenu() {
 
   const doSave = async (forceNew: boolean) => {
     setOpen(false);
+    // 저장 전 미완성 엔티티 경고(변환기 fail-closed 전에 잡기).
+    const st = useEditorStore.getState();
+    const issues = entityIssues(st.entities, st.size, new Set(st.npcCatalog.entries.map((e) => e.id)));
+    if (issues.length > 0) {
+      const head = issues.slice(0, 8).map((s) => "• " + s).join("\n");
+      const more = issues.length > 8 ? `\n…외 ${issues.length - 8}건` : "";
+      if (!window.confirm(`미완성 엔티티 ${issues.length}건 — 이대로 저장하면 게임 변환 시 거부됩니다:\n${head}${more}\n\n그대로 저장할까요?`)) return;
+    }
     const json = JSON.stringify(useEditorStore.getState().exportProject(), null, 2);
     try {
       const name = await saveProject(json, suggestedName(), forceNew);

@@ -23,6 +23,7 @@ export function PalettePanel() {
   const fileRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
   const regRef = useRef<HTMLInputElement>(null);
+  const npcRef = useRef<HTMLInputElement>(null);
   const palette = useEditorStore((s) => s.palette);
   const activeIdx = useEditorStore((s) => s.activeIdx);
   const activeTool = useEditorStore((s) => s.activeTool);
@@ -30,6 +31,8 @@ export function PalettePanel() {
   const addTiles = useEditorStore((s) => s.addTiles);
   const removeTiles = useEditorStore((s) => s.removeTiles);
   const loadRegistry = useEditorStore((s) => s.loadRegistry);
+  const loadNpcCatalog = useEditorStore((s) => s.loadNpcCatalog);
+  const npcCount = useEditorStore((s) => s.npcCatalog.entries.length);
   const applyResolutions = useEditorStore((s) => s.applyResolutions);
   const [busy, setBusy] = useState<"" | "resolve" | "upload">("");
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -68,6 +71,17 @@ export function PalettePanel() {
       loadRegistry(JSON.parse(await f.text()));
     } catch (err) {
       alert("레지스트리 로드 실패: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
+  const onNpcCatalog = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      loadNpcCatalog(JSON.parse(await f.text()));
+    } catch (err) {
+      alert("NpcClass 카탈로그 로드 실패: " + (err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -230,6 +244,10 @@ export function PalettePanel() {
           RUID파일
         </button>
         <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={onRegistry} />
+        <button className="reg-load" onClick={() => npcRef.current?.click()} title={`몬스터/NPC 종류 카탈로그(DT_NpcClass 스냅샷) 불러오기 — 현재 ${npcCount}종`}>
+          NPC목록({npcCount})
+        </button>
+        <input ref={npcRef} type="file" accept="application/json,.json" hidden onChange={onNpcCatalog} />
         <button className="reg-load" onClick={onResolveOnline} disabled={busy !== "" || palette.length === 0} title="서버 /api/resolve 로 등록여부 조회">
           {busy === "resolve" ? "조회중…" : "서버 조회"}
         </button>

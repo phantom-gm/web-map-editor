@@ -2,6 +2,16 @@
 // 좌표는 에디터 0-based 셀좌표(ground 와 동일). blueprint export 시 origin 이 더해진다.
 export type EntityKind = "portal" | "monster" | "npc" | "object";
 
+// 포탈 도착 후 바라볼 방향 (아이소 4방향).
+export type Facing = "SE" | "SW" | "NE" | "NW";
+export const FACINGS: Facing[] = ["SE", "SW", "NE", "NW"];
+export const FACING_LABEL: Record<Facing, string> = {
+  SE: "SE ↘ 남동",
+  SW: "SW ↙ 남서",
+  NE: "NE ↗ 북동",
+  NW: "NW ↖ 북서",
+};
+
 export interface MapEntity {
   id: string;
   kind: EntityKind;
@@ -10,10 +20,15 @@ export interface MapEntity {
   name?: string; // 라벨 / 에셋 이름
   ruid?: string; // 에셋 RUID(monster/npc/object 스프라이트)
 
+  // 포탈 목적지 — 변환기(convert_map.cjs) 계약 필드명(캐논).
+  destMap?: string; // 연결 맵 이름
+  destCell?: [number, number]; // 도착 셀 [x, y]
+  destFacing?: Facing; // 도착 후 방향
+
+  // monster/npc — DT_NpcClass 의 NpcClassID (예: 1002). 변환기 필수.
+  npcClassId?: number;
+
   // 종류별 선택 필드(프로덕션). 미입력이면 게임 기본값.
-  targetMap?: string; // portal: 연결 맵
-  targetX?: number; // portal: 도착 X
-  targetY?: number; // portal: 도착 Y
   spawnCount?: number; // monster: 동시 스폰 수
   respawnSec?: number; // monster: 리젠 간격(초)
   dialogId?: string; // npc: 대사/스크립트 id
@@ -24,6 +39,36 @@ export interface MapEntity {
   tilesW?: number;
   tilesH?: number;
   flipX?: boolean; // 스프라이트 좌우반전
+}
+
+// 레거시 project.json 하위호환: 과거 필드(targetMap/targetX/targetY) → 캐논(destMap/destCell).
+type LegacyEntity = MapEntity & { targetMap?: string; targetX?: number; targetY?: number };
+export function migrateEntity(raw: MapEntity): MapEntity {
+  const e = raw as LegacyEntity;
+  const out: MapEntity = { ...raw };
+  if (out.destMap === undefined && e.targetMap !== undefined) out.destMap = e.targetMap;
+  if (out.destCell === undefined && (e.targetX !== undefined || e.targetY !== undefined)) {
+    out.destCell = [e.targetX ?? 0, e.targetY ?? 0];
+  }
+  delete (out as LegacyEntity).targetMap;
+  delete (out as LegacyEntity).targetX;
+  delete (out as LegacyEntity).targetY;
+  return out;
+}
+
+/** 변환기가 fail-closed 시킬 미입력 엔티티인지(배지/경고용, 카탈로그 존재여부는 별도). */
+export function isEntityIncomplete(e: MapEntity): boolean {
+  switch (e.kind) {
+    case "portal":
+      return !e.destMap || !e.destCell || !e.destFacing;
+    case "monster":
+    case "npc":
+      return e.npcClassId == null;
+    case "object":
+      return !e.ruid;
+    default:
+      return false;
+  }
 }
 
 export interface EntityKindMeta {

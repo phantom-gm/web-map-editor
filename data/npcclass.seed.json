@@ -1,0 +1,9 @@
+{
+  "_comment": "게임 DT_NpcClass.csv(NpcClassID,NpcName,NpcType,...) 스냅샷. 게임에 새 몬스터/NPC 종류를 등록하면 이 파일을 갱신한다(무코드 경계: 여기 등록된 종류만 배치 가능). 에디터의 몬스터/NPC 드롭다운 소스이며 export 전 검증에도 사용된다.",
+  "version": 1,
+  "entries": [
+    { "id": 1000, "name": "말벌", "type": "Monster" },
+    { "id": 1001, "name": "사마귀", "type": "Monster" },
+    { "id": 1002, "name": "거미", "type": "Monster" }
+  ]
+}

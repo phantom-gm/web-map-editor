@@ -6,8 +6,9 @@ import { emptyLayer } from "../types/blueprint";
 import { buildBlueprint, type ImportResult } from "../lib/blueprintIO";
 import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
+import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
-import { footprintWH, isEntityKind, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
+import { footprintWH, isEntityKind, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 포탈 외 엔티티 중, 위치(gx,gy)+크기(w,h) footprint 가 excludeId 외 다른 것과 겹치면 true. */
 function overlapsAny(
@@ -139,6 +140,7 @@ export interface EditorState {
 
   palette: PaletteTile[];
   registry: TileRegistry | null;
+  npcCatalog: NpcCatalog; // 몬스터/NPC npcClassId 드롭다운 소스 (기본=번들 seed)
   activeTool: Tool;
   activeIdx: number;
   rectPreview: [number, number, number, number] | null;
@@ -168,6 +170,7 @@ export interface EditorState {
   removeTiles: (indices: number[]) => void;
   hydratePalette: (tiles: PaletteTile[]) => void;
   loadRegistry: (json: unknown) => void;
+  loadNpcCatalog: (json: unknown) => void;
   applyResolutions: (results: Array<{ name: string; status: RegStatus; ruid: string | null }>) => void;
   exportPaletteRuids: () => { map: string; ruids: Record<string, string> };
   setActiveIdx: (i: number) => void;
@@ -216,6 +219,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   attributeBase: emptyLayer(),
   palette: [],
   registry: null,
+  npcCatalog: defaultNpcCatalog(),
   activeTool: "brush",
   activeIdx: 0,
   rectPreview: null,
@@ -304,6 +308,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const reg = parseRegistry(json);
       return { registry: reg, palette: resolvePalette(s.palette, reg) };
     }),
+  loadNpcCatalog: (json) => set({ npcCatalog: parseNpcCatalog(json) }),
   applyResolutions: (results) =>
     set((s) => {
       const byName = new Map(results.map((r) => [r.name, r]));
@@ -612,7 +617,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         staticLayer: r.staticLayer,
         attributeBase: r.attributeBase,
         palette: merged,
-        entities: r.entities,
+        entities: r.entities.map(migrateEntity),
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         activeIdx: 0,
@@ -684,7 +689,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         staticLayer: p.staticLayer ?? emptyLayer(),
         attributeBase: p.attributeBase ?? emptyLayer(),
         palette: merged,
-        entities: p.entities ?? [],
+        entities: (p.entities ?? []).map(migrateEntity), // 레거시 target* → dest* 하위호환
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         activeIdx: 0,

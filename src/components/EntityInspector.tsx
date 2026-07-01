@@ -1,11 +1,13 @@
 import { useEditorStore } from "../store/editorStore";
-import { ENTITY_META, type MapEntity } from "../types/entity";
+import { ENTITY_META, FACINGS, FACING_LABEL, type MapEntity } from "../types/entity";
+import { npcClassLabel } from "../lib/npcClass";
 import { NumberField } from "./NumberField";
 
 // 선택된 엔티티의 속성 편집 패널(캔버스 우상단 플로팅). 종류별 필드 표시.
 export function EntityInspector() {
   const selectedId = useEditorStore((s) => s.selectedEntityId);
   const entity = useEditorStore((s) => s.entities.find((e) => e.id === s.selectedEntityId) ?? null);
+  const npcCatalog = useEditorStore((s) => s.npcCatalog);
   const updateEntity = useEditorStore((s) => s.updateEntity);
   const removeEntity = useEditorStore((s) => s.removeEntity);
   const duplicateEntity = useEditorStore((s) => s.duplicateEntity);
@@ -18,6 +20,19 @@ export function EntityInspector() {
     updateEntity(entity.id, { [key]: v === "" ? undefined : Number(v) });
   const setStr = (key: keyof MapEntity, v: string) =>
     updateEntity(entity.id, { [key]: v === "" ? undefined : v });
+
+  // portal 도착 셀 [x,y] — 한 축 편집(빈칸=0). 아무것도 안 채우면 destCell 미설정(미완성).
+  const setDestCell = (axis: 0 | 1, v: string) => {
+    const cur = entity.destCell ?? [0, 0];
+    const n = v === "" ? 0 : Number(v);
+    const next: [number, number] = axis === 0 ? [n, cur[1]] : [cur[0], n];
+    updateEntity(entity.id, { destCell: next });
+  };
+
+  // monster→Monster, npc→Npc 타입 카탈로그. 비어있으면 드롭다운 대신 id 직접입력 폴백.
+  const wantType = entity.kind === "monster" ? "Monster" : "Npc";
+  const npcOptions = npcCatalog.entries.filter((e) => e.type === wantType);
+  const currentInCatalog = entity.npcClassId != null && npcCatalog.byId.has(entity.npcClassId);
 
   return (
     <div className="entity-inspector">
@@ -41,21 +56,59 @@ export function EntityInspector() {
       {entity.kind === "portal" && (
         <>
           <label className="ei-row">
-            <span>타겟 맵</span>
-            <input value={entity.targetMap ?? ""} onChange={(e) => setStr("targetMap", e.target.value)} placeholder="맵 이름" />
+            <span>목적지 맵 (destMap)</span>
+            <input value={entity.destMap ?? ""} onChange={(e) => setStr("destMap", e.target.value)} placeholder="맵 이름" />
           </label>
           <div className="ei-grid2">
             <label className="ei-row">
-              <span>타겟 X</span>
-              <input type="number" value={entity.targetX ?? ""} onChange={(e) => setNum("targetX", e.target.value)} />
+              <span>도착 X</span>
+              <input type="number" value={entity.destCell?.[0] ?? ""} onChange={(e) => setDestCell(0, e.target.value)} />
             </label>
             <label className="ei-row">
-              <span>타겟 Y</span>
-              <input type="number" value={entity.targetY ?? ""} onChange={(e) => setNum("targetY", e.target.value)} />
+              <span>도착 Y</span>
+              <input type="number" value={entity.destCell?.[1] ?? ""} onChange={(e) => setDestCell(1, e.target.value)} />
             </label>
           </div>
+          <label className="ei-row">
+            <span>도착 방향 (destFacing)</span>
+            <select value={entity.destFacing ?? ""} onChange={(e) => updateEntity(entity.id, { destFacing: (e.target.value || undefined) as MapEntity["destFacing"] })}>
+              <option value="">— 선택 —</option>
+              {FACINGS.map((f) => (
+                <option key={f} value={f}>
+                  {FACING_LABEL[f]}
+                </option>
+              ))}
+            </select>
+          </label>
         </>
       )}
+
+      {(entity.kind === "monster" || entity.kind === "npc") && (
+        <label className="ei-row">
+          <span>NpcClass 종류 (npcClassId)</span>
+          {npcOptions.length > 0 ? (
+            <select value={entity.npcClassId ?? ""} onChange={(e) => setNum("npcClassId", e.target.value)}>
+              <option value="">— 선택 —</option>
+              {npcOptions.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {npcClassLabel(n)}
+                </option>
+              ))}
+              {entity.npcClassId != null && !currentInCatalog && (
+                <option value={entity.npcClassId}>{entity.npcClassId} — (카탈로그에 없음)</option>
+              )}
+            </select>
+          ) : (
+            <input
+              type="number"
+              value={entity.npcClassId ?? ""}
+              onChange={(e) => setNum("npcClassId", e.target.value)}
+              placeholder="NpcClassID 직접 입력 (카탈로그 없음)"
+            />
+          )}
+        </label>
+      )}
+
       {entity.kind === "monster" && (
         <div className="ei-grid2">
           <label className="ei-row">
