@@ -10,12 +10,12 @@ export interface MapValidation {
 /**
  * 엔티티 검증 — 게임 변환기(convert_map.cjs)의 fail-closed 규칙과 1:1.
  * "미완성 N건" = 변환기 "미해결 N건" 이 되도록 맞춘다.
- * @param npcClassIds NpcClass 카탈로그 id 집합(있으면 존재여부까지 검사).
+ * @param npcClassIds NpcClass 카탈로그 멤버십(있으면 존재여부까지 검사). Set/Map(byId) 둘 다 허용.
  */
 export function entityIssues(
   entities: MapEntity[],
   size: [number, number],
-  npcClassIds?: Set<number>,
+  npcClassIds?: { has(id: number): boolean },
 ): string[] {
   const [W, H] = size;
   const facingSet = new Set<Facing>(FACINGS);
@@ -45,7 +45,7 @@ export function validateMap(args: {
   blocked: Set<CellKey>;
   paletteCount: number;
   entities?: MapEntity[];
-  npcClassIds?: Set<number>;
+  npcClassIds?: { has(id: number): boolean };
 }): MapValidation {
   const { size, ground, blocked, paletteCount } = args;
   const [W, H] = size;

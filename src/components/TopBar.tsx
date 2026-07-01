@@ -35,7 +35,7 @@ export function TopBar() {
       blocked: s.blocked,
       paletteCount: s.palette.length,
       entities: s.entities,
-      npcClassIds: new Set(s.npcCatalog.entries.map((e) => e.id)),
+      npcClassIds: s.npcCatalog.byId,
     });
     if (errors.length > 0 || warnings.length > 0) {
       const lines = [...errors.map((e) => "• " + e), ...warnings.map((w) => "· " + w)];

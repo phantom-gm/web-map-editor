@@ -68,7 +68,7 @@ export function FileMenu() {
     setOpen(false);
     // 저장 전 미완성 엔티티 경고(변환기 fail-closed 전에 잡기).
     const st = useEditorStore.getState();
-    const issues = entityIssues(st.entities, st.size, new Set(st.npcCatalog.entries.map((e) => e.id)));
+    const issues = entityIssues(st.entities, st.size, st.npcCatalog.byId);
     if (issues.length > 0) {
       const head = issues.slice(0, 8).map((s) => "• " + s).join("\n");
       const more = issues.length > 8 ? `\n…외 ${issues.length - 8}건` : "";
