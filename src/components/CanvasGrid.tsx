@@ -11,6 +11,7 @@ import {
 } from "../lib/grid";
 import { parseCellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
+import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
@@ -51,19 +52,6 @@ function entityRect(
 
 /** 엔티티 깊이 정렬(뒤→앞): gy 우선, gx 차선. draw/히트테스트 공용. */
 const byEntityDepth = (a: MapEntity, b: MapEntity) => a.gy - b.gy || a.gx - b.gx;
-
-/** 팔레트에서 엔티티 에셋 이미지를 찾는 조회 함수 생성(ruid 우선, name 차선). 포탈은 항상 null. */
-function makeEntityImageLookup(palette: PaletteTile[]): (e: MapEntity) => HTMLImageElement | null {
-  const byRuid = new Map<string, HTMLImageElement>();
-  const byName = new Map<string, HTMLImageElement>();
-  for (const t of palette) {
-    if (!t.img) continue;
-    if (t.ruid) byRuid.set(t.ruid, t.img);
-    if (t.name) byName.set(t.name, t.img);
-  }
-  return (e) =>
-    e.kind !== "portal" ? (e.ruid && byRuid.get(e.ruid)) || (e.name && byName.get(e.name)) || null : null;
-}
 
 /** 화면 점(px)이 닿는 최상단(앞쪽) 엔티티. 스프라이트는 빌보드 사각형, 마커는 셀 다이아 bbox 기준. */
 function findEntityHit(

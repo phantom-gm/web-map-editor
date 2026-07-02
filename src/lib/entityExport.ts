@@ -3,30 +3,16 @@
 //  - footprintCells: 충돌(blocks) 시 앵커 상대 오프셋 목록
 // 라이브 상태(store)는 blocks 만 갖고, scale/footprintCells 는 tilesW/tilesH·이미지에서 export 시 계산.
 import { entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
+import { makeEntityImageLookup } from "./entityImage";
 import type { PaletteTile } from "./palette";
 
 // 게임 iso 타일 폭(px/셀). 에디터 미리보기(TW=64)와 달리 게임 빌드는 56px 타일을 쓴다.
 // scale = 목표 footprint 픽셀(게임) / 스프라이트 네이티브 픽셀.
 const GAME_TILE_PX = 56;
 
-/** ruid 우선, name 차선으로 팔레트 이미지의 네이티브 [w,h] 조회 맵. */
-function nativeSizeLookup(palette: PaletteTile[]) {
-  const byRuid = new Map<string, [number, number]>();
-  const byName = new Map<string, [number, number]>();
-  for (const t of palette) {
-    const w = t.img?.naturalWidth ?? 0;
-    const h = t.img?.naturalHeight ?? 0;
-    if (w <= 0 || h <= 0) continue;
-    if (t.ruid) byRuid.set(t.ruid, [w, h]);
-    if (t.name) byName.set(t.name, [w, h]);
-  }
-  return (e: MapEntity): [number, number] | null =>
-    (e.ruid ? byRuid.get(e.ruid) : undefined) ?? (e.name ? byName.get(e.name) : undefined) ?? null;
-}
-
 /** object 엔티티에 scale/footprintCells 부착(그 외 kind·이미지 없음은 원본 그대로). */
 export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): MapEntity[] {
-  const nativeOf = nativeSizeLookup(palette);
+  const imageOf = makeEntityImageLookup(palette);
   return entities.map((e) => {
     if (e.kind !== "object") return e;
     const out: MapEntity = { ...e };
@@ -37,10 +23,11 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     }
 
     // scale — 에디터가 footprint 폭에 맞춰 축소한 배율을 게임 타일 기준으로. 종횡비 보존(균일).
-    const nat = nativeOf(e);
-    if (nat) {
+    const img = imageOf(e);
+    const nw = img?.naturalWidth ?? 0;
+    if (nw > 0) {
       const [fw] = footprintWH(e);
-      const scale = (fw * GAME_TILE_PX) / nat[0]; // 폭 기준 균일 배율(높이는 종횡비 유지)
+      const scale = (fw * GAME_TILE_PX) / nw; // 폭 기준 균일 배율(높이는 종횡비 유지)
       out.scale = Math.round(scale * 1000) / 1000;
     }
     return out;
