@@ -144,6 +144,17 @@ export function EntityInspector() {
         </label>
       )}
 
+      {entity.kind === "object" && (
+        <label className="ei-check">
+          <input
+            type="checkbox"
+            checked={!!entity.blocks}
+            onChange={(e) => updateEntity(entity.id, { blocks: e.target.checked || undefined })}
+          />
+          <span>충돌 — 이 오브젝트가 이동을 막음 (footprint 이동불가)</span>
+        </label>
+      )}
+
       <div className="ei-actions">
         <button onClick={() => duplicateEntity(entity.id)}>복사 (⌘/Ctrl+D)</button>
         {entity.kind !== "portal" && (

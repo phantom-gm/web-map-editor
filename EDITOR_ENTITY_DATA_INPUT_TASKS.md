@@ -158,3 +158,62 @@ node scripts/convert_map.cjs <project.json>
 - `src/lib/validate.ts` — export 전 검증 (규칙 추가)
 - `src/lib/registry.ts` / `apiClient.ts` — RUID 레지스트리 로드 패턴(NpcClass 카탈로그 로드에 재사용)
 - `src/components/CanvasGrid.tsx` — 엔티티 마커(미완성 배지)
+
+---
+
+## T6 (신규) 오브젝트 충돌(footprint) 방출 — 게임측 Phase 3b/4 완결용
+
+**배경**: 게임 변환기(`convert_map.cjs`)와 빌더(`build_map.cjs`)에 오브젝트 처리가 이미 들어갔다:
+- **Phase 4(배치)**: 오브젝트가 `.map`에 sprite 로 배치됨 — `ruid`,`gx`,`gy`,`flipX`,`tilesW`,`tilesH`,`sortOffset` 소비. **이미 동작**(추가 입력 불필요).
+- **Phase 3b(충돌)**: 오브젝트가 이동을 막으려면 **`blocks` + `footprintCells`** 가 필요한데 **현재 미방출**. 그래서 지금은 오브젝트가 "시각만"이고 통과 가능하다.
+
+**작업**: `MapEntity`(object)에 아래 2필드 추가 + export.
+
+```ts
+// src/types/entity.ts — object 에만 의미
+blocks?: boolean;               // true = 이 오브젝트가 이동을 막음(충돌). 기본 false(통과 가능).
+footprintCells?: [number, number][]; // 앵커(gx,gy) 기준 "상대 오프셋" 목록. 예: [[0,0],[1,0],[0,1]]
+                                //  = 앵커 셀 + 오른쪽 + 아래. 미지정이고 blocks=true 면 변환기가 앵커 1칸만 차단.
+```
+
+- `EntityInspector.tsx` object 블록에 **"충돌(막힘)" 체크박스**(`blocks`) 추가.
+- footprint 는 `tilesW/tilesH` + 앵커로 **에디터가 계산**해 상대 오프셋 배열로 내보낸다(iso 기하는 에디터가 소유 — 변환기는 추측하지 않음). 이미 내부에 `entityFootprintCells` 가 있으면 그걸 **상대 오프셋으로 변환**해 `footprintCells` 로 export.
+- **좌표 계약**: `footprintCells` 는 **절대 셀이 아니라 앵커 상대 오프셋** `[dx,dy]`. (변환기가 `gx+dx, gy+dy` 로 절대화 — 정규화 shift 안전.)
+
+**완료 기준**: `blocks:true` + footprint 를 지정한 오브젝트가 있는 맵을 export → 게임 repo
+`node scripts/convert_map.cjs <project.json>` → 산출 `DT_Walk`(또는 `--apply` 후 게임 내)에서 그
+오브젝트 footprint 셀이 **이동불가**로 들어간다. (변환기 단위테스트 `Phase4/3b object` 가 이 계약을 이미 검증.)
+
+> 참고: `blocks` 미지정 오브젝트는 그대로 **시각만**(통과 가능) — 기존 하위호환 유지.
+
+---
+
+## T7 (신규·중요) 오브젝트 `scale` export — 게임에서 집이 거대하게 뜨는 버그 수정
+
+**증상(실측)**: newmap 을 게임에서 열면 **집(house001_transparent) 오브젝트가 화면을 뒤덮을 만큼 거대**하게 뜬다.
+바닥 타일·좌표·배치는 정상. 오브젝트 **크기만** 문제.
+
+**원인**: 이 게임의 iso 타일은 작다(0.56 world = 56px/셀). 그런데 에디터에서 고른 집 스프라이트는
+MapleStory 원본 대형 이미지라, 게임 빌드(`build_map`)가 **스케일 없이 네이티브 크기**로 배치하면 거대해진다.
+에디터는 집을 `tilesW×tilesH`(예 3×2) 타일에 맞춰 **축소해서** 보여주지만, **그 축소 배율이 export 에 없다**.
+
+**작업**: `MapEntity`(object)에 에디터가 실제 렌더에 쓰는 **Transform 배율**을 담아 export.
+
+```ts
+// src/types/entity.ts — object 에만 의미
+scale?: number | [number, number];  // 에디터 프리뷰가 스프라이트에 적용한 배율.
+                                     //  숫자=균일(sx=sy), [sx,sy]=비균일. 미지정 → 게임은 네이티브(1.0)=거대.
+```
+
+- 에디터가 오브젝트를 `tilesW×tilesH` 타일에 맞춰 렌더할 때 쓰는 배율을 그대로 `scale` 로 내보낸다.
+  - 예: 네이티브 300px 집을 3타일(≈168px) 폭에 맞췄다면 `scale ≈ 0.56`.
+  - 내부적으로 스프라이트 네이티브 크기를 알면 `scale = 목표footprint픽셀 / 네이티브픽셀` 로 계산해 export.
+- **게임측은 이미 반영 완료**: `convert_map.cjs` 가 `scale` 을 blueprint 로 통과시키고, `build_map.cjs` 가
+  `Transform.Scale=[sx,sy,1]` 로 적용한다(단위테스트 `Phase4/3b object` 에서 `scale=0.5→[0.5,0.5,1]` 검증됨).
+  **에디터가 `scale` 만 내보내면 게임에서도 에디터와 같은 크기로 보인다.**
+
+**완료 기준**: 집이 있는 맵을 `scale` 포함해 export → `node scripts/nocode_map.cjs <project.json> --apply --build`
+→ 게임에서 집이 **에디터와 동일한 크기**로 보인다(거대하지 않음).
+
+> 참고: `scale` 미지정 오브젝트는 네이티브(1.0) — 대형 배경 스프라이트는 반드시 `scale` 필요.
+> 작은 타일 크기 오브젝트(예 나무 1칸)는 네이티브가 맞으면 생략 가능.

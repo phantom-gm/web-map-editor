@@ -39,6 +39,11 @@ export interface MapEntity {
   tilesW?: number;
   tilesH?: number;
   flipX?: boolean; // 스프라이트 좌우반전
+
+  // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
+  blocks?: boolean; // true = 이 오브젝트가 이동을 막음(충돌). 미지정=통과 가능(시각만).
+  footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(blocks 시).
+  scale?: number | [number, number]; // 스프라이트 배율. export 계산값(게임 네이티브 거대화 방지).
 }
 
 // 레거시 project.json 하위호환: 과거 필드(targetMap/targetX/targetY) → 캐논(destMap/destCell).

@@ -713,6 +713,19 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
+.entity-inspector .ei-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #9aa0b0;
+  cursor: pointer;
+}
+.entity-inspector .ei-check input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
 .entity-inspector .ei-ruid {
   font-size: 10px;
   color: #6b7180;

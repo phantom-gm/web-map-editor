@@ -7,6 +7,7 @@ import { buildBlueprint, type ImportResult } from "../lib/blueprintIO";
 import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
+import { exportEntities } from "../lib/entityExport";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
 import { footprintWH, isEntityKind, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
 
@@ -672,7 +673,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       palette: s.palette.map(toStoredTile),
       staticLayer: s.staticLayer,
       attributeBase: s.attributeBase,
-      entities: s.entities,
+      entities: exportEntities(s.entities, s.palette), // object 에 scale/footprintCells 부착
     };
   },
 
