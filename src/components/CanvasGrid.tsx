@@ -169,8 +169,15 @@ function draw(
       if (img) {
         const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
 
-        // footprint 색 채움은 하지 않는다 — 아래 깔린 타일색이 그대로 보이도록.
-        // 점유 경계는 아래 외곽선(3)으로만 표시(점유 토글로 on/off).
+        // 1) footprint 채움 — 스프라이트 아래(이동불가 스타일, 옅게). 점유 표시 토글.
+        if (visual.footprint) {
+          ctx.fillStyle = meta.color + (sel ? "33" : "1f");
+          for (const [gx, gy] of cells) {
+            const [fx, fy] = cellToScreen(gx, gy, cam);
+            diamondPath(ctx, fx, fy, hw, hh);
+            ctx.fill();
+          }
+        }
 
         // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. flipX 면 가로 미러.
         const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, img);
@@ -185,12 +192,11 @@ function draw(
         }
         labelTop = y0;
 
-        // 3) footprint 외곽선 — 선택된 오브젝트에만(편집 중 점유 범위 확인용).
-        // 미선택은 색 오버레이 없이 아래 타일색 그대로. 점유 토글로 선택분도 끌 수 있음.
-        if (visual.footprint && sel) {
+        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 표시 토글.
+        if (visual.footprint) {
           ctx.strokeStyle = meta.color;
-          ctx.globalAlpha = 0.95;
-          ctx.lineWidth = 1.6;
+          ctx.globalAlpha = sel ? 0.95 : 0.55;
+          ctx.lineWidth = sel ? 1.6 : 1.2;
           for (const [gx, gy] of cells) {
             const [fx, fy] = cellToScreen(gx, gy, cam);
             diamondPath(ctx, fx, fy, hw, hh);
