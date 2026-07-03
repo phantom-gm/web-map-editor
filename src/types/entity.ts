@@ -41,8 +41,8 @@ export interface MapEntity {
   flipX?: boolean; // 스프라이트 좌우반전
 
   // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
-  blocks?: boolean; // true = 이 오브젝트가 이동을 막음(충돌). 미지정=통과 가능(시각만).
-  footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(blocks 시).
+  blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
+  footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
   scale?: number | [number, number]; // 스프라이트 배율. export 계산값(게임 네이티브 거대화 방지).
 }
 

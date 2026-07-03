@@ -13,13 +13,22 @@ const GAME_TILE_PX = 56;
 /** object 엔티티에 scale/footprintCells 부착(그 외 kind·이미지 없음은 원본 그대로). */
 export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): MapEntity[] {
   const imageOf = makeEntityImageLookup(palette);
+  // 포탈 셀 — 오브젝트 충돌에서 제외한다(오브젝트 위에 포탈이 있으면 진입 가능해야 함).
+  const portalCells = new Set<string>();
+  for (const e of entities) if (e.kind === "portal") portalCells.add(`${e.gx},${e.gy}`);
+
   return entities.map((e) => {
     if (e.kind !== "object") return e;
     const out: MapEntity = { ...e };
 
-    // 충돌 footprint — blocks 일 때만. 앵커(gx,gy) 기준 상대 오프셋.
-    if (e.blocks) {
-      out.footprintCells = entityFootprintCells(e).map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
+    // 오브젝트는 기본적으로 이동을 막는다(관통 금지). 명시적으로 blocks=false 인 것만 통과 허용.
+    // footprint 셀 중 포탈이 놓인 셀은 충돌에서 제외 → 포탈 진입 가능.
+    const blocking = e.blocks !== false;
+    if (blocking) {
+      out.blocks = true;
+      out.footprintCells = entityFootprintCells(e)
+        .filter(([gx, gy]) => !portalCells.has(`${gx},${gy}`))
+        .map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
     }
 
     // scale — 에디터가 footprint 폭에 맞춰 축소한 배율을 게임 타일 기준으로. 종횡비 보존(균일).
