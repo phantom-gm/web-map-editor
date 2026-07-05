@@ -21,11 +21,9 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     if (e.kind !== "object") return e;
     const out: MapEntity = { ...e };
 
-    // 오브젝트는 기본적으로 이동을 막는다(관통 금지). 명시적으로 blocks=false 인 것만 통과 허용.
+    // 오브젝트는 기본적으로 통과 가능(충돌 없음). "충돌" 체크(blocks=true)한 것만 이동을 막는다.
     // footprint 셀 중 포탈이 놓인 셀은 충돌에서 제외 → 포탈 진입 가능.
-    const blocking = e.blocks !== false;
-    if (blocking) {
-      out.blocks = true;
+    if (e.blocks === true) {
       out.footprintCells = entityFootprintCells(e)
         .filter(([gx, gy]) => !portalCells.has(`${gx},${gy}`))
         .map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);

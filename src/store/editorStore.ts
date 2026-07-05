@@ -11,48 +11,6 @@ import { exportEntities } from "../lib/entityExport";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
 import { footprintWH, isEntityKind, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
 
-/** 포탈 외 엔티티 중, 위치(gx,gy)+크기(w,h) footprint 가 excludeId 외 다른 것과 겹치면 true. */
-function overlapsAny(
-  entities: MapEntity[],
-  excludeId: string | null,
-  gx: number,
-  gy: number,
-  w: number,
-  h: number,
-): boolean {
-  for (const o of entities) {
-    if (o.id === excludeId || o.kind === "portal") continue;
-    const [ow, oh] = footprintWH(o);
-    if (gx < o.gx + ow && o.gx < gx + w && gy < o.gy + oh && o.gy < gy + h) return true;
-  }
-  return false;
-}
-
-/** (gx,gy) 에서 바깥으로 링 탐색해 w×h 가 맵 안에 들어가고 겹치지 않는 첫 위치. 없으면 null. */
-function findFreeSpot(
-  entities: MapEntity[],
-  excludeId: string | null,
-  gx: number,
-  gy: number,
-  w: number,
-  h: number,
-  W: number,
-  H: number,
-): [number, number] | null {
-  const fits = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x + w <= W && y + h <= H && !overlapsAny(entities, excludeId, x, y, w, h);
-  if (fits(gx, gy)) return [gx, gy];
-  for (let rad = 1; rad <= Math.max(W, H); rad++) {
-    for (let dy = -rad; dy <= rad; dy++) {
-      for (let dx = -rad; dx <= rad; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== rad) continue; // ring 둘레만
-        if (fits(gx + dx, gy + dy)) return [gx + dx, gy + dy];
-      }
-    }
-  }
-  return null;
-}
-
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
   // 레지스트리 없으면 기존 판정 유지(스토리지에서 온 RUID 보존 — 권위 있음).
@@ -448,14 +406,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // 포탈 도착 셀 기본값 = 배치 위치(현재 셀). 목적지 맵만 채우면 되도록 하고, 필요 시 변경.
       // destFacing 은 미설정(=무관) 으로 둔다 — 변환기가 미지정 시 기본 SE 로 emit.
       if (kind === "portal") ent.destCell = [gx, gy];
-      // 겹침 방지 — 클릭 셀이 다른 오브젝트와 겹치면 가장 가까운 빈 자리로.
+      // 겹침 허용 — 클릭 셀에 그대로 배치. footprint 가 맵 밖으로 나가지 않게 앵커만 클램프.
       if (kind !== "portal") {
         const [fw, fh] = footprintWH(ent);
-        const free = findFreeSpot(s.entities, null, gx, gy, fw, fh, W, H);
-        if (free) {
-          ent.gx = free[0];
-          ent.gy = free[1];
-        }
+        ent.gx = Math.max(0, Math.min(gx, W - fw));
+        ent.gy = Math.max(0, Math.min(gy, H - fh));
       }
       return {
         entities: [...s.entities, ent],
@@ -474,10 +429,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
       const ent = s.entities.find((e) => e.id === id);
       if (!ent || (ent.gx === gx && ent.gy === gy)) return {};
-      // 겹침 방지 — 이동 결과가 다른 오브젝트와 겹치면 이동하지 않음(직전 위치 유지).
+      // 겹침 허용 — 경계만 확인(footprint 가 맵 밖으로 나가면 이동 안 함). 다른 오브젝트와 겹쳐도 OK.
       if (ent.kind !== "portal") {
         const [w, h] = footprintWH(ent);
-        if (gx + w > W || gy + h > H || overlapsAny(s.entities, id, gx, gy, w, h)) return {};
+        if (gx + w > W || gy + h > H) return {};
       }
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, gx, gy } : e)),
@@ -493,8 +448,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const w = Math.max(1, Math.min(tilesW, W - ent.gx));
       const h = Math.max(1, Math.min(tilesH, H - ent.gy));
       if (ent.tilesW === w && ent.tilesH === h) return {};
-      // 겹침 방지 — 커질 때 다른 오브젝트와 겹치면 적용 안 함(직전 크기 유지).
-      if (ent.kind !== "portal" && overlapsAny(s.entities, id, ent.gx, ent.gy, w, h)) return {};
+      // 겹침 허용 — 다른 오브젝트와 겹쳐도 크기 적용(경계는 위 min 클램프로 이미 보장).
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, tilesW: w, tilesH: h } : e)),
         entitiesVer: s.entitiesVer + 1,
@@ -523,7 +477,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
       };
     }),
-  // 복사 — 같은 속성으로 원본 footprint 옆(+gx)에서 시작해 가장 가까운 빈 자리에 배치(겹침 방지). 선택+커서.
+  // 복사 — 같은 속성으로 원본 footprint 바로 옆(+gx)에 배치(겹침 허용, 경계 클램프). 선택+커서.
   duplicateEntity: (id) =>
     set((s) => {
       const src = s.entities.find((e) => e.id === id);
@@ -531,12 +485,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const before = snap(s.ground, s.blocked, s.entities);
       const [W, H] = s.size;
       const [fw, fh] = footprintWH(src);
-      const startX = src.gx + fw; // 원본 footprint 바로 옆부터 탐색
-      const free = src.kind === "portal"
-        ? [Math.min(W - 1, src.gx + 1), src.gy] as [number, number]
-        : findFreeSpot(s.entities, null, startX, src.gy, fw, fh, W, H) ??
-          [Math.min(W - 1, startX), src.gy] as [number, number];
-      const copy: MapEntity = { ...src, id: newEntityId(), gx: free[0], gy: free[1] };
+      const step = src.kind === "portal" ? 1 : fw; // 포탈은 1칸, 오브젝트는 footprint 폭만큼 옆으로
+      const gx = Math.max(0, Math.min(src.gx + step, W - (src.kind === "portal" ? 1 : fw)));
+      const gy = Math.max(0, Math.min(src.gy, H - (src.kind === "portal" ? 1 : fh)));
+      const copy: MapEntity = { ...src, id: newEntityId(), gx, gy };
       return {
         entities: [...s.entities, copy],
         entitiesVer: s.entitiesVer + 1,

@@ -148,10 +148,10 @@ export function EntityInspector() {
         <label className="ei-check">
           <input
             type="checkbox"
-            checked={entity.blocks === false}
-            onChange={(e) => updateEntity(entity.id, { blocks: e.target.checked ? false : undefined })}
+            checked={entity.blocks === true}
+            onChange={(e) => updateEntity(entity.id, { blocks: e.target.checked ? true : undefined })}
           />
-          <span>통과 허용 — 밟고 지나갈 수 있음 (기본: 충돌로 막음. 포탈 셀은 자동 예외)</span>
+          <span>충돌 — 이 오브젝트가 이동을 막음 (기본: 통과 가능. 체크 시 footprint 이동불가, 포탈 셀 예외)</span>
         </label>
       )}
 
