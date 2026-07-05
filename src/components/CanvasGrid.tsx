@@ -137,21 +137,8 @@ function draw(
     }
   }
 
-  // 이동불가 셀 — 빨강 다이아몬드 오버레이 (이동불가 표시 토글)
-  if (visual.blocked && blocked.size > 0) {
-    ctx.fillStyle = "rgba(220,70,70,0.32)";
-    ctx.strokeStyle = "#e05050";
-    ctx.lineWidth = 1.5;
-    for (const k of blocked) {
-      const [gx, gy] = parseCellKey(k);
-      if (gx < 0 || gy < 0 || gx >= W || gy >= H) continue;
-      const [cx, cy] = cellToScreen(gx, gy, cam);
-      if (!vis(cx, cy)) continue;
-      diamondPath(ctx, cx, cy, hw, hh);
-      ctx.fill();
-      ctx.stroke();
-    }
-  }
+  // 이동불가 셀 오버레이는 엔티티(오브젝트) 위에 그린다 — 오브젝트 깔린 타일에 이동불가를 칠해도
+  // 오브젝트에 가려지지 않고 보이도록(에디터 작업 UX). ↓ 엔티티 루프 다음에서 그림.
 
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   if (entities.length > 0) {
@@ -274,6 +261,22 @@ function draw(
         ctx.fillStyle = meta.color;
         ctx.fillText(e.name, cx, labelTop - 3);
       }
+    }
+  }
+
+  // 이동불가 셀 — 빨강 다이아몬드 오버레이. 엔티티 위에 그려 오브젝트 깔린 타일도 보이게(이동불가 표시 토글).
+  if (visual.blocked && blocked.size > 0) {
+    ctx.fillStyle = "rgba(220,70,70,0.32)";
+    ctx.strokeStyle = "#e05050";
+    ctx.lineWidth = 1.5;
+    for (const k of blocked) {
+      const [gx, gy] = parseCellKey(k);
+      if (gx < 0 || gy < 0 || gx >= W || gy >= H) continue;
+      const [cx, cy] = cellToScreen(gx, gy, cam);
+      if (!vis(cx, cy)) continue;
+      diamondPath(ctx, cx, cy, hw, hh);
+      ctx.fill();
+      ctx.stroke();
     }
   }
 
