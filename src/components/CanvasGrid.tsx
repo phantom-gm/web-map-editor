@@ -168,10 +168,12 @@ function draw(
       let labelTop = cy - hh;
       if (img) {
         const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
+        // 충돌(이동불가) 오브젝트는 footprint 를 빨강(수동 이동불가와 동일)으로 표시 — 에디터 작업용 UX.
+        const blocking = e.kind === "object" && e.blocks === true;
 
-        // 1) footprint 채움 — 스프라이트 아래(이동불가 스타일, 옅게). 점유 표시 토글.
+        // 1) footprint 채움 — 스프라이트 아래. 점유 표시 토글. blocking=빨강, 아니면 종류색.
         if (visual.footprint) {
-          ctx.fillStyle = meta.color + (sel ? "33" : "1f");
+          ctx.fillStyle = blocking ? (sel ? "rgba(220,70,70,0.42)" : "rgba(220,70,70,0.30)") : meta.color + (sel ? "33" : "1f");
           for (const [gx, gy] of cells) {
             const [fx, fy] = cellToScreen(gx, gy, cam);
             diamondPath(ctx, fx, fy, hw, hh);
@@ -194,7 +196,7 @@ function draw(
 
         // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 표시 토글.
         if (visual.footprint) {
-          ctx.strokeStyle = meta.color;
+          ctx.strokeStyle = blocking ? "#e05050" : meta.color;
           ctx.globalAlpha = sel ? 0.95 : 0.55;
           ctx.lineWidth = sel ? 1.6 : 1.2;
           for (const [gx, gy] of cells) {
