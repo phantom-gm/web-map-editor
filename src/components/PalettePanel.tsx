@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { loadTiles, fallbackColor, DEFAULT_CATEGORY, type PaletteTile } from "../lib/palette";
+import { isEntityKind } from "../types/entity";
 import type { RegStatus } from "../lib/registry";
 import { resolveTiles, uploadTiles } from "../lib/apiClient";
 import { getSecret } from "../lib/secret";
@@ -278,7 +279,8 @@ export function PalettePanel() {
                       key={i}
                       className={
                         "ptile" +
-                        (i === activeIdx && activeTool === "brush" ? " sel" : "") +
+                        // 활성 타일 하이라이트 — 브러시/배치(엔티티) 도구 모두. 커서·지우개 등은 제외.
+                        (i === activeIdx && (activeTool === "brush" || isEntityKind(activeTool)) ? " sel" : "") +
                         (selected.has(i) ? " msel" : "")
                       }
                       title={tileTitle(t)}

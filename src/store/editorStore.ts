@@ -9,7 +9,7 @@ import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from ".
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
-import { footprintWH, isEntityKind, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
+import { footprintWH, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
@@ -54,6 +54,21 @@ const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | EntityKind;
+
+// 팔레트 타일의 category(스토리지 subcategory)로 선택 시 활성화할 도구 결정.
+//   foothold → 브러시(바닥 타일), npc/monster → 해당 배치, 그 외 전부 → 오브젝트 배치.
+export function toolForCategory(category?: string): Tool {
+  switch ((category || "").toLowerCase()) {
+    case "foothold":
+      return "brush";
+    case "npc":
+      return "npc";
+    case "monster":
+      return "monster";
+    default:
+      return "object";
+  }
+}
 // 편집용 오버레이 표시 토글 — grid(빈 격자) / blocked(이동불가 빨강) / footprint(오브젝트 점유 표시)
 export type VisualLayer = "grid" | "blocked" | "footprint";
 export type VisualFlags = Record<VisualLayer, boolean>;
@@ -287,9 +302,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     for (const t of s.palette) if (t.ruid) ruids[t.name] = t.ruid;
     return { map: s.mapName, ruids };
   },
-  // 팔레트 타일 선택 — 엔티티 배치 도구가 활성이면 그대로 두고(에셋만 바꿈), 아니면 브러시로.
+  // 팔레트 타일 선택 — 타일 category 로 도구 자동 전환(foothold=브러시, npc/monster/그외=배치).
   setActiveIdx: (i) =>
-    set((s) => ({ activeIdx: i, activeTool: isEntityKind(s.activeTool) ? s.activeTool : "brush" })),
+    set((s) => ({ activeIdx: i, activeTool: toolForCategory(s.palette[i]?.category) })),
   setTool: (t) => set({ activeTool: t }),
 
   toggleVisual: (k) => set((s) => ({ visual: { ...s.visual, [k]: !s.visual[k] } })),
