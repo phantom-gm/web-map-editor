@@ -40,6 +40,12 @@ export interface MapEntity {
   tilesH?: number;
   flipX?: boolean; // 스프라이트 좌우반전
 
+  // object 이미지 렌더 기준 footprint(배율 1.0 크기). 배치 시 자동맞춤으로 고정 →
+  // 이후 tilesW/tilesH(점유/충돌)를 바꿔도 이미지 크기·위치는 그대로. 크기 조절은 scaleMul 로만.
+  // (미설정 시 renderWH 가 tilesW/tilesH 로 폴백 → 레거시/몬스터·NPC 는 기존 동작 유지.)
+  baseW?: number;
+  baseH?: number;
+
   // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
@@ -66,6 +72,12 @@ export function migrateEntity(raw: MapEntity): MapEntity {
   delete (out as LegacyEntity).targetMap;
   delete (out as LegacyEntity).targetX;
   delete (out as LegacyEntity).targetY;
+  // object 이미지 크기 분리(신규): 기존 저장 파일은 baseW 미보유 → 현재 tilesW/tilesH 로 1회 고정해
+  // 기존 렌더를 그대로 보존하면서, 이후 W×H(점유) 변경이 이미지에 영향을 주지 않게 한다.
+  if (out.kind === "object" && out.baseW === undefined) {
+    out.baseW = Math.max(1, out.tilesW ?? 1);
+    out.baseH = Math.max(1, out.tilesH ?? 1);
+  }
   return out;
 }
 
@@ -103,9 +115,17 @@ export const ENTITY_META: Record<EntityKind, EntityKindMeta> = {
 export const isEntityKind = (s: string): s is EntityKind =>
   s === "portal" || s === "monster" || s === "npc" || s === "object";
 
-/** 엔티티 footprint 크기 [W,H] (타일 단위, 최소 1). 미설정이면 [1,1]. */
+/** 엔티티 점유(충돌) footprint 크기 [W,H] (타일 단위, 최소 1). 미설정이면 [1,1]. */
 export function footprintWH(e: MapEntity): [number, number] {
   return [Math.max(1, e.tilesW ?? 1), Math.max(1, e.tilesH ?? 1)];
+}
+
+/**
+ * 이미지 렌더 기준 footprint [W,H] — 스프라이트 크기·앵커 계산에만 사용(점유 footprintWH 와 분리).
+ * baseW/baseH(배치 시 고정) 우선, 없으면 tilesW/tilesH 로 폴백(레거시·몬스터·NPC 는 기존과 동일).
+ */
+export function renderWH(e: MapEntity): [number, number] {
+  return [Math.max(1, e.baseW ?? e.tilesW ?? 1), Math.max(1, e.baseH ?? e.tilesH ?? 1)];
 }
 
 /** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */

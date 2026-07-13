@@ -2,7 +2,7 @@
 //  - scale: 스프라이트 배율 (게임이 네이티브 크기로 배치해 거대해지는 버그 방지)
 //  - footprintCells: 충돌(blocks) 시 앵커 상대 오프셋 목록
 // 라이브 상태(store)는 blocks 만 갖고, scale/footprintCells 는 tilesW/tilesH·이미지에서 export 시 계산.
-import { entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
+import { entityFootprintCells, renderWH, type MapEntity } from "../types/entity";
 import { makeEntityImageLookup } from "./entityImage";
 import type { PaletteTile } from "./palette";
 
@@ -33,11 +33,12 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
         .map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
     }
 
-    // scale — 에디터가 footprint 폭에 맞춘 자동배율 × 사용자 배율(scaleMul). 종횡비 보존(균일).
+    // scale — 이미지 렌더 기준폭(renderWH=baseW) × 사용자 배율(scaleMul). 종횡비 보존(균일).
+    //   ⚠ 점유 footprintWH 가 아닌 renderWH — W×H(점유) 조절이 게임 스프라이트 크기에 영향 없도록.
     const img = imageOf(e);
     const nw = img?.naturalWidth ?? 0;
     if (nw > 0) {
-      const [fw] = footprintWH(e);
+      const [fw] = renderWH(e);
       const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
       const scale = ((fw * GAME_TILE_PX) / nw) * mul;
       out.scale = Math.round(scale * 1000) / 1000;

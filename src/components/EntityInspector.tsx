@@ -126,7 +126,7 @@ export function EntityInspector() {
 
       {entity.kind !== "portal" && (
         <label className="ei-row">
-          <span>타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절</span>
+          <span>{entity.kind === "object" ? "타일 크기 (W × H) — 점유(충돌) 영역만. 이미지 크기는 아래 '배율'로 조절" : "타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절"}</span>
           <div className="ei-grid2">
             <NumberField
               className=""
@@ -158,22 +158,41 @@ export function EntityInspector() {
       {entity.kind === "object" && (
         <>
           <label className="ei-row">
-            <span>배율 (사이즈) — footprint 자동크기 × 이 값</span>
-            <input type="number" step={0.05} value={entity.scaleMul ?? 1} onChange={(e) => setNum("scaleMul", e.target.value)} />
+            <span>배율 (이미지 크기) — 1.0 = 배치 시 기본 크기. W×H(점유)와 독립</span>
+            <NumberField
+              className=""
+              value={entity.scaleMul ?? 1}
+              min={0.05}
+              step={0.05}
+              float
+              onCommit={(v) => updateEntity(entity.id, { scaleMul: v })}
+            />
           </label>
           <div className="ei-grid2">
             <label className="ei-row">
               <span>X 이동 (px)</span>
-              <input type="number" step={1} value={entity.offsetX ?? 0} onChange={(e) => setNum("offsetX", e.target.value)} />
+              <NumberField
+                className=""
+                value={entity.offsetX ?? 0}
+                onCommit={(v) => updateEntity(entity.id, { offsetX: v || undefined })}
+              />
             </label>
             <label className="ei-row">
               <span>Y 이동 (px)</span>
-              <input type="number" step={1} value={entity.offsetY ?? 0} onChange={(e) => setNum("offsetY", e.target.value)} />
+              <NumberField
+                className=""
+                value={entity.offsetY ?? 0}
+                onCommit={(v) => updateEntity(entity.id, { offsetY: v || undefined })}
+              />
             </label>
           </div>
           <label className="ei-row">
             <span>기울기 (회전, 도)</span>
-            <input type="number" step={1} value={entity.rotationDeg ?? 0} onChange={(e) => setNum("rotationDeg", e.target.value)} />
+            <NumberField
+              className=""
+              value={entity.rotationDeg ?? 0}
+              onCommit={(v) => updateEntity(entity.id, { rotationDeg: v || undefined })}
+            />
           </label>
         </>
       )}

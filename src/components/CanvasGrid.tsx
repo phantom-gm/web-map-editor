@@ -13,7 +13,7 @@ import { parseCellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityFootprintCells, footprintWH, renderWH, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { EntityInspector } from "./EntityInspector";
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
@@ -39,8 +39,9 @@ function entityRect(
   img: HTMLImageElement | null,
 ): [number, number, number, number] {
   if (img) {
-    // footprint(W×H)을 덮는 빌보드. 폭 = (W+H)*hw, 전면 바닥-중앙 앵커.
-    const [fw, fh] = footprintWH(e);
+    // 이미지 렌더 기준 footprint(baseW/H)를 덮는 빌보드. 폭 = (W+H)*hw, 전면 바닥-중앙 앵커.
+    // ⚠ 점유(충돌) footprintWH 가 아닌 renderWH — W×H(점유) 조절이 이미지에 영향 주지 않도록 분리.
+    const [fw, fh] = renderWH(e);
     const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1; // 사이즈 배율
     const zoom = hw / (TW / 2); // hw = TW/2*zoom → zoom 복원
     const ox = (e.offsetX ?? 0) * zoom; // 화면 오프셋(px×zoom)

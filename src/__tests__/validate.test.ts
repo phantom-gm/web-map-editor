@@ -48,6 +48,7 @@ describe("buildBlueprint 경계 클램프", () => {
       blocked,
       staticLayer: emptyLayer(),
       attributeBase: emptyLayer(),
+      entities: [],
     });
     expect(bp.layers.GroundTileMap.cellCount).toBe(1); // (5,5) 제외
     expect(bp.layers.TileAttributeTileMap.cellCount).toBe(1); // (10,10) 제외
