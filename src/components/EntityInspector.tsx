@@ -106,16 +106,22 @@ export function EntityInspector() {
       )}
 
       {entity.kind === "monster" && (
-        <div className="ei-grid2">
+        <>
+          <div className="ei-grid2">
+            <label className="ei-row">
+              <span>스폰 수</span>
+              <input type="number" min={1} value={entity.spawnCount ?? ""} onChange={(e) => setNum("spawnCount", e.target.value)} />
+            </label>
+            <label className="ei-row">
+              <span>리젠(초)</span>
+              <input type="number" min={0} value={entity.respawnSec ?? ""} onChange={(e) => setNum("respawnSec", e.target.value)} />
+            </label>
+          </div>
           <label className="ei-row">
-            <span>스폰 수</span>
-            <input type="number" min={1} value={entity.spawnCount ?? ""} onChange={(e) => setNum("spawnCount", e.target.value)} />
+            <span>분산 (spread) — 스폰 흩어짐 반경(셀). 0 = 앵커에 모여서</span>
+            <input type="number" min={0} value={entity.spread ?? ""} onChange={(e) => setNum("spread", e.target.value)} />
           </label>
-          <label className="ei-row">
-            <span>리젠(초)</span>
-            <input type="number" min={0} value={entity.respawnSec ?? ""} onChange={(e) => setNum("respawnSec", e.target.value)} />
-          </label>
-        </div>
+        </>
       )}
       {entity.kind === "npc" && (
         <label className="ei-row">
@@ -173,14 +179,14 @@ export function EntityInspector() {
 
       {entity.kind === "object" && (
         <label className="ei-row">
-          <span>플레이어 레이어 — 위: 오브젝트가 플레이어를 덮음 / 아래: 플레이어가 위(기본)</span>
+          <span>플레이어 레이어 — 자동(기본): 건물·나무 앞뒤 자동 / 위: 천장·다리 / 아래: 바닥 데칼·러그</span>
           <select
-            value={entity.layer ?? "below"}
-            onChange={(e) => updateEntity(entity.id, { layer: e.target.value === "below" ? undefined : (e.target.value as MapEntity["layer"]) })}
+            value={entity.layer ?? "auto"}
+            onChange={(e) => updateEntity(entity.id, { layer: e.target.value === "auto" ? undefined : (e.target.value as MapEntity["layer"]) })}
           >
-            <option value="below">아래 (플레이어가 위 — 기본)</option>
-            <option value="above">위 (오브젝트가 플레이어를 덮음)</option>
-            <option value="auto">자동 (동적 교차 — 방식 B, 준비중)</option>
+            <option value="auto">자동 (기본 — 건물·나무: 플레이어와 앞/뒤 자동)</option>
+            <option value="above">위 (항상 플레이어 위 — 천장·다리·아치)</option>
+            <option value="below">아래 (항상 플레이어 아래 — 바닥 데칼·러그)</option>
           </select>
         </label>
       )}

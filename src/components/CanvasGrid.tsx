@@ -206,14 +206,14 @@ function draw(
           ctx.globalAlpha = 1;
         }
 
-        // 3b) 플레이어 레이어 표식 — "위(above)" 오브젝트는 플레이어를 덮음(인게임). 에디터엔 플레이어가 없어
-        //   배지로만 식별(D4). 상단-중앙에 ▲ 글자. (below/auto 는 표식 없음.)
-        if (e.kind === "object" && e.layer === "above") {
-          ctx.fillStyle = "#4aa3ff";
+        // 3b) 플레이어 레이어 표식 — auto(기본, 동적 앞뒤)는 표식 없음. 명시 레이어만 배지로 식별(D4):
+        //   above=항상 플레이어 위(▲파랑), below=항상 아래(▼주황). 에디터엔 플레이어가 없어 배지로만 구분.
+        if (e.kind === "object" && (e.layer === "above" || e.layer === "below")) {
+          ctx.fillStyle = e.layer === "above" ? "#4aa3ff" : "#e0a24a";
           ctx.font = `bold ${Math.max(10, Math.round(hh * 1.1))}px sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "bottom";
-          ctx.fillText("▲위", (x0 + x1) / 2, labelTop - 1);
+          ctx.fillText(e.layer === "above" ? "▲위" : "▼아래", (x0 + x1) / 2, labelTop - 1);
         }
 
         // 4) 선택 시 — 흰 선택 박스 + 리사이즈 핸들(박스 우하단 코너, 통상적 위치).

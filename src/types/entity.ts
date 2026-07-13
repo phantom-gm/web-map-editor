@@ -30,6 +30,7 @@ export interface MapEntity {
 
   // 종류별 선택 필드(프로덕션). 미입력이면 게임 기본값.
   spawnCount?: number; // monster: 동시 스폰 수
+  spread?: number; // monster: 스폰 분산 반경(셀). 0=앵커에 모여서 스폰. (convert_map 계약 필드)
   respawnSec?: number; // monster: 리젠 간격(초)
   dialogId?: string; // npc: 대사/스크립트 id
 
