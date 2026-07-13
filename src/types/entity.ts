@@ -46,6 +46,10 @@ export interface MapEntity {
   baseW?: number;
   baseH?: number;
 
+  // 플레이어 대비 렌더 레이어(정렬 밴드). "below"=플레이어가 위(기본), "above"=오브젝트가 플레이어를 덮음,
+  //   "auto"=방식 B(동적 교차) 예약(현재는 below 로 취급). 미설정=below.
+  layer?: "above" | "below" | "auto";
+
   // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).

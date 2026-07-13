@@ -156,6 +156,20 @@ export function EntityInspector() {
       )}
 
       {entity.kind === "object" && (
+        <label className="ei-row">
+          <span>플레이어 레이어 — 위: 오브젝트가 플레이어를 덮음 / 아래: 플레이어가 위(기본)</span>
+          <select
+            value={entity.layer ?? "below"}
+            onChange={(e) => updateEntity(entity.id, { layer: e.target.value === "below" ? undefined : (e.target.value as MapEntity["layer"]) })}
+          >
+            <option value="below">아래 (플레이어가 위 — 기본)</option>
+            <option value="above">위 (오브젝트가 플레이어를 덮음)</option>
+            <option value="auto">자동 (동적 교차 — 방식 B, 준비중)</option>
+          </select>
+        </label>
+      )}
+
+      {entity.kind === "object" && (
         <>
           <label className="ei-row">
             <span>배율 (이미지 크기) — 1.0 = 배치 시 기본 크기. W×H(점유)와 독립</span>

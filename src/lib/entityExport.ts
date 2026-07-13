@@ -56,6 +56,10 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용.
     if (e.rotationDeg && e.rotationDeg !== 0) out.rotation = e.rotationDeg;
 
+    // layer — 플레이어 대비 렌더 밴드. above/auto 만 emit, below·미설정은 생략(spread 로 실린 값 제거).
+    if (e.layer === "above" || e.layer === "auto") out.layer = e.layer;
+    else delete out.layer;
+
     return out;
   });
 }
