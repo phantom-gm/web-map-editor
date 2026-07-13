@@ -155,6 +155,29 @@ export function EntityInspector() {
         </label>
       )}
 
+      {entity.kind === "object" && (
+        <>
+          <label className="ei-row">
+            <span>배율 (사이즈) — footprint 자동크기 × 이 값</span>
+            <input type="number" step={0.05} value={entity.scaleMul ?? 1} onChange={(e) => setNum("scaleMul", e.target.value)} />
+          </label>
+          <div className="ei-grid2">
+            <label className="ei-row">
+              <span>X 이동 (px)</span>
+              <input type="number" step={1} value={entity.offsetX ?? 0} onChange={(e) => setNum("offsetX", e.target.value)} />
+            </label>
+            <label className="ei-row">
+              <span>Y 이동 (px)</span>
+              <input type="number" step={1} value={entity.offsetY ?? 0} onChange={(e) => setNum("offsetY", e.target.value)} />
+            </label>
+          </div>
+          <label className="ei-row">
+            <span>기울기 (회전, 도)</span>
+            <input type="number" step={1} value={entity.rotationDeg ?? 0} onChange={(e) => setNum("rotationDeg", e.target.value)} />
+          </label>
+        </>
+      )}
+
       <div className="ei-actions">
         <button onClick={() => duplicateEntity(entity.id)}>복사 (⌘/Ctrl+D)</button>
         {entity.kind !== "portal" && (

@@ -41,10 +41,14 @@ function entityRect(
   if (img) {
     // footprint(W×H)을 덮는 빌보드. 폭 = (W+H)*hw, 전면 바닥-중앙 앵커.
     const [fw, fh] = footprintWH(e);
-    const wpx = (fw + fh) * hw;
+    const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1; // 사이즈 배율
+    const zoom = hw / (TW / 2); // hw = TW/2*zoom → zoom 복원
+    const ox = (e.offsetX ?? 0) * zoom; // 화면 오프셋(px×zoom)
+    const oy = (e.offsetY ?? 0) * zoom;
+    const wpx = (fw + fh) * hw * mul;
     const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
-    const bx = cx + ((fw - fh) / 2) * hw; // footprint 바닥-중앙 x(베이스 셀 기준)
-    const by = cy + (fw + fh - 1) * hh; // footprint 전면 코너 바닥 y
+    const bx = cx + ((fw - fh) / 2) * hw + ox; // footprint 바닥-중앙 x(베이스 셀 기준) + 오프셋
+    const by = cy + (fw + fh - 1) * hh + oy; // footprint 전면 코너 바닥 y + 오프셋
     return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
   }
   return [cx - hw, cy - hh, cx + hw, cy + hh];
@@ -168,17 +172,24 @@ function draw(
           }
         }
 
-        // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. flipX 면 가로 미러.
+        // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. 기울기(회전) + flipX 미러 적용.
         const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, img);
+        const rot = ((e.rotationDeg ?? 0) * Math.PI) / 180; // 기울기(라디안)
+        ctx.save();
+        if (rot) {
+          const ax = (x0 + x1) / 2, ay = y1; // 바닥-중앙 앵커 기준 회전
+          ctx.translate(ax, ay);
+          ctx.rotate(rot);
+          ctx.translate(-ax, -ay);
+        }
         if (e.flipX) {
-          ctx.save();
           ctx.translate(x0 + x1, 0);
           ctx.scale(-1, 1);
           ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
-          ctx.restore();
         } else {
           ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
         }
+        ctx.restore();
         labelTop = y0;
 
         // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 표시 토글.

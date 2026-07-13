@@ -9,6 +9,10 @@ import type { PaletteTile } from "./palette";
 // 게임 iso 타일 폭(px/셀). 에디터 미리보기(TW=64)와 달리 게임 빌드는 56px 타일을 쓴다.
 // scale = 목표 footprint 픽셀(게임) / 스프라이트 네이티브 픽셀.
 const GAME_TILE_PX = 56;
+// 에디터 화면 px(TW=64/타일) → 게임 world 단위(0.56 world/타일) 변환. offset 을 같은 시각량으로 맞춘다.
+const EDITOR_TILE_PX = 64;
+const GAME_TILE_WORLD = 0.56;
+const PX_TO_WORLD = GAME_TILE_WORLD / EDITOR_TILE_PX; // ≈ 0.00875
 
 /** object 엔티티에 scale/footprintCells 부착(그 외 kind·이미지 없음은 원본 그대로). */
 export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): MapEntity[] {
@@ -29,14 +33,28 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
         .map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
     }
 
-    // scale — 에디터가 footprint 폭에 맞춰 축소한 배율을 게임 타일 기준으로. 종횡비 보존(균일).
+    // scale — 에디터가 footprint 폭에 맞춘 자동배율 × 사용자 배율(scaleMul). 종횡비 보존(균일).
     const img = imageOf(e);
     const nw = img?.naturalWidth ?? 0;
     if (nw > 0) {
       const [fw] = footprintWH(e);
-      const scale = (fw * GAME_TILE_PX) / nw; // 폭 기준 균일 배율(높이는 종횡비 유지)
+      const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+      const scale = ((fw * GAME_TILE_PX) / nw) * mul;
       out.scale = Math.round(scale * 1000) / 1000;
     }
+
+    // offset — 에디터 화면 px(오른쪽+/아래+) → 게임 world(오른쪽+/위+). y 부호 반전.
+    const oxPx = e.offsetX ?? 0, oyPx = e.offsetY ?? 0;
+    if (oxPx !== 0 || oyPx !== 0) {
+      out.offset = [
+        Math.round(oxPx * PX_TO_WORLD * 1000) / 1000,
+        Math.round(-oyPx * PX_TO_WORLD * 1000) / 1000,
+      ];
+    }
+
+    // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용.
+    if (e.rotationDeg && e.rotationDeg !== 0) out.rotation = e.rotationDeg;
+
     return out;
   });
 }

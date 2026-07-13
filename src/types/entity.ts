@@ -44,6 +44,14 @@ export interface MapEntity {
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
   scale?: number | [number, number]; // 스프라이트 배율. export 계산값(게임 네이티브 거대화 방지).
+  offset?: [number, number]; // 스프라이트 위치 오프셋(world). export 계산값(offsetX/Y px → world).
+  rotation?: number; // 기울기(회전, 도). export 계산값(= rotationDeg).
+
+  // object 미세조정(에디터 입력, WYSIWYG). export 에서 scale/offset/rotation 으로 변환.
+  scaleMul?: number; // 사이즈 배율(footprint 자동스케일에 곱함). 기본 1.
+  offsetX?: number; // 화면 X 이동(px, 오른쪽+). 기본 0.
+  offsetY?: number; // 화면 Y 이동(px, 아래+). 기본 0.
+  rotationDeg?: number; // 기울기(회전, 도). 기본 0.
 }
 
 // 레거시 project.json 하위호환: 과거 필드(targetMap/targetX/targetY) → 캐논(destMap/destCell).
