@@ -145,6 +145,22 @@ export function EntityInspector() {
       )}
 
       {entity.kind === "object" && (
+        <button
+          className="ei-fit"
+          title="이미지 크기의 기준점을 현재 타일 크기로 재설정 (배율 1.0 = 이 타일 크기)"
+          onClick={() =>
+            updateEntity(entity.id, {
+              baseW: Math.max(1, entity.tilesW ?? 1),
+              baseH: Math.max(1, entity.tilesH ?? 1),
+              scaleMul: undefined,
+            })
+          }
+        >
+          ⤢ 이미지를 타일 크기(W×H)에 맞추기
+        </button>
+      )}
+
+      {entity.kind === "object" && (
         <label className="ei-check">
           <input
             type="checkbox"
