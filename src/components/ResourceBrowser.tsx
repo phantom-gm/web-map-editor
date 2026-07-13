@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { listResources, type ResourceItem } from "../lib/apiClient";
 import { tilesFromResources } from "../lib/palette";
-import { getSecret } from "../lib/secret";
 
 // sprite 카테고리의 대표 subcategory(목록/검색용). "all" = 전체. foothold = 바닥 타일.
 const SUBCATEGORIES = ["foothold", "object", "background", "npc", "monster", "portal", "trap", "item", "all"];
@@ -25,21 +24,16 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
 
   const load = useCallback(
     async (reset: boolean) => {
-      const secret = getSecret();
-      if (!secret) return;
       setBusy(true);
       setErr("");
       try {
-        const res = await listResources(
-          {
-            category: "sprite",
-            subcategory,
-            count: PAGE,
-            searchWord: searchWord.trim() || null,
-            cursor: reset ? null : cursor,
-          },
-          secret,
-        );
+        const res = await listResources({
+          category: "sprite",
+          subcategory,
+          count: PAGE,
+          searchWord: searchWord.trim() || null,
+          cursor: reset ? null : cursor,
+        });
         setItems((prev) => (reset ? res.items : [...prev, ...res.items]));
         if (reset) setAnchor(null); // 목록이 갈리면 Shift 기준 인덱스 무효화
         setCursor(res.nextCursor);
