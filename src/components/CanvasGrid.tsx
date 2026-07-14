@@ -13,7 +13,8 @@ import { parseCellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, entityFootprintCells, footprintWH, renderWH, isEntityIncomplete, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
+import { byGameDepth, entityImageRect } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
@@ -40,33 +41,11 @@ function entityRect(
   img: HTMLImageElement | null,
 ): [number, number, number, number] {
   if (img) {
-    const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1; // 사이즈 배율
-    const zoom = hw / (TW / 2); // hw = TW/2*zoom → zoom 복원
-    const ox = (e.offsetX ?? 0) * zoom; // 화면 오프셋(px×zoom)
-    const oy = (e.offsetY ?? 0) * zoom;
-    const [fw, fh] = renderWH(e); // 이미지 렌더 기준(baseW/H) — 점유(tilesW/H)와 분리
-    if (e.kind === "object") {
-      // MSW pivot 정합(OBJECT_PIVOT_ALIGNMENT.md) — 게임과 완전 동형 렌더:
-      //   MSW 는 스프라이트 "이미지 중심"(에셋 기본 pivot)을 앵커 셀 world 좌표에 놓는다.
-      //   폭 = renderW 타일 × 배율 (= export scale 이 만드는 게임 폭과 동일), 종횡비 native.
-      const wpx = fw * TW * zoom * mul; // = fw*2*hw*mul
-      const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
-      const bx = cx + ox, by = cy + oy; // 앵커 셀 중심 + 미세조정
-      return [bx - wpx / 2, by - hpx / 2, bx + wpx / 2, by + hpx / 2];
-    }
-    // 몬스터/NPC — 게임은 모델 스폰(스프라이트 배치 아님)이라 프리뷰 전용 billboard 유지:
-    //   footprint(W×H)를 덮고 전면 바닥-중앙 앵커.
-    const wpx = (fw + fh) * hw * mul;
-    const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
-    const bx = cx + ((fw - fh) / 2) * hw + ox;
-    const by = cy + (fw + fh - 1) * hh + oy;
-    return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
+    // 수식은 entityGeom.entityImageRect(순수함수·유닛 잠금)로 위임 — 여기선 img 치수만 전달.
+    return entityImageRect(e, cx, cy, hw, hh, img.naturalWidth || 1, img.naturalHeight || 1);
   }
   return [cx - hw, cy - hh, cx + hw, cy + hh];
 }
-
-/** 엔티티 깊이 정렬(뒤→앞): gy 우선, gx 차선. draw/히트테스트 공용. */
-const byEntityDepth = (a: MapEntity, b: MapEntity) => a.gy - b.gy || a.gx - b.gx;
 
 /** 화면 점(px)이 닿는 최상단(앞쪽) 엔티티. 스프라이트는 빌보드 사각형, 마커는 셀 다이아 bbox 기준. */
 function findEntityHit(
@@ -79,7 +58,7 @@ function findEntityHit(
   const hw = (TW / 2) * cam.zoom;
   const hh = (TH / 2) * cam.zoom;
   const lookup = makeEntityImageLookup(palette);
-  const sorted = [...entities].sort(byEntityDepth);
+  const sorted = [...entities].sort(byGameDepth);
   for (let i = sorted.length - 1; i >= 0; i--) {
     const e = sorted[i];
     const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
@@ -158,13 +137,18 @@ function draw(
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   if (entities.length > 0) {
     const lookup = makeEntityImageLookup(palette);
-    const sorted = [...entities].sort(byEntityDepth);
+    const sorted = [...entities].sort(byGameDepth);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
-      if (!vis(cx, cy)) continue;
       const meta = ENTITY_META[e.kind];
       const img = lookup(e);
+      // 컬링 — 이미지 엔티티는 실제 그려질 rect 가 캔버스와 교차하는지로(앵커만 보면 큰
+      // 스프라이트가 통째로 사라짐 — eng-review D6). 마커는 셀 중심 기준.
+      if (img) {
+        const [rx0, ry0, rx1, ry1] = entityRect(e, cx, cy, hw, hh, img);
+        if (rx1 < 0 || rx0 > dims.w || ry1 < 0 || ry0 > dims.h) continue;
+      } else if (!vis(cx, cy)) continue;
       const sel = e.id === selectedEntityId;
 
       let labelTop = cy - hh;
@@ -229,16 +213,21 @@ function draw(
           ctx.fillText(e.layer === "above" ? "▲위" : "▼아래", (x0 + x1) / 2, labelTop - 1);
         }
 
-        // 4) 선택 시 — 흰 선택 박스 + 리사이즈 핸들(박스 우하단 코너, 통상적 위치).
+        // 4) 선택 시 — 흰 선택 박스(이미지 rect) + 리사이즈 핸들.
+        //    핸들은 이미지 코너가 아니라 "점유 footprint 앞(남) 코너"에 — 드래그가 tilesW/H(점유)를
+        //    바꾸므로 핸들이 footprint 와 함께 움직여야 피드백이 맞음(eng-review D2).
         if (sel) {
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2);
+          const [fpw, fph] = footprintWH(e);
+          const [hxc, hyc] = cellToScreen(e.gx + fpw - 1, e.gy + fph - 1, cam);
+          const hy = hyc + hh; // 앞코너 셀 다이아의 아래 꼭짓점
           ctx.fillStyle = "#ffffff";
           ctx.strokeStyle = meta.color;
           ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.rect(x1 - 7, y1 - 7, 14, 14);
+          ctx.rect(hxc - 7, hy - 7, 14, 14);
           ctx.fill();
           ctx.stroke();
         }
@@ -485,21 +474,19 @@ export function CanvasGrid() {
       if (e.button !== 0) return;
       const tool = st.activeTool;
       if (tool === "cursor") {
-        // 커서 모드: 선택된 스프라이트의 선택박스 우하단 코너/우·하단 가장자리 → 드래그 리사이즈.
+        // 커서 모드: 선택된 스프라이트의 리사이즈 핸들(점유 footprint 앞코너 — draw 와 동일 위치)
+        //   근처 클릭 → 드래그 리사이즈(tilesW/H). 이미지 rect 는 renderWH 기준이라 핸들 기준이 아님(D2).
         const selEnt = st.selectedEntityId ? st.entities.find((e) => e.id === st.selectedEntityId) : null;
         if (selEnt && selEnt.kind !== "portal") {
           const img = makeEntityImageLookup(st.palette)(selEnt);
           if (img) {
             const z = st.camera.zoom;
-            const hw = (TW / 2) * z;
             const hh = (TH / 2) * z;
-            const [scx, scy] = cellToScreen(selEnt.gx, selEnt.gy, st.camera);
-            const [x0, y0, x1, y1] = entityRect(selEnt, scx, scy, hw, hh, img);
+            const [fw, fh] = footprintWH(selEnt);
+            const [hxc, hyc] = cellToScreen(selEnt.gx + fw - 1, selEnt.gy + fh - 1, st.camera);
+            const hy = hyc + hh; // 앞코너 셀 다이아 아래 꼭짓점(draw 의 핸들과 동일)
             const M = 10;
-            const nearRight = Math.abs(p.x - x1) <= M && p.y >= y0 - M && p.y <= y1 + M;
-            const nearBottom = Math.abs(p.y - y1) <= M && p.x >= x0 - M && p.x <= x1 + M;
-            if (nearRight || nearBottom) {
-              const [fw, fh] = footprintWH(selEnt);
+            if (Math.abs(p.x - hxc) <= M && Math.abs(p.y - hy) <= M) {
               mode.current = "resizeEntity";
               movingId.current = selEnt.id;
               resizeStart.current = { gx, gy, w: fw, h: fh }; // 잡은 셀 + 현재 크기

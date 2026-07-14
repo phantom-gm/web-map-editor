@@ -226,10 +226,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   requestFit: () => set((s) => ({ fitNonce: s.fitNonce + 1 })),
 
   addTiles: (tiles) =>
-    set((s) => ({
-      palette: [...s.palette, ...resolvePalette(tiles, s.registry)],
-      activeIdx: s.palette.length === 0 && tiles.length > 0 ? 0 : s.activeIdx,
-    })),
+    set((s) => {
+      const palette = [...s.palette, ...resolvePalette(tiles, s.registry)];
+      const activeIdx = s.palette.length === 0 && tiles.length > 0 ? 0 : s.activeIdx;
+      // 활성 타일이 새로 정해지면 도구도 category 로 전환 — 안 하면 object 타일이 활성인데
+      // 브러시가 남아 바닥에 오브젝트를 칠하는 사고(계약 §4 위반)가 남(브라우저 실측 재현).
+      return { palette, activeIdx, activeTool: toolForCategory(palette[activeIdx]?.category) };
+    }),
   // 이미 ruid/regStatus 가 채워진 타일(리소스 스토리지에서 불러온 것)을 그대로 append.
   // resolvePalette 를 거치지 않아 등록 정보가 보존된다(registry 미로드여도 ruid 유지).
   addResolvedTiles: (tiles) =>
@@ -238,10 +241,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const have = new Set(s.palette.map((t) => t.ruid).filter(Boolean));
       const fresh = tiles.filter((t) => !t.ruid || !have.has(t.ruid));
       if (fresh.length === 0) return {};
-      return {
-        palette: [...s.palette, ...fresh],
-        activeIdx: s.palette.length === 0 ? 0 : s.activeIdx,
-      };
+      const palette = [...s.palette, ...fresh];
+      const activeIdx = s.palette.length === 0 ? 0 : s.activeIdx;
+      return { palette, activeIdx, activeTool: toolForCategory(palette[activeIdx]?.category) };
     }),
   // 팔레트 타일 삭제(여러 개). ground 가 팔레트 인덱스를 참조하므로 인덱스 리맵 필수:
   // 삭제된 타일을 쓰던 셀은 제거하고, 남은 타일 인덱스를 앞으로 당긴다.

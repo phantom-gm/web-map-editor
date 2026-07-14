@@ -3,6 +3,7 @@ import { useEditorStore } from "../store/editorStore";
 import { tilesFromStored } from "../lib/palette";
 import { isProjectFile } from "../lib/projectIO";
 import { entityIssues } from "../lib/validate";
+import { makeEntityImageLookup } from "../lib/entityImage";
 import { fsaAvailable, saveProject, openProjectViaPicker, resetFileHandle, currentFileName } from "../lib/projectFile";
 
 export function FileMenu() {
@@ -67,8 +68,13 @@ export function FileMenu() {
   const doSave = async (forceNew: boolean) => {
     setOpen(false);
     // 저장 전 미완성 엔티티 경고(변환기 fail-closed 전에 잡기).
+    // hasImage: 이미지 미해석 오브젝트는 export 가 scale 을 누락(게임서 거대 배치) — 사전 경고(D7).
     const st = useEditorStore.getState();
-    const issues = entityIssues(st.entities, st.size, st.npcCatalog.byId);
+    const imageOf = makeEntityImageLookup(st.palette);
+    const issues = entityIssues(st.entities, st.size, st.npcCatalog.byId, (e) => {
+      const img = imageOf(e);
+      return !!img && (img.naturalWidth || 0) > 0;
+    });
     if (issues.length > 0) {
       const head = issues.slice(0, 8).map((s) => "• " + s).join("\n");
       const more = issues.length > 8 ? `\n…외 ${issues.length - 8}건` : "";

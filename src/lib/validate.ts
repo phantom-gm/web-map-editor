@@ -11,11 +11,14 @@ export interface MapValidation {
  * 엔티티 검증 — 게임 변환기(convert_map.cjs)의 fail-closed 규칙과 1:1.
  * "미완성 N건" = 변환기 "미해결 N건" 이 되도록 맞춘다.
  * @param npcClassIds NpcClass 카탈로그 멤버십(있으면 존재여부까지 검사). Set/Map(byId) 둘 다 허용.
+ * @param hasImage object 팔레트 이미지 해석 가능 여부(있으면 검사). 미해석이면 export 가 scale 을
+ *   조용히 누락 → 게임에서 네이티브 크기(화면 뒤덮는 거대 스프라이트)로 배치되므로 사전 경고(D7).
  */
 export function entityIssues(
   entities: MapEntity[],
   size: [number, number],
   npcClassIds?: { has(id: number): boolean },
+  hasImage?: (e: MapEntity) => boolean,
 ): string[] {
   const [W, H] = size;
   const facingSet = new Set<Facing>(FACINGS);
@@ -33,6 +36,9 @@ export function entityIssues(
       else if (npcClassIds && !npcClassIds.has(e.npcClassId)) out.push(`${at}: NpcClassID ${e.npcClassId} — 카탈로그에 없음`);
     } else if (e.kind === "object") {
       if (!e.ruid) out.push(`${at}: RUID 없음 (팔레트에서 등록된 스프라이트로 배치)`);
+      else if (hasImage && !hasImage(e)) {
+        out.push(`${at}: 팔레트 이미지 미해석 — scale 계산 불가(게임에서 네이티브 크기로 거대 배치됨). 같은 RUID/이름 타일을 팔레트에 복원하세요`);
+      }
     }
   }
   return out;
@@ -46,6 +52,7 @@ export function validateMap(args: {
   paletteCount: number;
   entities?: MapEntity[];
   npcClassIds?: { has(id: number): boolean };
+  hasImage?: (e: MapEntity) => boolean;
 }): MapValidation {
   const { size, ground, blocked, paletteCount } = args;
   const [W, H] = size;
@@ -81,7 +88,7 @@ export function validateMap(args: {
   }
 
   if (args.entities && args.entities.length > 0) {
-    errors.push(...entityIssues(args.entities, size, args.npcClassIds));
+    errors.push(...entityIssues(args.entities, size, args.npcClassIds, args.hasImage));
   }
 
   return { errors, warnings };

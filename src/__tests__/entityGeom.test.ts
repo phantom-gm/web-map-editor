@@ -1,0 +1,59 @@
+import { describe, it, expect } from "vitest";
+import { byGameDepth, entityImageRect } from "../lib/entityGeom";
+import { TW, TH } from "../lib/grid";
+import type { MapEntity } from "../types/entity";
+
+// WYSIWYG 핵심 수식 잠금(OBJECT_PIVOT_ALIGNMENT.md §5 D3/D5).
+const HW = TW / 2, HH = TH / 2; // zoom=1
+
+const ent = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
+
+describe("entityImageRect — object (MSW 동형: 중심 pivot @ 앵커 셀)", () => {
+  it("중심 = 앵커 셀 중심, 폭 = renderW타일, 종횡비 native", () => {
+    const e = ent({ baseW: 3, baseH: 1, tilesW: 5, tilesH: 4 }); // 점유≠렌더 — 렌더는 baseW
+    const [x0, y0, x1, y1] = entityImageRect(e, 100, 50, HW, HH, 200, 100);
+    expect((x0 + x1) / 2).toBeCloseTo(100); // 중심 x = 앵커
+    expect((y0 + y1) / 2).toBeCloseTo(50); // 중심 y = 앵커 (중심 pivot)
+    expect(x1 - x0).toBeCloseTo(3 * TW); // 폭 = baseW(3)타일 — 점유(5) 아님
+    expect(y1 - y0).toBeCloseTo(3 * TW * 0.5); // 높이 = 폭 × 100/200
+  });
+
+  it("offset(px)·배율이 중심·폭에 반영 (zoom=hw/(TW/2) 복원)", () => {
+    const e = ent({ baseW: 2, baseH: 1, offsetX: 10, offsetY: -4, scaleMul: 1.5 });
+    const zoom = 2; // hw=TW/2*2
+    const [x0, y0, x1, y1] = entityImageRect(e, 0, 0, HW * zoom, HH * zoom, 100, 100);
+    expect((x0 + x1) / 2).toBeCloseTo(10 * zoom);
+    expect((y0 + y1) / 2).toBeCloseTo(-4 * zoom);
+    expect(x1 - x0).toBeCloseTo(2 * TW * zoom * 1.5);
+  });
+
+  it("monster 는 기존 billboard 유지(전면 바닥-중앙 앵커) — 회귀", () => {
+    const e = ent({ kind: "monster", tilesW: 2, tilesH: 1 });
+    const [x0, y0, x1, y1] = entityImageRect(e, 0, 0, HW, HH, 100, 100);
+    expect(y1).toBeCloseTo((2 + 1 - 1) * HH); // 바닥 = footprint 전면
+    expect((x0 + x1) / 2).toBeCloseTo(((2 - 1) / 2) * HW); // 바닥-중앙 x
+    expect(y1 - y0).toBeCloseTo(x1 - x0); // 종횡비 1
+  });
+});
+
+describe("byGameDepth — 게임 z순서 미러(밴드 + 앞줄)", () => {
+  it("밴드: below < auto < above (행 무관)", () => {
+    const below = ent({ layer: "below", gy: 99 });
+    const auto = ent({ gy: 0 });
+    const above = ent({ layer: "above", gy: 0 });
+    expect(byGameDepth(below, auto)).toBeLessThan(0);
+    expect(byGameDepth(auto, above)).toBeLessThan(0);
+  });
+
+  it("밴드 내 object 는 앞줄(gy+tilesH−1) — tilesH 큰 쪽이 앞", () => {
+    const shallow = ent({ gy: 5, tilesH: 1 }); // 앞줄 5
+    const deep = ent({ gy: 3, tilesH: 4 }); // 앞줄 6 → 더 앞(나중에 그림)
+    expect(byGameDepth(shallow, deep)).toBeLessThan(0);
+  });
+
+  it("몬스터/포탈은 gy 기준(auto 대)", () => {
+    const mob = ent({ kind: "monster", gy: 4 });
+    const obj = ent({ gy: 5, tilesH: 1 }); // 앞줄 5
+    expect(byGameDepth(mob, obj)).toBeLessThan(0);
+  });
+});
