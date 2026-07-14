@@ -51,6 +51,16 @@ describe("byGameDepth — 게임 z순서 미러(밴드 + 앞줄)", () => {
     expect(byGameDepth(shallow, deep)).toBeLessThan(0);
   });
 
+  it("겹침 tiebreak: 같은 앞줄이면 sortOffset 큰 쪽이 앞(위) — 게임 order 미러", () => {
+    const lo = ent({ id: "lo", gy: 5, tilesH: 1, sortOffset: 0 });
+    const hi = ent({ id: "hi", gy: 5, tilesH: 1, sortOffset: 3 });
+    expect(byGameDepth(lo, hi)).toBeLessThan(0); // hi 가 나중에(앞에) 그려짐
+    // sortOffset ≥ 10 이면 한 줄 넘어 앞행 오브젝트도 앞지름(build_map 과 동일)
+    const back = ent({ gy: 4, tilesH: 1, sortOffset: 15 }); // 키 55
+    const front = ent({ gy: 5, tilesH: 1, sortOffset: 0 }); // 키 50
+    expect(byGameDepth(front, back)).toBeLessThan(0);
+  });
+
   it("몬스터/포탈은 gy 기준(auto 대)", () => {
     const mob = ent({ kind: "monster", gy: 4 });
     const obj = ent({ gy: 5, tilesH: 1 }); // 앞줄 5

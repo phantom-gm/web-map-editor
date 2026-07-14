@@ -192,6 +192,17 @@ export function EntityInspector() {
       )}
 
       {entity.kind === "object" && (
+        <label className="ei-row">
+          <span>우선순위 (겹침) — 같은 줄에서 겹칠 때 값이 클수록 앞(위). 기본 0</span>
+          <NumberField
+            className=""
+            value={entity.sortOffset ?? 0}
+            onCommit={(v) => updateEntity(entity.id, { sortOffset: v || undefined })}
+          />
+        </label>
+      )}
+
+      {entity.kind === "object" && (
         <>
           <label className="ei-row">
             <span>배율 (이미지 크기) — 1.0 = 배치 시 기본 크기. W×H(점유)와 독립</span>

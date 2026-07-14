@@ -38,18 +38,26 @@ export function entityImageRect(
   return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
 }
 
+// 게임(build_map)의 행당 order 간격. sortOffset 을 같은 척도로 섞어야 게임과 동일한 앞뒤가 됨.
+const ORDER_PER_ROW = 10;
+
 /**
  * 게임 z순서 미러(build_map 규칙) — 에디터 그리기·히트테스트가 게임과 같은 앞뒤가 되도록.
- * 밴드: below < auto(기본/비오브젝트) < above. 밴드 내 object 는 앞줄(gy+tilesH−1, 점유 기준),
- * 그 외는 gy. 동률이면 gx.
+ * 밴드: below < auto(기본/비오브젝트) < above. 밴드 내 정렬키 = 앞줄(gy+tilesH−1)×10 + sortOffset
+ *   (= 게임 order 의 밴드 내 값, ENTITY_BASE 제외). 동률이면 gx.
  */
 export function byGameDepth(a: MapEntity, b: MapEntity): number {
-  return bandRank(a) - bandRank(b) || depthRow(a) - depthRow(b) || a.gx - b.gx;
+  return bandRank(a) - bandRank(b) || orderKey(a) - orderKey(b) || a.gx - b.gx;
 }
 
 function bandRank(e: MapEntity): number {
   if (e.kind !== "object") return 1; // 몬스터/NPC/포탈 — 게임 엔티티 평면(auto 대)
   return e.layer === "below" ? 0 : e.layer === "above" ? 2 : 1;
+}
+
+// 밴드 내 정렬키 — build_map: order = ENTITY_BASE + frontBottomRow×PER_ROW + sortOffset.
+function orderKey(e: MapEntity): number {
+  return depthRow(e) * ORDER_PER_ROW + (e.sortOffset ?? 0);
 }
 
 function depthRow(e: MapEntity): number {

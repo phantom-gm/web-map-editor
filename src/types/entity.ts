@@ -51,6 +51,11 @@ export interface MapEntity {
   //   "auto"=방식 B(동적 교차) 예약(현재는 below 로 취급). 미설정=below.
   layer?: "above" | "below" | "auto";
 
+  // 겹침 우선순위 tiebreak. 게임 order = ENTITY_BASE + 앞줄×10 + sortOffset (build_map).
+  //   같은 앞줄(gy+tilesH−1)에서 겹칠 때 값이 클수록 앞(위)에 그려짐. 기본 0. ±소수(같은 줄 tiebreak).
+  //   |값|≥10 이면 한 줄 이상 넘어 다른 행 오브젝트와의 앞뒤도 뒤집음(주의).
+  sortOffset?: number;
+
   // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
