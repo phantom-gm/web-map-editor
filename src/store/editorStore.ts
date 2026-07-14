@@ -162,6 +162,7 @@ export interface EditorState {
   removeEntity: (id: string) => void;
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
+  setFootprintRects: (id: string, rects: MapEntity["footprintRects"]) => void;
   selectEntity: (id: string | null) => void;
 
   commitStroke: (before: Snapshot) => void;
@@ -487,6 +488,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (!s.entities.some((e) => e.id === id)) return {};
       const before = snap(s.ground, s.blocked, s.entities);
+      return {
+        entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+        entitiesVer: s.entitiesVer + 1,
+        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
+        redoStack: [],
+      };
+    }),
+  // 오목(ㄴ/ㄷ/T자) 점유 모양 편집 — 직사각 run 목록. 여기가 tilesW/tilesH(바운딩 박스) 동기의
+  //   단일 지점이다. run 을 바꿔놓고 바운딩 박스를 안 맞추면 게이트·z정렬 앞줄·복사 간격이
+  //   실제 점유보다 작아져 조용히 어긋난다(그 소비자들은 오목 모양을 모르고 W×H 만 본다).
+  //   빈 배열/undefined → footprintRects 제거 = 단일 직사각(tilesW/H)으로 복귀.
+  setFootprintRects: (id, rects) =>
+    set((s) => {
+      const ent = s.entities.find((e) => e.id === id);
+      if (!ent) return {};
+      const before = snap(s.ground, s.blocked, s.entities);
+      const patch: Partial<MapEntity> = {};
+      const ok = (rects ?? []).filter((r) => r[2] >= 1 && r[3] >= 1);
+      if (ok.length === 0) {
+        patch.footprintRects = undefined; // 단일 직사각으로 복귀 — tilesW/H 는 그대로 둔다
+      } else {
+        patch.footprintRects = ok;
+        // 바운딩 박스 = run 들을 전부 덮는 최소 직사각. 앵커(gx,gy)가 뒤-위 코너 규약이라
+        //   음수 오프셋은 허용하지 않는다(0 으로 클램프 — UI 도 min 0).
+        const [w, h] = footprintWH({ ...ent, footprintRects: ok });
+        patch.tilesW = w;
+        patch.tilesH = h;
+      }
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
         entitiesVer: s.entitiesVer + 1,
