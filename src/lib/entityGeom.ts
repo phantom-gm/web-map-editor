@@ -4,9 +4,14 @@ import { footprintWH, renderWH, type MapEntity } from "../types/entity";
 import { TW } from "./grid";
 
 /**
- * 이미지 보유 엔티티의 화면 rect [x0,y0,x1,y1].
- * object: MSW 동형 — 이미지 중심 = 앵커 셀 중심 + offset. 폭 = renderW타일 × 배율
- *   (= export scale 이 만드는 게임 폭과 동일), 종횡비 native. MSW 에셋 기본 pivot=중심.
+ * 이미지 보유 엔티티의 화면 rect [x0,y0,x1,y1]. 모든 kind 가 **바닥-중앙(bottom-center) 앵커** —
+ * 즉 (bx, by) 가 이미지의 아래-가운데 점이고, 이미지는 그 위로 뻗는다.
+ *
+ * object: MSW 동형 — 오브젝트 에셋의 pivot 이 **bottom-center** 로 통일됐다(구: 중심).
+ *   게임은 스프라이트를 앵커 셀 world 좌표에 놓으므로, pivot=bottom-center 면 이미지 바닥이
+ *   그 셀에 닿고 위로 선다(나무·집이 지면에 서는 자연스러운 배치). 에디터도 동일하게 그린다.
+ *   폭 = renderW타일 × 배율(= export scale 이 만드는 게임 폭), 종횡비 native.
+ *   ⚠ pivot 은 에셋 속성이라 배치/export 수식(scale·offset)에는 영향 없음 — 그리는 위치만 바뀐다.
  * monster/npc: 프리뷰 billboard — footprint(W×H)를 덮고 전면 바닥-중앙 앵커(게임은 모델 스폰).
  * @param cx,cy 앵커 셀 다이아 중심(cellToScreen) / hw,hh 반타일 px / imgW,imgH native 치수
  */
@@ -25,17 +30,28 @@ export function entityImageRect(
   const oy = (e.offsetY ?? 0) * zoom;
   const [fw, fh] = renderWH(e); // 이미지 렌더 기준(baseW/H) — 점유(tilesW/H)와 분리
   const aspect = (imgH || 1) / (imgW || 1);
+  // 폭과 바닥점만 kind 별로 다르고, "바닥-중앙 앵커" 규약은 공통.
+  let wpx: number, bx: number, by: number;
   if (e.kind === "object") {
-    const wpx = fw * TW * zoom * mul; // = fw·2hw·mul
-    const hpx = wpx * aspect;
-    const bx = cx + ox, by = cy + oy;
-    return [bx - wpx / 2, by - hpx / 2, bx + wpx / 2, by + hpx / 2];
+    wpx = fw * TW * zoom * mul; // = fw·2hw·mul
+    bx = cx + ox;
+    by = cy + oy; // 앵커 셀 다이아 중심에 이미지 바닥이 닿는다
+  } else {
+    wpx = (fw + fh) * hw * mul;
+    bx = cx + ((fw - fh) / 2) * hw + ox;
+    by = cy + (fw + fh - 1) * hh + oy; // footprint 전면 바닥
   }
-  const wpx = (fw + fh) * hw * mul;
   const hpx = wpx * aspect;
-  const bx = cx + ((fw - fh) / 2) * hw + ox;
-  const by = cy + (fw + fh - 1) * hh + oy;
   return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
+}
+
+/**
+ * 회전·좌우반전의 기준점(= 이미지 pivot) 화면 좌표. draw 와 히트테스트가 반드시 같은 값을 써야
+ * WYSIWYG·클릭이 어긋나지 않는다. 모든 kind 가 바닥-중앙이므로 rect 하단-가운데가 곧 pivot.
+ */
+export function entityPivot(rect: [number, number, number, number]): [number, number] {
+  const [x0, , x1, y1] = rect;
+  return [(x0 + x1) / 2, y1];
 }
 
 // 게임(build_map)의 행당 order 간격. sortOffset 을 같은 척도로 섞어야 게임과 동일한 앞뒤가 됨.

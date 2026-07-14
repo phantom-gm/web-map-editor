@@ -14,7 +14,7 @@ import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
-import { byGameDepth, entityImageRect } from "../lib/entityGeom";
+import { byGameDepth, entityImageRect, entityPivot } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
 // 스트로크/이동 커밋용 언두 스냅샷(ground+blocked+entities). commitStroke 가 소비.
@@ -84,8 +84,7 @@ function spriteAlphaHit(
   ctx.translate(-px, -py); // 클릭 지점 → 오프스크린 원점
   const rot = ((e.rotationDeg ?? 0) * Math.PI) / 180;
   if (rot) {
-    const ax = (x0 + x1) / 2;
-    const ay = e.kind === "object" ? (y0 + y1) / 2 : y1; // draw 와 동일 앵커
+    const [ax, ay] = entityPivot(rect); // draw 와 동일 pivot(바닥-중앙) — 어긋나면 클릭이 그림과 따로 논다
     ctx.translate(ax, ay);
     ctx.rotate(rot);
     ctx.translate(-ax, -ay);
@@ -231,15 +230,15 @@ function draw(
           }
         }
 
-        // 2) 비율 유지 빌보드 — footprint 전면 바닥 앵커. 기울기(회전) + flipX 미러 적용.
-        const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, img);
+        // 2) 비율 유지 빌보드 — 바닥-중앙 앵커(object = MSW 에셋 pivot, 몬스터/NPC = footprint 전면).
+        const rect = entityRect(e, cx, cy, hw, hh, img);
+        const [x0, y0, x1, y1] = rect;
         const rot = ((e.rotationDeg ?? 0) * Math.PI) / 180; // 기울기(라디안)
         ctx.save();
         if (rot) {
-          // 회전 앵커 — object 는 MSW pivot(이미지 중심) 기준(게임 ZRotation 과 동형).
-          //   몬스터/NPC 프리뷰는 기존 바닥-중앙 유지.
-          const ax = (x0 + x1) / 2;
-          const ay = e.kind === "object" ? (y0 + y1) / 2 : y1;
+          // 회전 pivot — 게임(MSW ZRotation)은 에셋 pivot 을 중심으로 돈다. 오브젝트 pivot 이
+          //   bottom-center 이므로 에디터도 바닥-중앙에서 회전해야 동형.
+          const [ax, ay] = entityPivot(rect);
           ctx.translate(ax, ay);
           ctx.rotate(rot);
           ctx.translate(-ax, -ay);
