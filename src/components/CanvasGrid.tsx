@@ -27,8 +27,9 @@ function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: 
 
 /**
  * 엔티티의 화면 사각형 [x0,y0,x1,y1].
- * 스프라이트(이미지 보유): 비율 유지 빌보드 — 폭 = tilesW*TW*zoom(=tilesW*2*hw), 베이스 셀 바닥 앵커.
- * 마커/포탈: 타일 다이아몬드 bbox.
+ * object: MSW 동형 — 이미지 중심을 앵커 셀 중심에(에셋 기본 pivot=중심), 폭 = renderW타일×배율.
+ * monster/npc: 프리뷰 billboard — footprint 를 덮고 전면 바닥-중앙 앵커(게임은 모델 스폰).
+ * 마커/포탈: 타일 다이아몬드 bbox. (상세: OBJECT_PIVOT_ALIGNMENT.md)
  */
 function entityRect(
   e: MapEntity,
@@ -39,17 +40,26 @@ function entityRect(
   img: HTMLImageElement | null,
 ): [number, number, number, number] {
   if (img) {
-    // 이미지 렌더 기준 footprint(baseW/H)를 덮는 빌보드. 폭 = (W+H)*hw, 전면 바닥-중앙 앵커.
-    // ⚠ 점유(충돌) footprintWH 가 아닌 renderWH — W×H(점유) 조절이 이미지에 영향 주지 않도록 분리.
-    const [fw, fh] = renderWH(e);
     const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1; // 사이즈 배율
     const zoom = hw / (TW / 2); // hw = TW/2*zoom → zoom 복원
     const ox = (e.offsetX ?? 0) * zoom; // 화면 오프셋(px×zoom)
     const oy = (e.offsetY ?? 0) * zoom;
+    const [fw, fh] = renderWH(e); // 이미지 렌더 기준(baseW/H) — 점유(tilesW/H)와 분리
+    if (e.kind === "object") {
+      // MSW pivot 정합(OBJECT_PIVOT_ALIGNMENT.md) — 게임과 완전 동형 렌더:
+      //   MSW 는 스프라이트 "이미지 중심"(에셋 기본 pivot)을 앵커 셀 world 좌표에 놓는다.
+      //   폭 = renderW 타일 × 배율 (= export scale 이 만드는 게임 폭과 동일), 종횡비 native.
+      const wpx = fw * TW * zoom * mul; // = fw*2*hw*mul
+      const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
+      const bx = cx + ox, by = cy + oy; // 앵커 셀 중심 + 미세조정
+      return [bx - wpx / 2, by - hpx / 2, bx + wpx / 2, by + hpx / 2];
+    }
+    // 몬스터/NPC — 게임은 모델 스폰(스프라이트 배치 아님)이라 프리뷰 전용 billboard 유지:
+    //   footprint(W×H)를 덮고 전면 바닥-중앙 앵커.
     const wpx = (fw + fh) * hw * mul;
     const hpx = wpx * ((img.naturalHeight || 1) / (img.naturalWidth || 1));
-    const bx = cx + ((fw - fh) / 2) * hw + ox; // footprint 바닥-중앙 x(베이스 셀 기준) + 오프셋
-    const by = cy + (fw + fh - 1) * hh + oy; // footprint 전면 코너 바닥 y + 오프셋
+    const bx = cx + ((fw - fh) / 2) * hw + ox;
+    const by = cy + (fw + fh - 1) * hh + oy;
     return [bx - wpx / 2, by - hpx, bx + wpx / 2, by];
   }
   return [cx - hw, cy - hh, cx + hw, cy + hh];
@@ -178,7 +188,10 @@ function draw(
         const rot = ((e.rotationDeg ?? 0) * Math.PI) / 180; // 기울기(라디안)
         ctx.save();
         if (rot) {
-          const ax = (x0 + x1) / 2, ay = y1; // 바닥-중앙 앵커 기준 회전
+          // 회전 앵커 — object 는 MSW pivot(이미지 중심) 기준(게임 ZRotation 과 동형).
+          //   몬스터/NPC 프리뷰는 기존 바닥-중앙 유지.
+          const ax = (x0 + x1) / 2;
+          const ay = e.kind === "object" ? (y0 + y1) / 2 : y1;
           ctx.translate(ax, ay);
           ctx.rotate(rot);
           ctx.translate(-ax, -ay);
