@@ -83,7 +83,7 @@ export function TopBar() {
         RUID export
       </button>
       <button onClick={requestFit}>뷰 맞춤</button>
-      <span className="hint">아이소 그리드 · 좌클릭=페인팅 · 스페이스+드래그=팬 · 휠=줌</span>
+      <span className="hint">좌클릭=페인팅 · 스페이스+드래그=팬 · 휠=줌 · 겹침 오브젝트: 같은 자리 다시 클릭=아래 것</span>
     </div>
   );
 }

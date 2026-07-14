@@ -159,7 +159,6 @@ export interface EditorState {
 
   placeEntity: (kind: EntityKind, gx: number, gy: number) => void;
   moveEntityTo: (id: string, gx: number, gy: number) => void;
-  setEntitySize: (id: string, tilesW: number, tilesH: number) => void;
   removeEntity: (id: string) => void;
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
@@ -456,21 +455,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, gx, gy } : e)),
-        entitiesVer: s.entitiesVer + 1,
-      };
-    }),
-  // 드래그 리사이즈 라이브 갱신(언두 없음 — CanvasGrid 가 mousedown/up 으로 커밋). 경계+겹침으로 막음.
-  setEntitySize: (id, tilesW, tilesH) =>
-    set((s) => {
-      const [W, H] = s.size;
-      const ent = s.entities.find((e) => e.id === id);
-      if (!ent) return {};
-      const w = Math.max(1, Math.min(tilesW, W - ent.gx));
-      const h = Math.max(1, Math.min(tilesH, H - ent.gy));
-      if (ent.tilesW === w && ent.tilesH === h) return {};
-      // 겹침 허용 — 다른 오브젝트와 겹쳐도 크기 적용(경계는 위 min 클램프로 이미 보장).
-      return {
-        entities: s.entities.map((e) => (e.id === id ? { ...e, tilesW: w, tilesH: h } : e)),
         entitiesVer: s.entitiesVer + 1,
       };
     }),

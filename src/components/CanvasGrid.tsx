@@ -17,6 +17,14 @@ import { ENTITY_META, entityFootprintCells, isEntityIncomplete, type MapEntity }
 import { byGameDepth, entityImageRect } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
+// 스트로크/이동 커밋용 언두 스냅샷(ground+blocked+entities). commitStroke 가 소비.
+//   입력은 store 상태(Snapshot 과 구조 동일) — ground/blocked 만 얕은 복사.
+const strokeSnap = (st: Snapshot): Snapshot => ({
+  ground: new Map(st.ground),
+  blocked: new Set(st.blocked),
+  entities: st.entities,
+});
+
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
   ctx.beginPath();
   ctx.moveTo(cx, cy - hh);
@@ -47,25 +55,81 @@ function entityRect(
   return [cx - hw, cy - hh, cx + hw, cy + hh];
 }
 
-/** 화면 점(px)이 닿는 최상단(앞쪽) 엔티티. 스프라이트는 빌보드 사각형, 마커는 셀 다이아 bbox 기준. */
-function findEntityHit(
+// 알파(픽셀) 히트테스트용 1×1 오프스크린 — 클릭당 1회만 쓰므로 렌더 루프 부담 0.
+let hitCtx: CanvasRenderingContext2D | null = null;
+const ALPHA_MIN = 8; // 이보다 투명하면 "안 맞음"(여백 통과)
+const CLICK_SLOP = 3; // px. 이 안에서 떼면 "드래그 아님 = 클릭"(겹침 순환 판정)
+
+/**
+ * 스프라이트의 (px,py) 지점 알파가 불투명한지. draw 와 동일한 변환(회전·flipX)을 적용한 뒤
+ * 클릭 지점을 원점으로 옮겨 1픽셀만 샘플링한다 → 투명 여백이 클릭을 훔치지 않음.
+ */
+function spriteAlphaHit(
+  e: MapEntity,
+  img: HTMLImageElement,
+  px: number,
+  py: number,
+  rect: [number, number, number, number],
+): boolean {
+  if (!hitCtx) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    hitCtx = c.getContext("2d", { willReadFrequently: true });
+    if (!hitCtx) return true; // 컨텍스트 불가 → rect 판정으로 폴백(보수적)
+  }
+  const ctx = hitCtx;
+  const [x0, y0, x1, y1] = rect;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, 1, 1);
+  ctx.translate(-px, -py); // 클릭 지점 → 오프스크린 원점
+  const rot = ((e.rotationDeg ?? 0) * Math.PI) / 180;
+  if (rot) {
+    const ax = (x0 + x1) / 2;
+    const ay = e.kind === "object" ? (y0 + y1) / 2 : y1; // draw 와 동일 앵커
+    ctx.translate(ax, ay);
+    ctx.rotate(rot);
+    ctx.translate(-ax, -ay);
+  }
+  if (e.flipX) {
+    ctx.translate(x0 + x1, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0);
+  const alpha = ctx.getImageData(0, 0, 1, 1).data[3];
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return alpha >= ALPHA_MIN;
+}
+
+/**
+ * 화면 점(px,py)에 닿는 엔티티들 — 앞(최상단)→뒤 순서. 겹침 선택 순환에 쓴다.
+ * 이미지 엔티티는 알파 히트(투명 여백 제외), 마커는 셀 다이아 bbox 기준.
+ */
+function entityHitCandidates(
   px: number,
   py: number,
   entities: MapEntity[],
   palette: PaletteTile[],
   cam: Camera,
-): MapEntity | null {
+): MapEntity[] {
   const hw = (TW / 2) * cam.zoom;
   const hh = (TH / 2) * cam.zoom;
   const lookup = makeEntityImageLookup(palette);
   const sorted = [...entities].sort(byGameDepth);
+  const out: MapEntity[] = [];
   for (let i = sorted.length - 1; i >= 0; i--) {
     const e = sorted[i];
     const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
-    const [x0, y0, x1, y1] = entityRect(e, cx, cy, hw, hh, lookup(e));
-    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) return e;
+    const img = lookup(e);
+    const rect = entityRect(e, cx, cy, hw, hh, img);
+    const [x0, y0, x1, y1] = rect;
+    // rect 1차 컷(싸다). 회전 스프라이트는 rect 밖으로 삐져나오므로 이 컷을 건너뛴다.
+    if (!e.rotationDeg && (px < x0 || px > x1 || py < y0 || py > y1)) continue;
+    if (img) {
+      if (!spriteAlphaHit(e, img, px, py, rect)) continue; // 투명 여백 통과
+    } else if (px < x0 || px > x1 || py < y0 || py > y1) continue;
+    out.push(e);
   }
-  return null;
+  return out;
 }
 
 function draw(
@@ -338,6 +402,10 @@ export function CanvasGrid() {
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
+  // 겹침 선택 순환 — mousedown 시점의 후보(앞→뒤) + 눌린 지점. 드래그 없이 뗀 클릭에서만 순환한다
+  //   (드래그=이동 규칙과 충돌 안 하도록). Illustrator/Figma 의 "제자리 재클릭 = 아래 것" 동작.
+  const downPoint = useRef<{ x: number; y: number } | null>(null);
+  const hitCands = useRef<MapEntity[]>([]);
   const spaceDown = useRef(false);
   const didInit = useRef(false);
 
@@ -464,7 +532,7 @@ export function CanvasGrid() {
         // 우클릭: 이동불가 도구일 때만 지우기 스트로크(드래그 지속).
         if (st.activeTool === "block") {
           mode.current = "blockErase";
-          strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+          strokeBefore.current = strokeSnap(st);
           st.setBlockedAt(gx, gy, false);
         }
         return;
@@ -475,13 +543,18 @@ export function CanvasGrid() {
         // 엔티티 클릭 규칙:
         //  - 미선택 엔티티 클릭 → "선택만"(이동 안 함). 선택하려다 딸려 움직이던 문제 방지.
         //  - 이미 선택된 엔티티를 다시 눌러 드래그 → 좌표 이동(리사이즈 없음).
+        //  - 이미 선택된 엔티티를 제자리 클릭(드래그 X) → onUp 에서 아래 것으로 순환(겹침 선택).
         //  - 빈 곳 → 선택 해제 + 맵 팬.
-        const hit = findEntityHit(p.x, p.y, st.entities, st.palette, st.camera);
+        const cands = entityHitCandidates(p.x, p.y, st.entities, st.palette, st.camera);
+        downPoint.current = p;
+        hitCands.current = cands;
+        const hit = cands[0] ?? null;
         if (hit) {
-          if (hit.id === st.selectedEntityId) {
+          if (cands.some((c) => c.id === st.selectedEntityId)) {
+            // 스택 안에 이미 선택된 게 있음 → 그걸 드래그(이동). 안 움직이면 onUp 이 순환.
+            movingId.current = st.selectedEntityId;
             mode.current = "moveEntity";
-            movingId.current = hit.id;
-            strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+            strokeBefore.current = strokeSnap(st);
           } else {
             st.selectEntity(hit.id); // 선택만 — 드래그해도 이동 안 됨
           }
@@ -509,7 +582,7 @@ export function CanvasGrid() {
       } else {
         // brush / eraser / block — 스트로크 단위. 시작 시 ground+blocked+entities 스냅샷.
         mode.current = "paint";
-        strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+        strokeBefore.current = strokeSnap(st);
         st.applyTool(gx, gy);
       }
     };
@@ -531,12 +604,21 @@ export function CanvasGrid() {
       }
       st.setHover([gx, gy]);
     };
-    const onUp = () => {
+    const onUp = (e: MouseEvent) => {
       const st = useEditorStore.getState();
       if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "moveEntity" && strokeBefore.current) {
-        st.commitStroke(strokeBefore.current);
+        // 안 움직인 제자리 클릭 = "겹침 순환" 의도 → 스택의 다음(아래) 엔티티를 선택. 움직였으면 이동 커밋.
+        const d = downPoint.current;
+        const p = local(e);
+        const still = d && Math.abs(p.x - d.x) <= CLICK_SLOP && Math.abs(p.y - d.y) <= CLICK_SLOP;
+        const cands = hitCands.current;
+        if (still && cands.length > 1) {
+          const i = cands.findIndex((c) => c.id === st.selectedEntityId);
+          st.selectEntity(cands[(i + 1) % cands.length].id);
+        }
+        st.commitStroke(strokeBefore.current); // 이동 없으면 스토어가 no-op 로 흡수
       } else if (mode.current === "rect") {
         const rp = st.rectPreview;
         if (rp) st.fillRect(rp[0], rp[1], rp[2], rp[3]);
