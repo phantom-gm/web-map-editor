@@ -566,8 +566,18 @@ export function CanvasGrid() {
         return;
       }
       if (tool === "portal" || tool === "monster" || tool === "npc" || tool === "object") {
-        if (tool !== "portal" && !st.palette[st.activeIdx]) {
+        const tile = st.palette[st.activeIdx];
+        if (tool !== "portal" && !tile) {
           alert("먼저 팔레트에서 배치할 스프라이트를 선택하세요 (스토리지에서 불러오기).");
+          return;
+        }
+        // 오브젝트 크기는 배치 시점의 이미지 네이티브 픽셀로 고정된다 → 이미지가 없으면 크기를 알 수 없고,
+        //   추측값(1타일)이 영구 고정되어 게임까지 잘못된 크기로 나간다. 배치를 막고 이유를 알린다.
+        if (tool === "object" && !((tile?.img?.naturalWidth ?? 0) > 0)) {
+          alert(
+            `"${tile?.name ?? "선택한 타일"}" 은 이미지가 없어 크기를 알 수 없습니다 (RUID 매핑만 불러온 타일).\n` +
+              "스토리지/PNG 로 이미지를 포함해 팔레트에 추가한 뒤 배치하세요.",
+          );
           return;
         }
         st.placeEntity(tool, gx, gy);

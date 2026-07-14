@@ -1,6 +1,6 @@
 // 맵 검증 — export 전에 사용자에게 알릴 문제를 모은다. 순수 함수(렌더/스토어 비의존).
 import { parseCellKey, type CellKey } from "./cell";
-import { FACINGS, type Facing, type MapEntity } from "../types/entity";
+import { FACINGS, footprintWH, renderWH, type Facing, type MapEntity } from "../types/entity";
 
 export interface MapValidation {
   errors: string[]; // 좌표/팔레트가 어긋날 수 있는 문제 — export 전에 확인 권장
@@ -89,7 +89,29 @@ export function validateMap(args: {
 
   if (args.entities && args.entities.length > 0) {
     errors.push(...entityIssues(args.entities, size, args.npcClassIds, args.hasImage));
+    warnings.push(...entityWarnings(args.entities));
   }
 
   return { errors, warnings };
+}
+
+/**
+ * 치명적이지 않지만 알릴 엔티티 사항. errors 와 달리 export 를 막지 않는다.
+ * 충돌 범위 < 스프라이트: 배치 기본 점유가 1×1 이라 큰 오브젝트에 충돌을 켜면 한 칸만 막히기 쉽다.
+ *   단, 나무처럼 "캐노피는 넓고 밑동만 막는" 의도적 구성도 정상이므로 error 가 아니라 warning.
+ */
+export function entityWarnings(entities: MapEntity[]): string[] {
+  const out: string[] = [];
+  for (const e of entities) {
+    if (e.kind !== "object" || e.blocks !== true) continue;
+    const [fw, fh] = footprintWH(e);
+    const [rw, rh] = renderWH(e);
+    const [sw, sh] = [Math.round(rw), Math.round(rh)];
+    if (fw < sw || fh < sh) {
+      out.push(
+        `object(${e.gx},${e.gy}) "${e.name ?? ""}": 충돌 범위(${fw}×${fh})가 스프라이트(약 ${sw}×${sh}타일)보다 작습니다 — 그 칸만 막힙니다. 의도한 게 아니면 타일 크기(W×H)를 올리세요.`,
+      );
+    }
+  }
+  return out;
 }

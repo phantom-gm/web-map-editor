@@ -733,6 +733,21 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 이미지 기준점 버튼 두 개(타일 맞춤 / 네이티브 복원) — 패널 폭을 넘지 않게 균등 분할·축소 허용. */
+.entity-inspector .ei-fitrow {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.entity-inspector .ei-fitrow .ei-fit {
+  flex: 1 1 0;
+  min-width: 0; /* 없으면 콘텐츠 폭 아래로 안 줄어들어 패널 밖으로 넘친다 */
+  width: auto;
+}
+.entity-inspector .ei-fit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .entity-inspector .ei-fit {
   width: 100%;
   padding: 5px 8px;

@@ -135,7 +135,11 @@ export function footprintWH(e: MapEntity): [number, number] {
  * baseW/baseH(배치 시 고정) 우선, 없으면 tilesW/tilesH 로 폴백(레거시·몬스터·NPC 는 기존과 동일).
  */
 export function renderWH(e: MapEntity): [number, number] {
-  return [Math.max(1, e.baseW ?? e.tilesW ?? 1), Math.max(1, e.baseH ?? e.tilesH ?? 1)];
+  // ⚠ 1타일 미만(작은 스프라이트)도 허용 — object 는 배치 시 baseW = 네이티브폭/64 (실수) 로 잡는다.
+  //    1 로 클램프하면 64px 미만 에셋이 강제로 커져 픽셀 1:1(PPU) 이 깨진다. 0/음수만 방어.
+  const w = e.baseW ?? e.tilesW ?? 1;
+  const h = e.baseH ?? e.tilesH ?? 1;
+  return [w > 0 ? w : 1, h > 0 ? h : 1];
 }
 
 /** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { footprintWH, renderWH, migrateEntity, type MapEntity } from "../types/entity";
+import { exportEntities } from "../lib/entityExport";
+import { entityWarnings } from "../lib/validate";
+import { useEditorStore } from "../store/editorStore";
+import type { PaletteTile } from "../lib/palette";
 
 // 오브젝트 이미지 크기(renderWH=baseW) 와 점유/충돌(footprintWH=tilesW) 분리 회귀 테스트.
 // W×H(점유) 를 바꿔도 이미지 렌더 기준은 그대로여야 한다.
@@ -24,5 +28,79 @@ describe("오브젝트 크기/점유 분리", () => {
     const mob = migrateEntity(obj({ kind: "monster", tilesW: 2, tilesH: 1 }));
     expect(mob.baseW).toBeUndefined();
     expect(renderWH(mob)).toEqual([2, 1]); // tilesW 폴백
+  });
+
+  it("1타일 미만 baseW 를 클램프하지 않는다 — 64px 미만 에셋의 픽셀 1:1 보존", () => {
+    const small = obj({ baseW: 30 / 64, baseH: 30 / 64, tilesW: 1, tilesH: 1 });
+    expect(renderWH(small)[0]).toBeCloseTo(0.469); // 1 로 커지면 안 됨
+    expect(footprintWH(small)).toEqual([1, 1]); // 점유는 1×1
+  });
+});
+
+// 배치 기본값(placeEntity) → export(exportEntities) 를 실제로 통과시켜, 에셋 네이티브 크기와 무관하게
+// 게임 scale 이 일정(고정 PPU)한지 잠근다. ⚠ 수식을 테스트에 재구현하지 말 것 — 프로덕션 경로를 호출한다.
+describe("배치 기본값 — 고정 PPU(픽셀 1:1)", () => {
+  const tileOf = (name: string, nativeW: number, nativeH: number): PaletteTile => ({
+    name,
+    url: "",
+    img: { naturalWidth: nativeW, naturalHeight: nativeH } as HTMLImageElement,
+    ruid: `ruid-${name}`,
+    category: "object",
+  });
+
+  /** 팔레트 타일을 골라 실제 스토어로 배치하고, 실제 export 를 거친 object 를 돌려준다. */
+  const placeAndExport = (tile: PaletteTile): MapEntity => {
+    const st = useEditorStore.getState();
+    st.newProject();
+    useEditorStore.setState({ palette: [tile], activeIdx: 0 });
+    useEditorStore.getState().placeEntity("object", 5, 5);
+    const s = useEditorStore.getState();
+    const out = exportEntities(s.entities, s.palette).find((e) => e.kind === "object");
+    if (!out) throw new Error("object 가 배치되지 않음");
+    return out;
+  };
+
+  it("점유(tilesW/H)는 에셋 크기와 무관하게 항상 1×1 로 배치된다", () => {
+    for (const nw of [30, 90, 100, 400]) {
+      const e = placeAndExport(tileOf(`t${nw}`, nw, nw));
+      expect(footprintWH(e)).toEqual([1, 1]);
+    }
+  });
+
+  it("네이티브 폭이 달라도 게임 scale 은 동일 — 크기가 제각각이지 않다", () => {
+    const scales = [30, 60, 90, 100, 256, 400].map((nw) => placeAndExport(tileOf(`t${nw}`, nw, nw)).scale);
+    for (const s of scales) expect(s).toBeCloseTo(scales[0] as number);
+    // 반올림 방식이었다면 90px→1타일 / 100px→2타일 로 두 배 가까이 벌어졌다(회귀 방지).
+    expect(scales[2]).toBeCloseTo(scales[3] as number);
+  });
+
+  it("충돌(blocks) 체크 시 footprintCells 는 1칸 — 넓은 스프라이트는 W×H 를 직접 올려야 한다", () => {
+    const e = placeAndExport(tileOf("wide", 400, 100));
+    const st = useEditorStore.getState();
+    st.updateEntity(e.id, { blocks: true });
+    const s = useEditorStore.getState();
+    const out = exportEntities(s.entities, s.palette).find((x) => x.kind === "object")!;
+    expect(out.footprintCells).toEqual([[0, 0]]);
+    // …그리고 그 상태를 검증이 경고로 잡아준다(막지는 않음 — 나무 밑동처럼 의도적일 수 있으므로).
+    expect(entityWarnings(s.entities).join()).toContain("충돌 범위");
+  });
+
+  it("이미지 없는 팔레트 타일(RUID 매핑만)로는 오브젝트를 배치하지 않는다 — 잘못된 크기 영구 고정 방지", () => {
+    const st = useEditorStore.getState();
+    st.newProject();
+    useEditorStore.setState({
+      palette: [{ name: "ruid-only", url: "", img: null, ruid: "r1", category: "object" }],
+      activeIdx: 0,
+    });
+    useEditorStore.getState().placeEntity("object", 5, 5);
+    expect(useEditorStore.getState().entities).toHaveLength(0);
+  });
+
+  it("복사본은 점유(1×1)가 아니라 보이는 폭만큼 옆으로 — 큰 스프라이트가 포개지지 않는다", () => {
+    const e = placeAndExport(tileOf("wide", 400, 100)); // 보이는 폭 = 400/64 ≈ 6.25타일
+    const st = useEditorStore.getState();
+    st.duplicateEntity(e.id);
+    const [a, b] = useEditorStore.getState().entities;
+    expect(b.gx - a.gx).toBe(7); // ceil(6.25) — 1 이면 거의 겹침(회귀)
   });
 });

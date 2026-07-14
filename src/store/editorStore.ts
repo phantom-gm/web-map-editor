@@ -9,7 +9,7 @@ import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from ".
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
-import { footprintWH, migrateEntity, newEntityId, type EntityKind, type MapEntity } from "../types/entity";
+import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
@@ -406,21 +406,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       let name: string | undefined;
       let ruid: string | undefined;
       let tilesW: number | undefined;
+      let nw = 0, nh = 0;
       if (kind === "portal") {
         name = "portal";
+      } else if (kind === "object" && !((s.palette[s.activeIdx]?.img?.naturalWidth ?? 0) > 0)) {
+        // 이미지 없는 팔레트 타일(RUID 매핑만 불러온 경우 등) → 네이티브 크기를 알 수 없다.
+        //   여기서 baseW 를 1 로 찍으면 그 잘못된 크기가 영구 고정되어 게임까지 조용히 흘러간다.
+        //   배치를 거부하는 게 맞다(호출측 CanvasGrid 가 이유를 알린다).
+        return {};
       } else {
         const t = s.palette[s.activeIdx];
         name = t?.name;
         ruid = t?.ruid;
-        // footprint 폭 기본값 — 이미지 픽셀폭 / 타일폭(반올림, 최소 1). 깊이는 1.
-        const nw = t?.img?.naturalWidth ?? 0;
-        tilesW = nw > 0 ? Math.max(1, Math.round(nw / TW)) : 1;
+        nw = t?.img?.naturalWidth ?? 0;
+        nh = t?.img?.naturalHeight ?? 0;
+        // 점유 폭 기본값 — 오브젝트는 항상 1×1(아래), 몬스터·NPC 만 이미지폭/타일폭(반올림)을 쓴다.
+        tilesW = kind === "object" || nw <= 0 ? 1 : Math.max(1, Math.round(nw / TW));
       }
       const ent: MapEntity = { id: newEntityId(), kind, gx, gy, name, ruid, tilesW };
       if (kind !== "portal") ent.tilesH = 1;
-      // object 는 이미지 크기 기준을 배치 시점으로 고정 → 이후 W×H(점유) 조절이 이미지에 영향 없음.
-      // 크기 조절은 배율(scaleMul)로만. (몬스터·NPC 는 baseW 미설정 → 기존처럼 tilesW 가 이미지도 결정.)
-      if (kind === "object") { ent.baseW = tilesW; ent.baseH = 1; }
+      if (kind === "object") {
+        // 이미지 크기 = 소스 픽셀 1:1(고정 PPU). baseW 를 정수 타일로 반올림하지 않는다 —
+        //   반올림하면 90px→1타일(64px, −29%), 100px→2타일(128px, +28%) 처럼 비슷한 에셋이
+        //   2배까지 벌어져 "크기가 제각각" 해진다. 실수로 두면 export scale 이 항상 56/64 로 일정.
+        //   점유(tilesW/H=1×1)와 완전 분리 — 크기는 배율(scaleMul), 충돌은 인스펙터 W×H 로.
+        //   (몬스터·NPC 는 baseW 미설정 → 기존처럼 tilesW 가 이미지도 결정.)
+        ent.baseW = nw > 0 ? nw / TW : 1;
+        ent.baseH = nh > 0 ? nh / TW : 1;
+      }
       if (kind === "monster") ent.spawnCount = 1;
       // 포탈 도착 셀 기본값 = 배치 위치(현재 셀). 목적지 맵만 채우면 되도록 하고, 필요 시 변경.
       // destFacing 은 미설정(=무관) 으로 둔다 — 변환기가 미지정 시 기본 SE 로 emit.
@@ -489,7 +502,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const before = snap(s.ground, s.blocked, s.entities);
       const [W, H] = s.size;
       const [fw, fh] = footprintWH(src);
-      const step = src.kind === "portal" ? 1 : fw; // 포탈은 1칸, 오브젝트는 footprint 폭만큼 옆으로
+      // 복사본은 원본과 겹치지 않게 옆으로. 오브젝트는 점유(1×1 고정)가 아니라 "보이는 폭"(renderWH)
+      //   만큼 밀어야 한다 — 점유 기준으로 밀면 큰 스프라이트가 1칸만 이동해 거의 포개진다.
+      const visW = Math.max(1, Math.ceil(renderWH(src)[0]));
+      const step = src.kind === "portal" ? 1 : src.kind === "object" ? visW : fw;
       const gx = Math.max(0, Math.min(src.gx + step, W - (src.kind === "portal" ? 1 : fw)));
       const gy = Math.max(0, Math.min(src.gy, H - (src.kind === "portal" ? 1 : fh)));
       const copy: MapEntity = { ...src, id: newEntityId(), gx, gy };

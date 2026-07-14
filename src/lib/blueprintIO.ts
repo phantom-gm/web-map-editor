@@ -91,6 +91,9 @@ export function buildBlueprint(args: {
     if (inBounds(gx, gy)) blockedCells.add(`${gx},${gy}`);
   }
   for (const e of args.entities) {
+    // 오브젝트는 "충돌"(blocks) 켠 것만 이동을 막는다 — entityExport 의 footprintCells 계약과 동일.
+    //   예전엔 blocks 무시하고 모든 오브젝트 footprint 를 막아, 통과 가능해야 할 장식물이 벽이 됐다.
+    if (e.kind === "object" && e.blocks !== true) continue;
     for (const [gx, gy] of entityFootprintCells(e)) {
       if (inBounds(gx, gy)) blockedCells.add(`${gx},${gy}`);
     }

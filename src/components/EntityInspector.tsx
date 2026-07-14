@@ -1,6 +1,8 @@
 import { useEditorStore } from "../store/editorStore";
 import { ENTITY_META, FACINGS, FACING_LABEL, type MapEntity } from "../types/entity";
 import { npcClassLabel } from "../lib/npcClass";
+import { makeEntityImageLookup } from "../lib/entityImage";
+import { TW } from "../lib/grid";
 import { NumberField } from "./NumberField";
 
 // 선택된 엔티티의 속성 편집 패널(캔버스 우상단 플로팅). 종류별 필드 표시.
@@ -8,6 +10,7 @@ export function EntityInspector() {
   const selectedId = useEditorStore((s) => s.selectedEntityId);
   const entity = useEditorStore((s) => s.entities.find((e) => e.id === s.selectedEntityId) ?? null);
   const npcCatalog = useEditorStore((s) => s.npcCatalog);
+  const palette = useEditorStore((s) => s.palette);
   const updateEntity = useEditorStore((s) => s.updateEntity);
   const removeEntity = useEditorStore((s) => s.removeEntity);
   const duplicateEntity = useEditorStore((s) => s.duplicateEntity);
@@ -15,6 +18,11 @@ export function EntityInspector() {
 
   if (!selectedId || !entity) return null;
   const meta = ENTITY_META[entity.kind];
+
+  // 팔레트 원본 이미지의 네이티브 픽셀 크기 — "네이티브 크기로" 복원의 기준(없으면 버튼 비활성).
+  const img = makeEntityImageLookup(palette)(entity);
+  const nativeWH: [number, number] | null =
+    img && img.naturalWidth > 0 ? [img.naturalWidth, img.naturalHeight] : null;
 
   const setNum = (key: keyof MapEntity, v: string) =>
     updateEntity(entity.id, { [key]: v === "" ? undefined : Number(v) });
@@ -151,19 +159,32 @@ export function EntityInspector() {
       )}
 
       {entity.kind === "object" && (
-        <button
-          className="ei-fit"
-          title="이미지 크기의 기준점을 현재 타일 크기로 재설정 (배율 1.0 = 이 타일 크기)"
-          onClick={() =>
-            updateEntity(entity.id, {
-              baseW: Math.max(1, entity.tilesW ?? 1),
-              baseH: Math.max(1, entity.tilesH ?? 1),
-              scaleMul: undefined,
-            })
-          }
-        >
-          ⤢ 이미지를 타일 크기(W×H)에 맞추기
-        </button>
+        <div className="ei-fitrow">
+          <button
+            className="ei-fit"
+            title="이미지 크기의 기준점을 현재 타일 크기로 재설정 (배율 1.0 = 이 타일 크기)"
+            onClick={() =>
+              updateEntity(entity.id, {
+                baseW: entity.tilesW ?? 1,
+                baseH: entity.tilesH ?? 1,
+                scaleMul: undefined,
+              })
+            }
+          >
+            ⤢ 타일 크기(W×H)에 맞추기
+          </button>
+          <button
+            className="ei-fit"
+            title="이미지 크기 기준점을 원본 픽셀 크기로 되돌림 (배치 시 기본값)"
+            disabled={!nativeWH}
+            onClick={() => {
+              if (!nativeWH) return;
+              updateEntity(entity.id, { baseW: nativeWH[0] / TW, baseH: nativeWH[1] / TW, scaleMul: undefined });
+            }}
+          >
+            ↺ 네이티브 크기로
+          </button>
+        </div>
       )}
 
       {entity.kind === "object" && (
