@@ -216,12 +216,14 @@ function draw(
 
       let labelTop = cy - hh;
       if (img) {
-        const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
         // 충돌(이동불가) 오브젝트는 footprint 를 빨강(수동 이동불가와 동일)으로 표시 — 에디터 작업용 UX.
         const blocking = e.kind === "object" && e.blocks === true;
 
         // 1) footprint 채움 — 스프라이트 아래. 점유 표시 토글. blocking=빨강, 아니면 종류색.
+        //    ⚠ 셀 계산을 토글 안으로 — draw 는 마우스 이동마다 돌고(hover 갱신) 엔티티마다 호출된다.
+        //      오버레이가 꺼져 있으면 셀 배열을 만들 이유가 없다.
         if (visual.footprint) {
+          const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
           ctx.fillStyle = blocking ? (sel ? "rgba(220,70,70,0.42)" : "rgba(220,70,70,0.30)") : meta.color + (sel ? "33" : "1f");
           for (const [gx, gy] of cells) {
             const [fx, fy] = cellToScreen(gx, gy, cam);

@@ -3,7 +3,9 @@ import {
   entityFootprintCells,
   footprintRuns,
   footprintWH,
+  migrateEntity,
   playerBehind,
+  validRects,
   type MapEntity,
 } from "../types/entity";
 import { exportEntities } from "../lib/entityExport";
@@ -148,6 +150,44 @@ describe("export — footprintRects 통과 + footprintCells union 파생", () =>
     expect(rel).not.toContain("2,2"); // 노치(절대 (4,4)) = 앵커 상대 (2,2)
     expect(rel).toContain("3,0"); // 가로팔 끝
     expect(rel).toContain("0,3"); // 세로팔 끝
+  });
+});
+
+describe("불변식 방어 — /review 지적 (바운딩 박스는 저장이 아니라 파생)", () => {
+  it("migrateEntity 가 로드 시 tilesW/H 를 run 의 바운딩 박스로 재파생한다(저장값을 믿지 않는다)", () => {
+    // 어긋난 project.json (tilesW=9 인데 run 의 바운딩은 4×4) — 예전엔 그대로 통과해
+    //   export 가 tilesW=9 를 내보내고 게임만 조용히 틀어졌다.
+    const stale = migrateEntity(
+      obj({ gx: 2, gy: 2, tilesW: 9, tilesH: 1, footprintRects: [[0, 0, 4, 2], [0, 0, 2, 4]] }),
+    );
+    expect([stale.tilesW, stale.tilesH]).toEqual([4, 4]);
+  });
+
+  it("음수 오프셋 run 은 무효 — 앵커가 바운딩 박스 뒤-위 코너라는 규약을 지킨다", () => {
+    // dx<0 이면 footprintWH 가 max 만 보므로 바운딩이 실제 점유보다 작아진다(게이트가 조용히 어긋남).
+    const bad = obj({ gx: 5, gy: 5, tilesW: 2, tilesH: 2, footprintRects: [[-1, 0, 2, 2]] });
+    expect(validRects(bad)).toBeNull(); // 유효 run 없음 → 단일 직사각으로 폴백
+    expect(footprintWH(bad)).toEqual([2, 2]); // tilesW/H 폴백(음수 run 을 반영하지 않는다)
+  });
+
+  it("run 을 늘려도 점유가 맵 밖으로 나가지 않는다(앵커 클램프)", () => {
+    const st = useEditorStore.getState();
+    st.newProject(); // 20×20
+    useEditorStore.setState({
+      palette: [{ name: "t", url: "", img: { naturalWidth: 64, naturalHeight: 64 } as HTMLImageElement, ruid: "r1", category: "object" }],
+      activeIdx: 0,
+    });
+    useEditorStore.getState().placeEntity("object", 19, 19); // 맵 우하단 끝
+    const id = useEditorStore.getState().entities[0].id;
+    useEditorStore.getState().setFootprintRects(id, [[0, 0, 4, 4]]); // 4×4 로 확장
+    const e = useEditorStore.getState().entities[0];
+    const [W, H] = useEditorStore.getState().size;
+    expect(e.gx + (e.tilesW ?? 1)).toBeLessThanOrEqual(W); // 경계 안
+    expect(e.gy + (e.tilesH ?? 1)).toBeLessThanOrEqual(H);
+    for (const [gx, gy] of entityFootprintCells(e)) {
+      expect(gx).toBeLessThan(W);
+      expect(gy).toBeLessThan(H);
+    }
   });
 });
 

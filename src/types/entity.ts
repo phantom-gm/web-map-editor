@@ -97,6 +97,15 @@ export function migrateEntity(raw: MapEntity): MapEntity {
     out.baseW = Math.max(1, out.tilesW ?? 1);
     out.baseH = Math.max(1, out.tilesH ?? 1);
   }
+  // 오목 run 이 있으면 tilesW/H 를 **항상 바운딩 박스로 재파생**한다. 저장 파일의 값을 믿지 않는다.
+  //   footprintWH 는 run 우선이라 에디터 화면은 늘 맞게 보이지만, export 는 저장된 tilesW/H 를
+  //   그대로 내보내므로(스프레드) 파일이 어긋나 있으면 게임만 조용히 틀어진다.
+  //   loadProject / importBlueprint 가 둘 다 여기를 통과 → 재파생 지점은 이 한 곳이면 충분.
+  if (validRects(out)) {
+    const [w, h] = footprintWH(out);
+    out.tilesW = w;
+    out.tilesH = h;
+  }
   return out;
 }
 
@@ -134,11 +143,19 @@ export const ENTITY_META: Record<EntityKind, EntityKindMeta> = {
 export const isEntityKind = (s: string): s is EntityKind =>
   s === "portal" || s === "monster" || s === "npc" || s === "object";
 
-/** 유효한 run 목록(빈 배열/음수 크기 제거). 없으면 null → 단일 직사각 경로. */
-function validRects(e: MapEntity): Array<[number, number, number, number]> | null {
+/**
+ * 유효한 run 목록. 없으면 null → 단일 직사각 경로.
+ * ⚠ 규칙은 여기 한 곳 — 오프셋(dx,dy) ≥ 0, 크기(w,h) ≥ 1.
+ *   dx<0 을 허용하면 앵커가 바운딩 박스의 뒤-위 코너가 아니게 되고, footprintWH 는 max 만 보므로
+ *   바운딩 박스가 실제 점유보다 **작아진다**(게이트·z정렬이 조용히 어긋남).
+ *   convert_map.normRects 가 같은 규칙을 강제한다(파이프라인 양끝 일치).
+ */
+export function validRects(e: MapEntity): Array<[number, number, number, number]> | null {
   const rs = e.footprintRects;
   if (!Array.isArray(rs) || rs.length === 0) return null;
-  const ok = rs.filter((r) => Array.isArray(r) && r.length === 4 && r[2] >= 1 && r[3] >= 1);
+  const ok = rs.filter(
+    (r) => Array.isArray(r) && r.length === 4 && r[0] >= 0 && r[1] >= 0 && r[2] >= 1 && r[3] >= 1,
+  );
   return ok.length ? ok : null;
 }
 
@@ -216,9 +233,19 @@ export function renderWH(e: MapEntity): [number, number] {
  */
 export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   if (e.kind === "portal") return [];
-  const seen = new Set<string>();
+  const runs = footprintRuns(e);
   const out: Array<[number, number]> = [];
-  for (const r of footprintRuns(e)) {
+  // 단일 run(오늘의 거의 모든 오브젝트)은 자기끼리 겹칠 수 없다 → dedup Set 을 만들지 않는다.
+  //   이 함수는 캔버스 draw 에서 엔티티마다 호출되고 draw 는 마우스 이동마다 돈다(hover 갱신).
+  if (runs.length === 1) {
+    const r = runs[0];
+    for (let gy = r.gy; gy <= r.ay; gy++) {
+      for (let gx = r.gx; gx <= r.ax; gx++) out.push([gx, gy]);
+    }
+    return out;
+  }
+  const seen = new Set<string>();
+  for (const r of runs) {
     for (let gy = r.gy; gy <= r.ay; gy++) {
       for (let gx = r.gx; gx <= r.ax; gx++) {
         const k = `${gx},${gy}`;
