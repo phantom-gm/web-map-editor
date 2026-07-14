@@ -13,7 +13,7 @@ import { parseCellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, entityFootprintCells, footprintWH, isEntityIncomplete, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { byGameDepth, entityImageRect } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
@@ -213,23 +213,12 @@ function draw(
           ctx.fillText(e.layer === "above" ? "▲위" : "▼아래", (x0 + x1) / 2, labelTop - 1);
         }
 
-        // 4) 선택 시 — 흰 선택 박스(이미지 rect) + 리사이즈 핸들.
-        //    핸들은 이미지 코너가 아니라 "점유 footprint 앞(남) 코너"에 — 드래그가 tilesW/H(점유)를
-        //    바꾸므로 핸들이 footprint 와 함께 움직여야 피드백이 맞음(eng-review D2).
+        // 4) 선택 시 — 흰 선택 박스(이미지 rect)만. 리사이즈 핸들 제거(크기 조절은 인스펙터 W×H/배율로).
+        //    선택된 오브젝트 드래그 = 좌표 이동만.
         if (sel) {
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2);
-          const [fpw, fph] = footprintWH(e);
-          const [hxc, hyc] = cellToScreen(e.gx + fpw - 1, e.gy + fph - 1, cam);
-          const hy = hyc + hh; // 앞코너 셀 다이아의 아래 꼭짓점
-          ctx.fillStyle = "#ffffff";
-          ctx.strokeStyle = meta.color;
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.rect(hxc - 7, hy - 7, 14, 14);
-          ctx.fill();
-          ctx.stroke();
         }
       } else {
         // 이미지 없음 → 종류색 마커 + 글자 + 베이스 셀 링.
@@ -345,12 +334,10 @@ export function CanvasGrid() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "resizeEntity" | null>(null);
+  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
-  // 리사이즈 시작 기준: 잡은 셀(gx,gy) + 그 순간 크기(w,h). 델타 기반 → 점프 없음.
-  const resizeStart = useRef<{ gx: number; gy: number; w: number; h: number } | null>(null);
   const spaceDown = useRef(false);
   const didInit = useRef(false);
 
@@ -424,6 +411,17 @@ export function CanvasGrid() {
           e.preventDefault();
           useEditorStore.getState().removeEntity(sel);
         }
+      } else if (!mod && (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        // 선택 엔티티를 iso 방향으로 한 셀 이동. 오른쪽=SE(gx+1) / 위=NE(gy−1) / 왼쪽=NW(gx−1) / 아래=SW(gy+1).
+        //   ⚠ 방향키는 e.key 로 판정 — e.code 는 일부 환경/합성이벤트서 빈 문자열. e.key 는 레이아웃 무관 안정.
+        const st = useEditorStore.getState();
+        const ent = st.selectedEntityId ? st.entities.find((x) => x.id === st.selectedEntityId) : null;
+        if (ent) {
+          e.preventDefault();
+          const gx = ent.gx + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0);
+          const gy = ent.gy + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0);
+          st.moveEntityTo(ent.id, gx, gy);
+        }
       } else if (!mod) {
         const t = CODE_TO_TOOL[e.code];
         if (t) useEditorStore.getState().setTool(t);
@@ -474,34 +472,19 @@ export function CanvasGrid() {
       if (e.button !== 0) return;
       const tool = st.activeTool;
       if (tool === "cursor") {
-        // 커서 모드: 선택된 스프라이트의 리사이즈 핸들(점유 footprint 앞코너 — draw 와 동일 위치)
-        //   근처 클릭 → 드래그 리사이즈(tilesW/H). 이미지 rect 는 renderWH 기준이라 핸들 기준이 아님(D2).
-        const selEnt = st.selectedEntityId ? st.entities.find((e) => e.id === st.selectedEntityId) : null;
-        if (selEnt && selEnt.kind !== "portal") {
-          const img = makeEntityImageLookup(st.palette)(selEnt);
-          if (img) {
-            const z = st.camera.zoom;
-            const hh = (TH / 2) * z;
-            const [fw, fh] = footprintWH(selEnt);
-            const [hxc, hyc] = cellToScreen(selEnt.gx + fw - 1, selEnt.gy + fh - 1, st.camera);
-            const hy = hyc + hh; // 앞코너 셀 다이아 아래 꼭짓점(draw 의 핸들과 동일)
-            const M = 10;
-            if (Math.abs(p.x - hxc) <= M && Math.abs(p.y - hy) <= M) {
-              mode.current = "resizeEntity";
-              movingId.current = selEnt.id;
-              resizeStart.current = { gx, gy, w: fw, h: fh }; // 잡은 셀 + 현재 크기
-              strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
-              return;
-            }
-          }
-        }
-        // 엔티티(스프라이트 본체 포함) 클릭 → 선택·이동. 빈 곳 → 맵 팬.
+        // 엔티티 클릭 규칙:
+        //  - 미선택 엔티티 클릭 → "선택만"(이동 안 함). 선택하려다 딸려 움직이던 문제 방지.
+        //  - 이미 선택된 엔티티를 다시 눌러 드래그 → 좌표 이동(리사이즈 없음).
+        //  - 빈 곳 → 선택 해제 + 맵 팬.
         const hit = findEntityHit(p.x, p.y, st.entities, st.palette, st.camera);
         if (hit) {
-          st.selectEntity(hit.id);
-          mode.current = "moveEntity";
-          movingId.current = hit.id;
-          strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+          if (hit.id === st.selectedEntityId) {
+            mode.current = "moveEntity";
+            movingId.current = hit.id;
+            strokeBefore.current = { ground: new Map(st.ground), blocked: new Set(st.blocked), entities: st.entities };
+          } else {
+            st.selectEntity(hit.id); // 선택만 — 드래그해도 이동 안 됨
+          }
         } else {
           st.selectEntity(null);
           mode.current = "pan";
@@ -545,10 +528,6 @@ export function CanvasGrid() {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
       } else if (mode.current === "moveEntity" && movingId.current) {
         st.moveEntityTo(movingId.current, gx, gy);
-      } else if (mode.current === "resizeEntity" && movingId.current && resizeStart.current) {
-        // 델타 기반: 잡은 셀 대비 이동량을 시작 크기에 더함(점프 없음).
-        const rs = resizeStart.current;
-        st.setEntitySize(movingId.current, rs.w + (gx - rs.gx), rs.h + (gy - rs.gy));
       }
       st.setHover([gx, gy]);
     };
@@ -556,7 +535,7 @@ export function CanvasGrid() {
       const st = useEditorStore.getState();
       if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
-      } else if ((mode.current === "moveEntity" || mode.current === "resizeEntity") && strokeBefore.current) {
+      } else if (mode.current === "moveEntity" && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "rect") {
         const rp = st.rectPreview;
@@ -568,7 +547,6 @@ export function CanvasGrid() {
       strokeBefore.current = null;
       rectStart.current = null;
       movingId.current = null;
-      resizeStart.current = null;
     };
     const onLeave = () => {
       useEditorStore.getState().setHover(null);

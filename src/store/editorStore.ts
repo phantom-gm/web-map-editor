@@ -194,7 +194,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   palette: [],
   registry: null,
   npcCatalog: defaultNpcCatalog(),
-  activeTool: "brush",
+  activeTool: "cursor", // 열 때 기본 = 커서(선택). 팔레트 타일 선택 시 category 로 전환.
   activeIdx: 0,
   rectPreview: null,
   entities: [],
