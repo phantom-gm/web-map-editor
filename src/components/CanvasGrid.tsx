@@ -219,13 +219,18 @@ function draw(
         // 충돌(이동불가) 오브젝트는 footprint 를 빨강(수동 이동불가와 동일)으로 표시 — 에디터 작업용 UX.
         const blocking = e.kind === "object" && e.blocks === true;
 
-        // 1) footprint 채움 — 스프라이트 아래. 점유 표시 토글. blocking=빨강, 아니면 종류색.
-        //    ⚠ 셀 계산을 토글 안으로 — draw 는 마우스 이동마다 돌고(hover 갱신) 엔티티마다 호출된다.
-        //      오버레이가 꺼져 있으면 셀 배열을 만들 이유가 없다.
-        if (visual.footprint) {
-          const cells = entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H);
+        // 이 엔티티의 점유 셀 — 채움(1)과 외곽선(3)이 공유. ⚠ 이름을 footCells 로 고정한다.
+        //   바깥에 바닥 셀 배열 `cells`(3600개)가 있어, 변수명을 cells 로 두면 외곽선 루프가
+        //   스코프를 벗어나 바닥 전체를 그리는 치명 버그가 난다(엔티티마다 3600 stroke).
+        //   점유 토글 꺼져 있으면 계산도 안 한다(draw 는 마우스 이동마다·엔티티마다 호출).
+        const footCells = visual.footprint
+          ? entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H)
+          : null;
+
+        // 1) footprint 채움 — 스프라이트 아래. blocking=빨강, 아니면 종류색.
+        if (footCells) {
           ctx.fillStyle = blocking ? (sel ? "rgba(220,70,70,0.42)" : "rgba(220,70,70,0.30)") : meta.color + (sel ? "33" : "1f");
-          for (const [gx, gy] of cells) {
+          for (const [gx, gy] of footCells) {
             const [fx, fy] = cellToScreen(gx, gy, cam);
             diamondPath(ctx, fx, fy, hw, hh);
             ctx.fill();
@@ -255,12 +260,12 @@ function draw(
         ctx.restore();
         labelTop = y0;
 
-        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 표시 토글.
-        if (visual.footprint) {
+        // 3) footprint 외곽선 — 스프라이트 위에(점유 타일이 항상 보이도록). 점유 셀만(위 footCells).
+        if (footCells) {
           ctx.strokeStyle = blocking ? "#e05050" : meta.color;
           ctx.globalAlpha = sel ? 0.95 : 0.55;
           ctx.lineWidth = sel ? 1.6 : 1.2;
-          for (const [gx, gy] of cells) {
+          for (const [gx, gy] of footCells) {
             const [fx, fy] = cellToScreen(gx, gy, cam);
             diamondPath(ctx, fx, fy, hw, hh);
             ctx.stroke();
