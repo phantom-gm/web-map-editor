@@ -12,16 +12,12 @@ export function EntityInspector() {
   const npcCatalog = useEditorStore((s) => s.npcCatalog);
   const palette = useEditorStore((s) => s.palette);
   const updateEntity = useEditorStore((s) => s.updateEntity);
-  const setFootprintRects = useEditorStore((s) => s.setFootprintRects);
   const removeEntity = useEditorStore((s) => s.removeEntity);
   const duplicateEntity = useEditorStore((s) => s.duplicateEntity);
   const selectEntity = useEditorStore((s) => s.selectEntity);
 
   if (!selectedId || !entity) return null;
   const meta = ENTITY_META[entity.kind];
-
-  // 오목 점유 run 목록(없으면 null = 단일 직사각 모드).
-  const rects = entity.footprintRects?.length ? entity.footprintRects : null;
 
   // 팔레트 원본 이미지의 네이티브 픽셀 크기 — "네이티브 크기로" 복원의 기준(없으면 버튼 비활성).
   const img = makeEntityImageLookup(palette)(entity);
@@ -142,7 +138,7 @@ export function EntityInspector() {
         </label>
       )}
 
-      {entity.kind !== "portal" && !rects && (
+      {entity.kind !== "portal" && (
         <label className="ei-row">
           <span>{entity.kind === "object" ? "타일 크기 (W × H) — 점유(충돌) 영역만. 이미지 크기는 아래 '배율'로 조절" : "타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절"}</span>
           <div className="ei-grid2">
@@ -160,84 +156,6 @@ export function EntityInspector() {
             />
           </div>
         </label>
-      )}
-
-      {/* 오목(ㄴ/ㄷ/T자) 점유 — 직사각 run 목록. 여관 포치처럼 "벽은 막고 개구부는 걸어 들어가는"
-          형태는 직사각 하나로 표현할 수 없다(하나면 포치까지 막힌다). run 모드에선 W×H 는
-          run 들의 바운딩 박스라 직접 편집하지 않는다(스토어가 자동 동기). */}
-      {entity.kind === "object" && (
-        <div className="ei-runs">
-          <div className="ei-runs-head">
-            <span>
-              점유 모양 {rects ? `— 직사각 ${rects.length}개 (바운딩 ${entity.tilesW ?? 1}×${entity.tilesH ?? 1})` : "— 단일 직사각"}
-            </span>
-            {rects ? (
-              <button
-                title="직사각 목록을 지우고 단일 W×H 로 되돌립니다"
-                onClick={() => setFootprintRects(entity.id, undefined)}
-              >
-                ↺ 단일로
-              </button>
-            ) : (
-              <button
-                title="현재 W×H 를 첫 직사각으로 삼아 오목 모양(ㄴ/ㄷ/T자) 편집을 시작합니다"
-                onClick={() =>
-                  setFootprintRects(entity.id, [[0, 0, Math.max(1, entity.tilesW ?? 1), Math.max(1, entity.tilesH ?? 1)]])
-                }
-              >
-                ⊞ 오목 모양으로
-              </button>
-            )}
-          </div>
-
-          {rects && (
-            <>
-              <div className="ei-runs-cols">
-                <span>X</span>
-                <span>Y</span>
-                <span>W</span>
-                <span>H</span>
-                <span />
-              </div>
-              {rects.map((r, i) => (
-                <div className="ei-runs-row" key={i}>
-                  {([0, 1, 2, 3] as const).map((k) => (
-                    <NumberField
-                      key={k}
-                      className=""
-                      value={r[k]}
-                      min={k < 2 ? 0 : 1}
-                      onCommit={(v) => {
-                        const next = rects.map((row, j) =>
-                          j === i ? (row.map((c, m) => (m === k ? v : c)) as [number, number, number, number]) : row,
-                        );
-                        setFootprintRects(entity.id, next);
-                      }}
-                    />
-                  ))}
-                  <button
-                    className="ei-runs-del"
-                    title="이 직사각 제거"
-                    disabled={rects.length <= 1}
-                    onClick={() => setFootprintRects(entity.id, rects.filter((_, j) => j !== i))}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              <button
-                className="ei-fit"
-                title="직사각 추가 — 앵커(X,Y=0,0) 기준 상대 오프셋. 합집합이 점유 영역이 됩니다"
-                onClick={() => setFootprintRects(entity.id, [...rects, [0, 0, 1, 1]])}
-              >
-                + 직사각 추가
-              </button>
-              <div className="ei-runs-hint">
-                X·Y = 앵커 기준 상대 오프셋(0 이상) · 합집합이 점유(충돌) 영역. 캔버스의 &quot;점유&quot; 표시로 확인하세요.
-              </div>
-            </>
-          )}
-        </div>
       )}
 
       {entity.kind === "object" && (

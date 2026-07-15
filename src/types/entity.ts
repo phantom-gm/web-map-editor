@@ -41,15 +41,6 @@ export interface MapEntity {
   tilesH?: number;
   flipX?: boolean; // 스프라이트 좌우반전
 
-  // 오목(ㄴ/ㄷ/T자) footprint — 직사각 run 들의 합집합. 앵커(gx,gy) 상대 오프셋 [dx,dy,w,h][].
-  //   미설정 = [[0,0,tilesW,tilesH]] (단일 직사각, 기존 동작). 여관 포치처럼 가운데-아래가 파인
-  //   건물은 직사각 하나로 표현하면 개구부에 선 플레이어의 앞뒤를 옳게 판정할 수 없다.
-  //   깊이 판정(playerBehind)은 run 별 반평면 판정의 OR — 어느 한 팔이라도 뒤면 통짜 전체가 위.
-  //   ⚠ tilesW/tilesH 는 항상 run 들의 **바운딩 박스**로 동기 유지(setFootprintRects 가 강제).
-  //     게이트·z정렬 앞줄·복사 간격 등 바운딩 박스만 필요한 소비자가 그대로 쓰기 위함.
-  //   Spec: legend_of_light/docs/map/depth/아이소메트릭_깊이정렬_런분해_설계.md
-  footprintRects?: Array<[number, number, number, number]>;
-
   // object 이미지 렌더 기준 footprint(배율 1.0 크기). 배치 시 자동맞춤으로 고정 →
   // 이후 tilesW/tilesH(점유/충돌)를 바꿔도 이미지 크기·위치는 그대로. 크기 조절은 scaleMul 로만.
   // (미설정 시 renderWH 가 tilesW/tilesH 로 폴백 → 레거시/몬스터·NPC 는 기존 동작 유지.)
@@ -97,15 +88,6 @@ export function migrateEntity(raw: MapEntity): MapEntity {
     out.baseW = Math.max(1, out.tilesW ?? 1);
     out.baseH = Math.max(1, out.tilesH ?? 1);
   }
-  // 오목 run 이 있으면 tilesW/H 를 **항상 바운딩 박스로 재파생**한다. 저장 파일의 값을 믿지 않는다.
-  //   footprintWH 는 run 우선이라 에디터 화면은 늘 맞게 보이지만, export 는 저장된 tilesW/H 를
-  //   그대로 내보내므로(스프레드) 파일이 어긋나 있으면 게임만 조용히 틀어진다.
-  //   loadProject / importBlueprint 가 둘 다 여기를 통과 → 재파생 지점은 이 한 곳이면 충분.
-  if (validRects(out)) {
-    const [w, h] = footprintWH(out);
-    out.tilesW = w;
-    out.tilesH = h;
-  }
   return out;
 }
 
@@ -143,75 +125,9 @@ export const ENTITY_META: Record<EntityKind, EntityKindMeta> = {
 export const isEntityKind = (s: string): s is EntityKind =>
   s === "portal" || s === "monster" || s === "npc" || s === "object";
 
-/**
- * 유효한 run 목록. 없으면 null → 단일 직사각 경로.
- * ⚠ 규칙은 여기 한 곳 — 오프셋(dx,dy) ≥ 0, 크기(w,h) ≥ 1.
- *   dx<0 을 허용하면 앵커가 바운딩 박스의 뒤-위 코너가 아니게 되고, footprintWH 는 max 만 보므로
- *   바운딩 박스가 실제 점유보다 **작아진다**(게이트·z정렬이 조용히 어긋남).
- *   convert_map.normRects 가 같은 규칙을 강제한다(파이프라인 양끝 일치).
- */
-export function validRects(e: MapEntity): Array<[number, number, number, number]> | null {
-  const rs = e.footprintRects;
-  if (!Array.isArray(rs) || rs.length === 0) return null;
-  const ok = rs.filter(
-    (r) => Array.isArray(r) && r.length === 4 && r[0] >= 0 && r[1] >= 0 && r[2] >= 1 && r[3] >= 1,
-  );
-  return ok.length ? ok : null;
-}
-
-/**
- * 점유 run 들 — 앵커 절대 셀 좌표 [{gx,gy,ax,ay}]. footprintRects 미설정이면 단일 직사각 1개.
- * 깊이 판정(playerBehind)·점유 셀·바운딩 박스의 단일 원천.
- */
-export function footprintRuns(e: MapEntity): Array<{ gx: number; gy: number; ax: number; ay: number }> {
-  const rs = validRects(e);
-  if (!rs) {
-    const w = Math.max(1, e.tilesW ?? 1);
-    const h = Math.max(1, e.tilesH ?? 1);
-    return [{ gx: e.gx, gy: e.gy, ax: e.gx + w - 1, ay: e.gy + h - 1 }];
-  }
-  return rs.map(([dx, dy, w, h]) => ({
-    gx: e.gx + dx,
-    gy: e.gy + dy,
-    ax: e.gx + dx + Math.max(1, w) - 1,
-    ay: e.gy + dy + Math.max(1, h) - 1,
-  }));
-}
-
-/**
- * 엔티티 점유(충돌) footprint 크기 [W,H] (타일 단위, 최소 1). 미설정이면 [1,1].
- * ⚠ footprintRects 가 있으면 run 들의 **바운딩 박스** — 게이트·z정렬 앞줄·복사 간격 등
- *   "대략의 크기"만 필요한 소비자가 오목 모양을 몰라도 되게 한다(오목은 판정 함수만 알면 됨).
- */
+/** 엔티티 점유(충돌) footprint 크기 [W,H] (타일 단위, 최소 1). 미설정이면 [1,1]. */
 export function footprintWH(e: MapEntity): [number, number] {
-  const rs = validRects(e);
-  if (!rs) return [Math.max(1, e.tilesW ?? 1), Math.max(1, e.tilesH ?? 1)];
-  let maxAx = -Infinity, maxAy = -Infinity;
-  for (const [dx, dy, w, h] of rs) {
-    if (dx + Math.max(1, w) - 1 > maxAx) maxAx = dx + Math.max(1, w) - 1;
-    if (dy + Math.max(1, h) - 1 > maxAy) maxAy = dy + Math.max(1, h) - 1;
-  }
-  // run 오프셋(dx,dy)은 0 이상이 규약 — 앵커가 바운딩 박스의 뒤-위 코너다.
-  return [Math.max(1, maxAx + 1), Math.max(1, maxAy + 1)];
-}
-
-/**
- * 깊이 판정 — 플레이어(px,py)가 이 오브젝트보다 **뒤**인가(= 오브젝트가 플레이어를 덮는가).
- * 게임 런타임(IsoObjectDepthLogic.Apply)의 캐논 규칙 미러. 순서가 중요하다:
- *   1) inside(어느 run 위) → front (통과 가능 장식물 위에 선 플레이어를 보여준다)
- *   2) 그 외, 어느 run 하나라도 반평면 뒤(px ≤ ax AND py ≤ ay) → behind
- * ⚠ run 결합은 **OR**다(AND 아님). 스프라이트는 draw 1번이라 어느 한 팔이라도 가려야 하면
- *   통짜 전체가 위여야 한다. 8×8 ㄴ자 검증: OR 오판 0 / AND 오판 8 (런분해 설계 §1).
- */
-export function playerBehind(e: MapEntity, px: number, py: number): boolean {
-  const runs = footprintRuns(e);
-  for (const r of runs) {
-    if (px >= r.gx && px <= r.ax && py >= r.gy && py <= r.ay) return false; // inside → front
-  }
-  for (const r of runs) {
-    if (px <= r.ax && py <= r.ay) return true; // 어느 run 하나라도 뒤 → 오브젝트가 위
-  }
-  return false;
+  return [Math.max(1, e.tilesW ?? 1), Math.max(1, e.tilesH ?? 1)];
 }
 
 /**
@@ -226,34 +142,13 @@ export function renderWH(e: MapEntity): [number, number] {
   return [w > 0 ? w : 1, h > 0 ? h : 1];
 }
 
-/**
- * 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열.
- * footprintRects 가 있으면 run 들의 **합집합**(중복 셀 dedup) — 오목 모양의 구멍은 점유되지 않는다.
- * 충돌(DT_Walk)·점유 오버레이·"충돌 범위 < 스프라이트" 경고가 전부 이 함수를 쓰므로 자동으로 따라온다.
- */
+/** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */
 export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   if (e.kind === "portal") return [];
-  const runs = footprintRuns(e);
+  const [w, h] = footprintWH(e);
   const out: Array<[number, number]> = [];
-  // 단일 run(오늘의 거의 모든 오브젝트)은 자기끼리 겹칠 수 없다 → dedup Set 을 만들지 않는다.
-  //   이 함수는 캔버스 draw 에서 엔티티마다 호출되고 draw 는 마우스 이동마다 돈다(hover 갱신).
-  if (runs.length === 1) {
-    const r = runs[0];
-    for (let gy = r.gy; gy <= r.ay; gy++) {
-      for (let gx = r.gx; gx <= r.ax; gx++) out.push([gx, gy]);
-    }
-    return out;
-  }
-  const seen = new Set<string>();
-  for (const r of runs) {
-    for (let gy = r.gy; gy <= r.ay; gy++) {
-      for (let gx = r.gx; gx <= r.ax; gx++) {
-        const k = `${gx},${gy}`;
-        if (seen.has(k)) continue; // run 이 겹치는 코너 셀 — 한 번만
-        seen.add(k);
-        out.push([gx, gy]);
-      }
-    }
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) out.push([e.gx + i, e.gy + j]);
   }
   return out;
 }

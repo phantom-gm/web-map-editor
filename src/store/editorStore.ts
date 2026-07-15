@@ -9,7 +9,7 @@ import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from ".
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
-import { footprintWH, migrateEntity, newEntityId, renderWH, validRects, type EntityKind, type MapEntity } from "../types/entity";
+import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
@@ -162,7 +162,6 @@ export interface EditorState {
   removeEntity: (id: string) => void;
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
-  setFootprintRects: (id: string, rects: MapEntity["footprintRects"]) => void;
   selectEntity: (id: string | null) => void;
 
   commitStroke: (before: Snapshot) => void;
@@ -488,39 +487,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (!s.entities.some((e) => e.id === id)) return {};
       const before = snap(s.ground, s.blocked, s.entities);
-      return {
-        entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-        entitiesVer: s.entitiesVer + 1,
-        undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
-        redoStack: [],
-      };
-    }),
-  // 오목(ㄴ/ㄷ/T자) 점유 모양 편집 — 직사각 run 목록. 여기가 tilesW/tilesH(바운딩 박스) 동기의
-  //   단일 지점이다. run 을 바꿔놓고 바운딩 박스를 안 맞추면 게이트·z정렬 앞줄·복사 간격이
-  //   실제 점유보다 작아져 조용히 어긋난다(그 소비자들은 오목 모양을 모르고 W×H 만 본다).
-  //   빈 배열/undefined → footprintRects 제거 = 단일 직사각(tilesW/H)으로 복귀.
-  setFootprintRects: (id, rects) =>
-    set((s) => {
-      const ent = s.entities.find((e) => e.id === id);
-      if (!ent) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
-      const patch: Partial<MapEntity> = {};
-      // 유효성 규칙은 validRects 한 곳 — 오프셋 ≥ 0, 크기 ≥ 1(여기서 중복 정의하지 않는다).
-      const ok = validRects({ ...ent, footprintRects: rects });
-      if (ok === null) {
-        patch.footprintRects = undefined; // 단일 직사각으로 복귀 — tilesW/H 는 그대로 둔다
-      } else {
-        patch.footprintRects = ok;
-        // 바운딩 박스 = run 들을 전부 덮는 최소 직사각.
-        const [w, h] = footprintWH({ ...ent, footprintRects: ok });
-        patch.tilesW = w;
-        patch.tilesH = h;
-        // 커진 점유가 맵 밖으로 나가지 않게 앵커 클램프 — placeEntity/moveEntityTo 와 동일 규약.
-        //   여기만 빠져 있으면 맵 가장자리에서 run 을 늘렸을 때 경계 밖 셀이 DT_Walk 로 새어나간다.
-        const [W, H] = s.size;
-        patch.gx = Math.max(0, Math.min(ent.gx, W - w));
-        patch.gy = Math.max(0, Math.min(ent.gy, H - h));
-      }
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
         entitiesVer: s.entitiesVer + 1,
