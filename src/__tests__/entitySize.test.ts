@@ -37,6 +37,38 @@ describe("오브젝트 크기/점유 분리", () => {
   });
 });
 
+// 깊이(y-정렬) footprint = round(baseW) 정사각. 충돌(tilesW/H)과 분리 — export 계산값.
+//   큰 건물의 정렬선이 시각 베이스를 덮어, 포치에 선 플레이어가 건물 위로 보이게 하는 G0 수정.
+describe("깊이 footprint export (depthW/depthH)", () => {
+  const obj = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
+  const exp1 = (e: MapEntity) => exportEntities([e], []).find((x) => x.kind === "object")!;
+
+  it("baseW 보유 object → depthW=depthH=round(baseW) 정사각", () => {
+    const e = exp1(obj({ baseW: 4.6, baseH: 9.2, tilesW: 1, tilesH: 1 }));
+    expect(e.depthW).toBe(5); // round(4.6)
+    expect(e.depthH).toBe(5); // 정사각 — baseH(전체높이)는 안 쓴다
+  });
+
+  it("깊이 footprint 는 충돌(tilesW/H)과 독립 — W×H 를 바꿔도 depth 는 baseW 기준", () => {
+    const e = exp1(obj({ baseW: 3, baseH: 1, tilesW: 5, tilesH: 4 }));
+    expect(e.depthW).toBe(3);
+    expect(e.depthH).toBe(3);
+    expect(footprintWH(e)).toEqual([5, 4]); // 충돌 점유는 그대로
+  });
+
+  it("1타일 미만 baseW 는 depth 1 로 클램프(음수·0 footprint 금지)", () => {
+    const e = exp1(obj({ baseW: 30 / 64, baseH: 30 / 64, tilesW: 1, tilesH: 1 }));
+    expect(e.depthW).toBe(1); // max(1, round(0.469))
+    expect(e.depthH).toBe(1);
+  });
+
+  it("baseW 없는 레거시/몬스터 → depthW 미emit(build_map 이 현행 tilesW/H 유지)", () => {
+    expect(exp1(obj({ tilesW: 5, tilesH: 1 })).depthW).toBeUndefined();
+    const mob = exportEntities([obj({ kind: "monster", tilesW: 2, tilesH: 1 })], []).find((x) => x.kind === "monster")!;
+    expect(mob.depthW).toBeUndefined();
+  });
+});
+
 // 배치 기본값(placeEntity) → export(exportEntities) 를 실제로 통과시켜, 에셋 네이티브 크기와 무관하게
 // 게임 scale 이 일정(고정 PPU)한지 잠근다. ⚠ 수식을 테스트에 재구현하지 말 것 — 프로덕션 경로를 호출한다.
 describe("배치 기본값 — 고정 PPU(픽셀 1:1)", () => {

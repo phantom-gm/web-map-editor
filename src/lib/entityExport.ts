@@ -44,6 +44,25 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
       out.scale = Math.round(scale * 1000) / 1000;
     }
 
+    // depthW/depthH — y-정렬(깊이) 전용 footprint(월드 셀). 충돌 footprintCells(tilesW/H)와 분리.
+    //   버그: 깊이 컷라인이 점유(tilesW/H=1×1)를 써서 큰 건물의 정렬선이 한 셀뿐 → 시각 베이스
+    //   위/옆에 선 플레이어가 "뒤"로 오판돼 건물에 가려짐. 해법: 깊이 footprint 를 시각 베이스에
+    //   맞춘다. 에디터 iso 에선 baseW(=네이티브폭/64) ≈ 정사각 베이스의 월드 폭(셀)이므로
+    //   round(baseW) 를 W·H 로 쓴다(정사각 가정). baseH 는 지붕·벽 포함 전체 높이라 지면 깊이가
+    //   아니어서 안 쓴다. 앵커 기준 뒤(북)로 뻗는 배치는 build_map 이 map-space 에서 처리.
+    //   ⚠ baseW 보유(신규 export) object 만 — 레거시/몬스터/NPC 는 미emit(build_map 이 현행 유지).
+    if (e.baseW !== undefined) {
+      const [fw, fh] = renderWH(e);
+      const d = Math.max(1, Math.round(fw));
+      out.depthW = d;
+      out.depthH = d;
+      // spriteW/spriteH — 페이드 (B) 겹침 rect 용 실제 렌더 크기(효과 타일 = renderWH × scaleMul).
+      //   depthW(정수 정사각)와 달리 float·비정사각 — 스프라이트 world 박스를 정확히 표현.
+      const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+      out.spriteW = Math.round(fw * mul * 1000) / 1000;
+      out.spriteH = Math.round(fh * mul * 1000) / 1000;
+    }
+
     // offset — 에디터 화면 px(오른쪽+/아래+) → 게임 world(오른쪽+/위+). y 부호 반전.
     const oxPx = e.offsetX ?? 0, oyPx = e.offsetY ?? 0;
     if (oxPx !== 0 || oyPx !== 0) {

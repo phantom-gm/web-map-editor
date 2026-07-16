@@ -60,6 +60,14 @@ export interface MapEntity {
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
   scale?: number | [number, number]; // 스프라이트 배율. export 계산값(게임 네이티브 거대화 방지).
+  // 깊이(y-정렬) 전용 footprint(월드 셀). 충돌 footprintCells(tilesW/H)와 분리 — export 계산값.
+  //   round(baseW) 정사각. build_map 이 앵커 기준 뒤(북)로 뻗어 배치(큰 건물 정렬선을 시각 베이스로).
+  depthW?: number;
+  depthH?: number;
+  // 스프라이트 렌더 크기(효과 타일 = renderWH × scaleMul) — 반투명 페이드의 (B) 겹침 rect 용. export 계산값.
+  //   build_map 이 spriteH≥FADE_MIN_H 로 Fade 대상 판정 + BaseW/BaseH 메타로 굽는다.
+  spriteW?: number;
+  spriteH?: number;
   offset?: [number, number]; // 스프라이트 위치 오프셋(world). export 계산값(offsetX/Y px → world).
   rotation?: number; // 기울기(회전, 도). export 계산값(= rotationDeg).
 
