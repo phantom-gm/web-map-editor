@@ -2,7 +2,7 @@
 //  - scale: 스프라이트 배율 (게임이 네이티브 크기로 배치해 거대해지는 버그 방지)
 //  - footprintCells: 충돌(blocks) 시 앵커 상대 오프셋 목록
 // 라이브 상태(store)는 blocks 만 갖고, scale/footprintCells 는 tilesW/tilesH·이미지에서 export 시 계산.
-import { entityFootprintCells, renderWH, type MapEntity } from "../types/entity";
+import { entityFootprintCells, footprintWH, renderWH, type MapEntity } from "../types/entity";
 import { makeEntityImageLookup } from "./entityImage";
 import type { PaletteTile } from "./palette";
 
@@ -44,20 +44,23 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
       out.scale = Math.round(scale * 1000) / 1000;
     }
 
-    // depthW/depthH — y-정렬(깊이) 전용 footprint(월드 셀). 충돌 footprintCells(tilesW/H)와 분리.
-    //   버그: 깊이 컷라인이 점유(tilesW/H=1×1)를 써서 큰 건물의 정렬선이 한 셀뿐 → 시각 베이스
-    //   위/옆에 선 플레이어가 "뒤"로 오판돼 건물에 가려짐. 해법: 깊이 footprint 를 시각 베이스에
-    //   맞춘다. 에디터 iso 에선 baseW(=네이티브폭/64) ≈ 정사각 베이스의 월드 폭(셀)이므로
-    //   round(baseW) 를 W·H 로 쓴다(정사각 가정). baseH 는 지붕·벽 포함 전체 높이라 지면 깊이가
-    //   아니어서 안 쓴다. 앵커 기준 뒤(북)로 뻗는 배치는 build_map 이 map-space 에서 처리.
-    //   ⚠ baseW 보유(신규 export) object 만 — 레거시/몬스터/NPC 는 미emit(build_map 이 현행 유지).
+    // depthW/depthH — 게임 y-정렬(깊이)용 **지면 점유 셀 수**. 저작값(tilesW/tilesH)을 그대로 내보낸다.
+    //   계약: docs/map/depth/웹맵에디터_깊이footprint_export_요청.md (게임 파이프라인 요청)
+    //   ⚠ 스프라이트에서 파생하지 말 것. 예전엔 round(baseW) 정사각으로 내보냈는데, 그건 사람이
+    //   저작한 값이 아니라 스프라이트 네이티브 폭이라 정보량이 0이었다 — 가로 6칸 상점이 게임에서
+    //   9×9 덩어리로 인식돼 뒤쪽 8줄을 삼키고 앞뒤 판정이 전부 틀어졌다(실측 64쌍 뒤집힘).
+    //   tilesW/H = 에디터에서 사람이 그린 지면 점유 rect(= 캔버스 노란 rect). 깊이의 정답 소스다.
+    //   충돌과의 분리는 여기가 아니라 `blocks` 플래그가 한다 — 나무는 tiles 2×2 + blocks=false 로
+    //   "통과 가능하지만 깊이는 있음"이 된다. 그래서 depth 와 collision 을 같은 rect 로 둬도 안전.
+    //   앵커 (gx,gy) = rect 의 **뒤-위 코너**(최소 x/y), +gx/+gy 로 확장 — entityFootprintCells 와 동일.
+    const [dw, dh] = footprintWH(e);
+    out.depthW = dw;
+    out.depthH = dh;
+
+    // spriteW/spriteH — 스프라이트 실제 렌더 크기(효과 타일 = renderWH × scaleMul). 깊이와 무관한
+    //   치수 데이터(게임이 비활성 메타로 보관 — 반투명 페이드 재도전 시 필요). 파생값이라 저작 아님.
     if (e.baseW !== undefined) {
       const [fw, fh] = renderWH(e);
-      const d = Math.max(1, Math.round(fw));
-      out.depthW = d;
-      out.depthH = d;
-      // spriteW/spriteH — 페이드 (B) 겹침 rect 용 실제 렌더 크기(효과 타일 = renderWH × scaleMul).
-      //   depthW(정수 정사각)와 달리 float·비정사각 — 스프라이트 world 박스를 정확히 표현.
       const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
       out.spriteW = Math.round(fw * mul * 1000) / 1000;
       out.spriteH = Math.round(fh * mul * 1000) / 1000;

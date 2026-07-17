@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { footprintWH, renderWH, migrateEntity, type MapEntity } from "../types/entity";
+import { entityFootprintCells, footprintWH, renderWH, migrateEntity, type MapEntity } from "../types/entity";
 import { exportEntities } from "../lib/entityExport";
 import { entityWarnings } from "../lib/validate";
 import { useEditorStore } from "../store/editorStore";
@@ -37,35 +37,47 @@ describe("오브젝트 크기/점유 분리", () => {
   });
 });
 
-// 깊이(y-정렬) footprint = round(baseW) 정사각. 충돌(tilesW/H)과 분리 — export 계산값.
-//   큰 건물의 정렬선이 시각 베이스를 덮어, 포치에 선 플레이어가 건물 위로 보이게 하는 G0 수정.
-describe("깊이 footprint export (depthW/depthH)", () => {
+// 깊이(y-정렬) footprint = 저작한 지면 점유 셀 수(tilesW/tilesH) 그대로.
+//   계약: docs/map/depth/웹맵에디터_깊이footprint_export_요청.md
+//   회귀 방지: 예전엔 round(baseW) 정사각 파생이라 정보량 0 → 게임이 6×1 상점을 9×9 로 인식해
+//   뒤쪽 8줄을 삼켰다(실측 64쌍 앞뒤 뒤집힘). 스프라이트 파생으로 되돌아가면 이 테스트가 깨진다.
+describe("깊이 footprint export (depthW/depthH) — 저작값", () => {
   const obj = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
   const exp1 = (e: MapEntity) => exportEntities([e], []).find((x) => x.kind === "object")!;
 
-  it("baseW 보유 object → depthW=depthH=round(baseW) 정사각", () => {
-    const e = exp1(obj({ baseW: 4.6, baseH: 9.2, tilesW: 1, tilesH: 1 }));
-    expect(e.depthW).toBe(5); // round(4.6)
-    expect(e.depthH).toBe(5); // 정사각 — baseH(전체높이)는 안 쓴다
-  });
-
-  it("깊이 footprint 는 충돌(tilesW/H)과 독립 — W×H 를 바꿔도 depth 는 baseW 기준", () => {
-    const e = exp1(obj({ baseW: 3, baseH: 1, tilesW: 5, tilesH: 4 }));
-    expect(e.depthW).toBe(3);
-    expect(e.depthH).toBe(3);
-    expect(footprintWH(e)).toEqual([5, 4]); // 충돌 점유는 그대로
-  });
-
-  it("1타일 미만 baseW 는 depth 1 로 클램프(음수·0 footprint 금지)", () => {
-    const e = exp1(obj({ baseW: 30 / 64, baseH: 30 / 64, tilesW: 1, tilesH: 1 }));
-    expect(e.depthW).toBe(1); // max(1, round(0.469))
+  it("depthW/H = 저작한 점유 rect(tilesW/H) — 스프라이트 크기와 무관", () => {
+    // 페른델잡화상점 실측 형태: 가로 6칸 세로 1칸인데 스프라이트 네이티브 폭은 23.22타일.
+    const e = exp1(obj({ tilesW: 6, tilesH: 1, baseW: 23.21875, baseH: 16.921875, scaleMul: 0.4 }));
+    expect(e.depthW).toBe(6);
     expect(e.depthH).toBe(1);
+    expect(e.depthW).not.toBe(Math.round(23.21875)); // 수용기준 1 — 파생값이 아니어야 함
   });
 
-  it("baseW 없는 레거시/몬스터 → depthW 미emit(build_map 이 현행 tilesW/H 유지)", () => {
-    expect(exp1(obj({ tilesW: 5, tilesH: 1 })).depthW).toBeUndefined();
-    const mob = exportEntities([obj({ kind: "monster", tilesW: 2, tilesH: 1 })], []).find((x) => x.kind === "monster")!;
-    expect(mob.depthW).toBeUndefined();
+  it("비정사각 depth 를 표현한다 — 강제로 같게 만들지 않는다(수용기준 2)", () => {
+    const e = exp1(obj({ tilesW: 6, tilesH: 3, baseW: 9, baseH: 5 }));
+    expect(e.depthW).toBe(6);
+    expect(e.depthH).toBe(3);
+    expect(e.depthH).not.toBe(e.depthW);
+  });
+
+  it("depthW×depthH = 캔버스 점유(노란 rect) 칸 수와 일치(수용기준 3)", () => {
+    const src = obj({ tilesW: 4, tilesH: 2, baseW: 12.9, baseH: 8 });
+    const e = exp1(src);
+    // 캔버스가 그리는 점유 셀 = entityFootprintCells. export 한 depth rect 와 칸 수가 같아야 한다.
+    expect(e.depthW! * e.depthH!).toBe(entityFootprintCells(src).length);
+    expect(footprintWH(src)).toEqual([4, 2]);
+  });
+
+  it("스프라이트 파생 필드(spriteW/H)는 깊이와 독립 — 치수 데이터로만 유지", () => {
+    const e = exp1(obj({ tilesW: 6, tilesH: 1, baseW: 10, baseH: 4, scaleMul: 0.5 }));
+    expect(e.spriteW).toBe(5); // 10 × 0.5 — 렌더 크기
+    expect(e.depthW).toBe(6); // 깊이는 저작값, spriteW 에 오염되지 않음
+  });
+
+  it("레거시(baseW 없음) object 도 depth 를 내보낸다 — 저작 rect 는 항상 있다", () => {
+    const e = exp1(obj({ tilesW: 5, tilesH: 1 }));
+    expect(e.depthW).toBe(5);
+    expect(e.depthH).toBe(1);
   });
 });
 

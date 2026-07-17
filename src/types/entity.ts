@@ -60,8 +60,9 @@ export interface MapEntity {
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).
   scale?: number | [number, number]; // 스프라이트 배율. export 계산값(게임 네이티브 거대화 방지).
-  // 깊이(y-정렬) 전용 footprint(월드 셀). 충돌 footprintCells(tilesW/H)와 분리 — export 계산값.
-  //   round(baseW) 정사각. build_map 이 앵커 기준 뒤(북)로 뻗어 배치(큰 건물 정렬선을 시각 베이스로).
+  // 게임 깊이(y-정렬)용 지면 점유 셀 수 — export 시 저작값 tilesW/tilesH 를 그대로 내보낸 것.
+  //   ⚠ 스프라이트 파생 금지(예전 round(baseW) 는 정보량 0이라 게임 정렬을 깨뜨렸다).
+  //   앵커 (gx,gy) = rect 뒤-위 코너. 계약: docs/map/depth/웹맵에디터_깊이footprint_export_요청.md
   depthW?: number;
   depthH?: number;
   // 스프라이트 렌더 크기(효과 타일 = renderWH × scaleMul) — 반투명 페이드의 (B) 겹침 rect 용. export 계산값.
