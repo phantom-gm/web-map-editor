@@ -1,5 +1,5 @@
 import { useEditorStore } from "../store/editorStore";
-import { ENTITY_META, FACINGS, FACING_LABEL, type MapEntity } from "../types/entity";
+import { ENTITY_META, FACINGS, FACING_LABEL, suggestedFootprint, type MapEntity } from "../types/entity";
 import { npcClassLabel } from "../lib/npcClass";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { TW } from "../lib/grid";
@@ -140,7 +140,7 @@ export function EntityInspector() {
 
       {entity.kind !== "portal" && (
         <label className="ei-row">
-          <span>{entity.kind === "object" ? "타일 크기 (W × H) — 점유(충돌) 영역만. 이미지 크기는 아래 '배율'로 조절" : "타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절"}</span>
+          <span>{entity.kind === "object" ? "지면 점유 (W × H) — 이 오브젝트가 바닥에서 차지하는 셀. 게임 깊이 정렬이 이 값을 씁니다(충돌은 아래 체크박스). 이미지 크기는 '배율'로 조절" : "타일 크기 (W × H) — 점유 영역. 드래그 핸들로도 조절"}</span>
           <div className="ei-grid2">
             <NumberField
               className=""
@@ -160,6 +160,16 @@ export function EntityInspector() {
 
       {entity.kind === "object" && (
         <div className="ei-fitrow">
+          <button
+            className="ei-fit"
+            title="보이는 스프라이트 크기만큼 지면 점유(W×H)를 채웁니다. 시작값일 뿐이니, 캔버스의 점유 rect 를 보고 실제 바닥에 닿는 영역으로 줄이세요(지붕·처마는 지면이 아닙니다)."
+            onClick={() => {
+              const [w, h] = suggestedFootprint(entity);
+              updateEntity(entity.id, { tilesW: w, tilesH: h });
+            }}
+          >
+            ⇱ 스프라이트 크기로 점유 채우기
+          </button>
           <button
             className="ei-fit"
             title="이미지 크기의 기준점을 현재 타일 크기로 재설정 (배율 1.0 = 이 타일 크기)"

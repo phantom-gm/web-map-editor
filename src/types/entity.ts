@@ -151,6 +151,20 @@ export function renderWH(e: MapEntity): [number, number] {
   return [w > 0 ? w : 1, h > 0 ? h : 1];
 }
 
+/**
+ * 인스펙터 "스프라이트 크기로 점유 채우기" 의 제안값 — 보이는 크기(renderWH × 배율)를 정사각으로.
+ *
+ * ⚠ **제안값일 뿐이다.** export 에서 이걸로 depthW 를 파생하면 안 된다 — 스프라이트 크기로는
+ *   "밑동 1칸 나무" 와 "4×4 베이스 집" 을 구분할 수 없다(둘 다 실효 3.7타일). 지면 점유는 사람이
+ *   캔버스의 점유 rect 를 보며 저작해야 한다. 이 함수는 그 저작의 *출발점*을 한 번에 채워줄 뿐이다.
+ */
+export function suggestedFootprint(e: MapEntity): [number, number] {
+  const [rw] = renderWH(e);
+  const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+  const n = Math.max(1, Math.round(rw * mul));
+  return [n, n];
+}
+
 /** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */
 export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   if (e.kind === "portal") return [];

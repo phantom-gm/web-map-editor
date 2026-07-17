@@ -97,8 +97,20 @@ export function validateMap(args: {
 
 /**
  * 치명적이지 않지만 알릴 엔티티 사항. errors 와 달리 export 를 막지 않는다.
- * 충돌 범위 < 스프라이트: 배치 기본 점유가 1×1 이라 큰 오브젝트에 충돌을 켜면 한 칸만 막히기 쉽다.
- *   단, 나무처럼 "캐노피는 넓고 밑동만 막는" 의도적 구성도 정상이므로 error 가 아니라 warning.
+ *
+ * 점유(W×H) < 스프라이트 + 충돌 켬: 배치 기본 점유가 1×1 이라 큰 오브젝트에 충돌을 켜면 한 칸만
+ *   막히기 쉽다. 단, 나무처럼 "캐노피는 넓고 밑동만 막는" 의도적 구성도 정상이므로 warning.
+ *
+ * ⚠ 실효 크기 = renderWH × scaleMul. 배율을 빼먹으면 안 된다 — 침엽수는 네이티브 baseW≈15.9 지만
+ *   배율 0.23 이라 실효 3.7타일이다. 네이티브로 비교하면 "약 16×16" 으로 오독해 오탐이 된다.
+ *
+ * ⚠ **`blocks` 게이트를 풀지 말 것** — "깊이도 이 값을 쓰니 통과 가능한 것도 경고하자" 는 시도가
+ *   있었는데 실측에서 170/292(58.2%)가 발동했다. 대부분 나무·바위였고, 그것들은 **1×1 이 정답**이다
+ *   (캐노피는 넓어도 지면에 닿는 건 밑동 한 칸). 결정적으로 침엽수_B 실효 3.7타일 = 페른델민가_A
+ *   실효 3.7타일 — **스프라이트 크기로는 "밑동 1칸 나무" 와 "4×4 베이스 집" 을 구분할 수 없다**
+ *   (요청서 부록 B: 스프라이트에서 지면 footprint 추론 불가. 경고에도 그대로 적용된다).
+ *   저작 누락은 자동 탐지 대상이 아니다 — 캔버스의 점유 rect 와 인스펙터로 사람이 저작한다.
+ *   `blocks=true` 일 때만 경고하는 이유: 그때만 footprint 가 "무엇이 막히는가" 라는 명확한 뜻을 갖는다.
  */
 export function entityWarnings(entities: MapEntity[]): string[] {
   const out: string[] = [];
@@ -106,10 +118,12 @@ export function entityWarnings(entities: MapEntity[]): string[] {
     if (e.kind !== "object" || e.blocks !== true) continue;
     const [fw, fh] = footprintWH(e);
     const [rw, rh] = renderWH(e);
-    const [sw, sh] = [Math.round(rw), Math.round(rh)];
+    const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+    const sw = Math.max(1, Math.round(rw * mul));
+    const sh = Math.max(1, Math.round(rh * mul));
     if (fw < sw || fh < sh) {
       out.push(
-        `object(${e.gx},${e.gy}) "${e.name ?? ""}": 충돌 범위(${fw}×${fh})가 스프라이트(약 ${sw}×${sh}타일)보다 작습니다 — 그 칸만 막힙니다. 의도한 게 아니면 타일 크기(W×H)를 올리세요.`,
+        `object(${e.gx},${e.gy}) "${e.name ?? ""}": 충돌 범위(${fw}×${fh})가 스프라이트(약 ${sw}×${sh}타일)보다 작습니다 — 그 칸만 막힙니다. 의도한 게 아니면 지면 점유(W×H)를 올리세요.`,
       );
     }
   }

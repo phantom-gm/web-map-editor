@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { entityFootprintCells, footprintWH, renderWH, migrateEntity, type MapEntity } from "../types/entity";
+import { entityFootprintCells, footprintWH, renderWH, migrateEntity, suggestedFootprint, type MapEntity } from "../types/entity";
 import { exportEntities } from "../lib/entityExport";
 import { entityWarnings } from "../lib/validate";
 import { useEditorStore } from "../store/editorStore";
@@ -78,6 +78,53 @@ describe("깊이 footprint export (depthW/depthH) — 저작값", () => {
     const e = exp1(obj({ tilesW: 5, tilesH: 1 }));
     expect(e.depthW).toBe(5);
     expect(e.depthH).toBe(1);
+  });
+});
+
+// "스프라이트 크기로 점유 채우기" 제안값 — 저작의 출발점을 한 번에 채워준다(1×1 하드코딩 기본값 보완).
+describe("점유 제안값 (suggestedFootprint)", () => {
+  const obj = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
+
+  it("보이는 크기(renderWH × 배율)를 정사각으로 제안한다", () => {
+    // 페른델민가_A 실측: baseW 15.9 × 배율 0.23 ≈ 3.66 → 4×4
+    expect(suggestedFootprint(obj({ baseW: 15.9, baseH: 15.9, scaleMul: 0.23 }))).toEqual([4, 4]);
+  });
+
+  it("배율을 빼먹지 않는다 — 네이티브로 제안하면 민가가 16×16 이 된다", () => {
+    const withMul = suggestedFootprint(obj({ baseW: 15.9, baseH: 15.9, scaleMul: 0.23 }));
+    const naive = Math.round(15.9);
+    expect(withMul[0]).not.toBe(naive);
+  });
+
+  it("1타일 미만도 최소 1×1 — 0 이나 음수 footprint 금지", () => {
+    expect(suggestedFootprint(obj({ baseW: 30 / 64, baseH: 30 / 64 }))).toEqual([1, 1]);
+    expect(suggestedFootprint(obj({ baseW: 10, baseH: 10, scaleMul: 0.01 }))).toEqual([1, 1]);
+  });
+
+  it("배율 미설정이면 1 로 본다", () => {
+    expect(suggestedFootprint(obj({ baseW: 6, baseH: 4 }))).toEqual([6, 6]);
+  });
+});
+
+// 충돌 범위 경고 — 배율을 반영해야 오탐이 안 난다. 그리고 blocks 게이트를 풀면 안 된다.
+describe("충돌 범위 경고 (배율 반영 + blocks 게이트)", () => {
+  const obj = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
+
+  it("실효 크기는 배율을 곱해서 본다 — 네이티브로 보면 침엽수를 16타일로 오독한다", () => {
+    // 침엽수 실측: baseW 15.9 × 배율 0.23 ≈ 3.7타일. 점유 4×4 + 충돌 → 충분하니 경고 없음.
+    // 회귀: 배율을 빼면 "약 16×16" 으로 읽어 4×4 를 부족하다고 오탐한다.
+    const tree = obj({ name: "침엽수", tilesW: 4, tilesH: 4, baseW: 15.9, baseH: 15.9, scaleMul: 0.23, blocks: true });
+    expect(entityWarnings([tree])).toHaveLength(0);
+    // 같은 에셋에 충돌 1×1 이면 한 칸만 막힘 → 경고
+    expect(entityWarnings([{ ...tree, tilesW: 1, tilesH: 1 }])).toHaveLength(1);
+  });
+
+  it("blocks 를 안 켠 오브젝트는 경고하지 않는다 — 스프라이트 크기로는 저작 누락을 판별 못 한다", () => {
+    // 회귀 방지: "깊이도 이 값을 쓰니 통과 가능한 것도 경고하자" 로 게이트를 풀면 실측 170/292(58.2%)가
+    //   발동했고 대부분 나무·바위였다. 침엽수(실효 3.7타일, 밑동 1칸이 정답) 와 민가(실효 3.7타일,
+    //   4×4 가 정답) 는 크기가 같아 구분 불가 — 부록 B 가 경고에도 적용된다.
+    const tree = obj({ name: "침엽수", tilesW: 1, tilesH: 1, baseW: 15.9, baseH: 15.9, scaleMul: 0.23 });
+    expect(entityWarnings([tree])).toHaveLength(0);
   });
 });
 
