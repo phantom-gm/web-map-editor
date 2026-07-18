@@ -80,10 +80,10 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용.
     if (e.rotationDeg && e.rotationDeg !== 0) out.rotation = e.rotationDeg;
 
-    // layer — export 계약: 미지정=auto(동적 기본). above/below 만 명시 emit,
-    //   auto·미설정은 생략(convert_map 이 누락을 auto 로 해석). ⚠ below 를 생략하면 게임서 auto 가 됨.
-    if (e.layer === "above" || e.layer === "below") out.layer = e.layer;
-    else delete out.layer;
+    // layer — **항상 auto(동적 정렬)**. 인스펙터의 above/below 수동 선택은 제거됐다(정렬이 스프라이트
+    //   발위치 기준으로 정확해져 수동 레이어가 불필요). layer 를 아예 emit 안 하면 convert_map 이
+    //   auto 로 해석한다. 레거시 데이터에 above/below 가 남아 있어도 여기서 무시하고 auto 로 강제.
+    delete out.layer;
 
     return out;
   });
