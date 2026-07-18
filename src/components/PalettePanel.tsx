@@ -31,6 +31,7 @@ export function PalettePanel() {
   const setActiveIdx = useEditorStore((s) => s.setActiveIdx);
   const addTiles = useEditorStore((s) => s.addTiles);
   const removeTiles = useEditorStore((s) => s.removeTiles);
+  const clearPalette = useEditorStore((s) => s.clearPalette);
   const loadRegistry = useEditorStore((s) => s.loadRegistry);
   const loadNpcCatalog = useEditorStore((s) => s.loadNpcCatalog);
   const npcCount = useEditorStore((s) => s.npcCatalog.entries.length);
@@ -235,6 +236,20 @@ export function PalettePanel() {
         </button>
         <button onClick={() => dirRef.current?.click()} title="폴더 통째로 PNG 추가 — 폴더명이 카테고리가 됩니다">
           + 폴더
+        </button>
+        <button
+          className="palette-clear"
+          disabled={palette.length === 0}
+          title="팔레트를 모두 비웁니다. 팔레트로 칠한 바닥 타일도 함께 지워집니다(오브젝트·포탈·몬스터·NPC는 유지)."
+          onClick={() => {
+            if (palette.length === 0) return;
+            if (!window.confirm("팔레트를 초기화할까요?\n\n팔레트 타일과 그 타일로 칠한 바닥이 모두 지워집니다.\n(배치한 오브젝트·포탈·몬스터·NPC는 그대로 유지됩니다.)")) return;
+            clearPalette();
+            setSelected(new Set());
+            setAnchor(null);
+          }}
+        >
+          초기화
         </button>
         <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
         <input ref={dirRef} type="file" multiple hidden onChange={onFiles} />

@@ -247,6 +247,18 @@ body {
   cursor: pointer;
   font-size: 12px;
 }
+.palette-head button.palette-clear {
+  background: #3a2126;
+  color: #f0b4ba;
+  border-color: #5a2c34;
+}
+.palette-head button.palette-clear:hover:not(:disabled) {
+  background: #4a262d;
+}
+.palette-head button.palette-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .palette-subhead {
   display: flex;
   align-items: center;
