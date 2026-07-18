@@ -2,23 +2,20 @@ import { describe, it, expect } from "vitest";
 import { exportEntities } from "../lib/entityExport";
 import type { MapEntity } from "../types/entity";
 
-// 플레이어 대비 렌더 레이어(above/below/auto) export 계약.
-// 계약(WEB_MAP_EDITOR_EXPORT_CONTRACT §3): 미지정=auto(동적 기본). above/below 만 명시 emit,
-// auto·미설정은 생략 → convert_map 이 누락을 auto 로 해석. (below 를 생략하면 게임서 auto 가 되어버림)
-describe("오브젝트 layer export", () => {
+// 오브젝트 layer export 계약: **항상 auto**. 인스펙터의 above/below 수동 선택은 제거됐다
+// (정렬이 스프라이트 발위치 기준으로 정확해져 수동 레이어가 불필요). layer 를 아예 emit 안 하면
+// convert_map 이 auto 로 해석한다. 레거시 데이터에 above/below 가 남아 있어도 auto 로 강제한다.
+describe("오브젝트 layer export (항상 auto)", () => {
   const obj = (layer?: MapEntity["layer"]): MapEntity => ({
     id: "o", kind: "object", gx: 0, gy: 0, ruid: "r", tilesW: 1, tilesH: 1, layer,
   });
 
-  it("above → out.layer='above' (항상 위)", () => {
-    expect(exportEntities([obj("above")], [])[0].layer).toBe("above");
+  it("레거시 above/below 는 무시하고 layer 를 생략한다 (auto 강제)", () => {
+    expect(exportEntities([obj("above")], [])[0].layer).toBeUndefined();
+    expect(exportEntities([obj("below")], [])[0].layer).toBeUndefined();
   });
 
-  it("below → out.layer='below' (항상 아래 — 명시 emit, 생략하면 auto 됨)", () => {
-    expect(exportEntities([obj("below")], [])[0].layer).toBe("below");
-  });
-
-  it("auto·미설정 → layer 생략 (convert_map 이 auto 로 해석)", () => {
+  it("auto·미설정도 layer 생략 (convert_map 이 auto 로 해석)", () => {
     expect(exportEntities([obj("auto")], [])[0].layer).toBeUndefined();
     expect(exportEntities([obj(undefined)], [])[0].layer).toBeUndefined();
   });

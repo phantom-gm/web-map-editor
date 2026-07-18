@@ -208,19 +208,6 @@ export function EntityInspector() {
         </label>
       )}
 
-      {entity.kind === "object" && (
-        <label className="ei-row">
-          <span>플레이어 레이어 — 자동(기본): 건물·나무 앞뒤 자동 / 위: 천장·다리 / 아래: 바닥 데칼·러그</span>
-          <select
-            value={entity.layer ?? "auto"}
-            onChange={(e) => updateEntity(entity.id, { layer: e.target.value === "auto" ? undefined : (e.target.value as MapEntity["layer"]) })}
-          >
-            <option value="auto">자동 (기본 — 건물·나무: 플레이어와 앞/뒤 자동)</option>
-            <option value="above">위 (항상 플레이어 위 — 천장·다리·아치)</option>
-            <option value="below">아래 (항상 플레이어 아래 — 바닥 데칼·러그)</option>
-          </select>
-        </label>
-      )}
 
       {entity.kind === "object" && (
         <label className="ei-row">
