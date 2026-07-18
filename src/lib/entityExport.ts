@@ -52,7 +52,9 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     //   tilesW/H = 에디터에서 사람이 그린 지면 점유 rect(= 캔버스 노란 rect). 깊이의 정답 소스다.
     //   충돌과의 분리는 여기가 아니라 `blocks` 플래그가 한다 — 나무는 tiles 2×2 + blocks=false 로
     //   "통과 가능하지만 깊이는 있음"이 된다. 그래서 depth 와 collision 을 같은 rect 로 둬도 안전.
-    //   앵커 (gx,gy) = rect 의 **뒤-위 코너**(최소 x/y), +gx/+gy 로 확장 — entityFootprintCells 와 동일.
+    //   ⚠ depthW/H 는 **크기만** 이라 점유 방향(±)과 무관하다. 게임 build_map 은 이 크기 + 스프라이트
+    //   발위치(offset)로 footprint 를 만들지, 에디터 앵커 방향을 쓰지 않는다. (캔버스 점유 표시는
+    //   entityFootprintCells 가 앵커에서 −방향으로 뻗는다 — 스프라이트 정합용, 이 export 와 독립.)
     const [dw, dh] = footprintWH(e);
     out.depthW = dw;
     out.depthH = dh;

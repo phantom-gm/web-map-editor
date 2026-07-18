@@ -35,8 +35,9 @@ export interface MapEntity {
   dialogId?: string; // npc: 대사/스크립트 id
 
   // 스프라이트(object/monster/npc) 점유 타일 footprint — tilesW × tilesH 셀.
-  // 베이스 셀(gx,gy)이 뒤(상단) 코너, +gx/+gy 로 확장. 스프라이트는 이 영역을 덮도록 스케일되어
-  // 전면 바닥에 앵커된다. footprint 셀은 점유(이동불가) 표시. 배치 시 W=이미지폭/타일폭, H=1.
+  // 베이스 셀(gx,gy)이 **앞-아래 tip**, −gx/−gy(북서, 화면 위)로 확장한다(entityFootprintCells).
+  //   bottom-center pivot 스프라이트가 발에서 위로 서므로 점유도 위로 뻗어야 스프라이트를 덮는다.
+  //   footprint 셀은 점유(이동불가) 표시. 배치 시 W=1, H=1(점유는 사람이 저작).
   tilesW?: number;
   tilesH?: number;
   flipX?: boolean; // 스프라이트 좌우반전
@@ -170,8 +171,14 @@ export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   if (e.kind === "portal") return [];
   const [w, h] = footprintWH(e);
   const out: Array<[number, number]> = [];
+  // 앵커 (gx,gy) = 앞-아래 tip. 점유를 **−방향(북서, 화면 위)** 으로 뻗는다 → 스프라이트가
+  //   같은 방향(bottom-center pivot 이라 발에서 위로)으로 서므로 점유가 스프라이트를 덮어
+  //   WYSIWYG 이 맞는다. 예전엔 +방향(남동, 아래)이라 점유가 스프라이트 반대쪽 빈 땅에 생겨
+  //   어색했다(가로등: 밑동 앵커에서 점유가 아래로).
+  //   ⚠ 게임 정렬은 이 방향과 무관 — build_map 이 depthW/H(크기)+offset(스프라이트 발) 로만
+  //     footprint 를 만든다. 여기 방향은 캔버스 표시·충돌 walk(상대오프셋이라 자동 추종) 에만 영향.
   for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) out.push([e.gx + i, e.gy + j]);
+    for (let i = 0; i < w; i++) out.push([e.gx - i, e.gy - j]);
   }
   return out;
 }
