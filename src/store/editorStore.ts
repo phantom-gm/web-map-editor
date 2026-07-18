@@ -142,6 +142,7 @@ export interface EditorState {
   addTiles: (tiles: PaletteTile[]) => void;
   addResolvedTiles: (tiles: PaletteTile[]) => void;
   removeTiles: (indices: number[]) => void;
+  clearPalette: () => void; // 팔레트 전체 초기화(+ 팔레트 idx 참조하는 ground 비움). 오브젝트/포탈(ruid 참조)은 유지.
   hydratePalette: (tiles: PaletteTile[]) => void;
   loadRegistry: (json: unknown) => void;
   loadNpcCatalog: (json: unknown) => void;
@@ -266,6 +267,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         palette,
         ground,
         activeIdx,
+        groundVer: s.groundVer + 1,
+        undoStack: [],
+        redoStack: [],
+      };
+    }),
+  // 팔레트 전체 초기화 — removeTiles 의 "전부 제거" 판. 팔레트를 비우면 ground 셀의 palette idx 가
+  //   전부 무효가 되므로 ground 도 함께 비운다(removeTiles 와 동일한 규칙). 오브젝트/포탈 엔티티는
+  //   ruid 참조라 팔레트와 독립 → 유지. undo/redo 는 초기화(리매핑 불가한 상태 변화).
+  clearPalette: () =>
+    set((s) => {
+      if (s.palette.length === 0 && s.ground.size === 0) return {};
+      return {
+        palette: [],
+        ground: new Map(),
+        activeIdx: 0,
         groundVer: s.groundVer + 1,
         undoStack: [],
         redoStack: [],
