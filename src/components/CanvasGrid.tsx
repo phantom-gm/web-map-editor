@@ -224,7 +224,7 @@ function draw(
         //   스코프를 벗어나 바닥 전체를 그리는 치명 버그가 난다(엔티티마다 3600 stroke).
         //   점유 토글 꺼져 있으면 계산도 안 한다(draw 는 마우스 이동마다·엔티티마다 호출).
         const footCells = visual.footprint
-          ? entityFootprintCells(e).filter(([gx, gy]) => gx < W && gy < H)
+          ? entityFootprintCells(e).filter(([gx, gy]) => gx >= 0 && gy >= 0 && gx < W && gy < H)
           : null;
 
         // 1) footprint 채움 — 스프라이트 아래. blocking=빨강, 아니면 종류색.
