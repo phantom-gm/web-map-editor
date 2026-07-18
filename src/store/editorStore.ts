@@ -438,11 +438,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // 포탈 도착 셀 기본값 = 배치 위치(현재 셀). 목적지 맵만 채우면 되도록 하고, 필요 시 변경.
       // destFacing 은 미설정(=무관) 으로 둔다 — 변환기가 미지정 시 기본 SE 로 emit.
       if (kind === "portal") ent.destCell = [gx, gy];
-      // 겹침 허용 — 클릭 셀에 그대로 배치. footprint 가 맵 밖으로 나가지 않게 앵커만 클램프.
+      // 겹침 허용 — 클릭 셀에 그대로 배치. footprint(−방향)가 맵 밖으로 안 나가게 앵커 클램프.
+      //   앵커=앞tip 이 [fw−1 .. W−1] 안에 있어야 뒤코너(gx−fw+1)가 0 이상.
       if (kind !== "portal") {
         const [fw, fh] = footprintWH(ent);
-        ent.gx = Math.max(0, Math.min(gx, W - fw));
-        ent.gy = Math.max(0, Math.min(gy, H - fh));
+        ent.gx = clamp(gx, fw - 1, W - 1);
+        ent.gy = clamp(gy, fh - 1, H - 1);
       }
       return {
         entities: [...s.entities, ent],
@@ -462,9 +463,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const ent = s.entities.find((e) => e.id === id);
       if (!ent || (ent.gx === gx && ent.gy === gy)) return {};
       // 겹침 허용 — 경계만 확인(footprint 가 맵 밖으로 나가면 이동 안 함). 다른 오브젝트와 겹쳐도 OK.
+      //   ⚠ footprint 는 앵커(gx,gy=앞tip)에서 **−방향**(북서)으로 뻗는다(entityFootprintCells).
+      //   그래서 맵 밖 = 뒤코너(gx−w+1, gy−h+1)가 음수인 경우. 앞tip(오른쪽/아래)은 위 gx>=W/gy>=H 로 이미 체크.
       if (ent.kind !== "portal") {
         const [w, h] = footprintWH(ent);
-        if (gx + w > W || gy + h > H) return {};
+        if (gx - w + 1 < 0 || gy - h + 1 < 0) return {};
       }
       return {
         entities: s.entities.map((e) => (e.id === id ? { ...e, gx, gy } : e)),
@@ -506,8 +509,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       //   만큼 밀어야 한다 — 점유 기준으로 밀면 큰 스프라이트가 1칸만 이동해 거의 포개진다.
       const visW = Math.max(1, Math.ceil(renderWH(src)[0]));
       const step = src.kind === "portal" ? 1 : src.kind === "object" ? visW : fw;
-      const gx = Math.max(0, Math.min(src.gx + step, W - (src.kind === "portal" ? 1 : fw)));
-      const gy = Math.max(0, Math.min(src.gy, H - (src.kind === "portal" ? 1 : fh)));
+      // 앵커=앞tip, footprint 는 −방향. 앵커 하한 = portal 0 / 그 외 fw−1(fh−1), 상한 = W−1(H−1).
+      const loX = src.kind === "portal" ? 0 : fw - 1;
+      const loY = src.kind === "portal" ? 0 : fh - 1;
+      const gx = clamp(src.gx + step, loX, W - 1);
+      const gy = clamp(src.gy, loY, H - 1);
       const copy: MapEntity = { ...src, id: newEntityId(), gx, gy };
       return {
         entities: [...s.entities, copy],
