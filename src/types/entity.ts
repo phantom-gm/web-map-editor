@@ -198,11 +198,34 @@ export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   const [dcx, dcy] = offsetCellShift(e);
   const ax = Math.round(e.gx + dcx);
   const ay = Math.round(e.gy + dcy);
+  return footprintFromAnchor(ax, ay, w, h);
+}
+
+/** 앵커(ax,ay)에서 −방향(북서)으로 w×h 셀. entityFootprintCells / entityDisplayFootprintCells 공유. */
+function footprintFromAnchor(ax: number, ay: number, w: number, h: number): Array<[number, number]> {
   const out: Array<[number, number]> = [];
   for (let j = 0; j < h; j++) {
     for (let i = 0; i < w; i++) out.push([ax - i, ay - j]);
   }
   return out;
+}
+
+/**
+ * **에디터 캔버스 표시 전용** 점유 셀 — offset 을 무시하고 앵커(gx,gy)에 고정한다.
+ *   `entityFootprintCells`(export/게임/충돌/sortOffset)와 달리 offset 이동 시 점유 다이아몬드가
+ *   따라 움직이지 않는다 → "X/Y 이동(offset)"은 스프라이트 이미지만 미세 조정하고, 지면 점유는
+ *   사용자가 gx/gy·tilesW/H 로 저작한 그대로 유지된다. 근거: OBJECT_PIVOT_ALIGNMENT.md §"점유 = 앵커 기준,
+ *   변화 없음", 그리고 offset 을 이미지 넛지로 다루는 인스펙터 라벨("X 이동(px)").
+ *
+ *   ⚠ 트레이드오프: offset≠0 인 오브젝트(다리 등)는 게임 build_map 이 footprint 를 offset 만큼
+ *     밀어 굽으므로, **에디터 점유 표시(이 함수)와 게임 실제 footprint(entityFootprintCells)가
+ *     최대 (−1,+1) 셀 어긋나 보일 수 있다**. export 는 여전히 offset-정렬이라 게임 동작은 정확하다.
+ *     둘을 완전히 일치시키려면 게임 파이프라인이 footprint 를 앵커(gx,gy)에 고정해야 한다(별도 결정).
+ */
+export function entityDisplayFootprintCells(e: MapEntity): Array<[number, number]> {
+  if (e.kind === "portal") return [];
+  const [w, h] = footprintWH(e);
+  return footprintFromAnchor(e.gx, e.gy, w, h);
 }
 
 let _seq = 0;
