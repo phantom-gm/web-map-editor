@@ -8,6 +8,7 @@ import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
+import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
@@ -164,6 +165,7 @@ export interface EditorState {
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
   selectEntity: (id: string | null) => void;
+  autoFixSortOffsets: () => SortOffsetResult; // 겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(순환은 경고만)
 
   commitStroke: (before: Snapshot) => void;
   undo: () => void;
@@ -541,6 +543,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
     }),
   selectEntity: (id) => set({ selectedEntityId: id }),
+
+  // 겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 을 부여한다(요구서 R1~R4). 이동불가 칸은 제외.
+  //   fixes 는 적용하고, cycles(순환 — sortOffset 으로 해결 불가)는 그대로 반환해 UI 가 경고하게 한다.
+  autoFixSortOffsets: () => {
+    const s = get();
+    const res = computeSortOffsets(s.entities, (gx, gy) => !s.blocked.has(cellKey(gx, gy)));
+    if (res.fixes.length > 0) {
+      const byId = new Map(res.fixes.map((f) => [f.id, f.to]));
+      set((st) => ({
+        entities: st.entities.map((e) =>
+          byId.has(e.id) ? { ...e, sortOffset: byId.get(e.id) || undefined } : e,
+        ),
+        entitiesVer: st.entitiesVer + 1,
+      }));
+    }
+    return res;
+  },
 
   commitStroke: (before) =>
     set((s) => {

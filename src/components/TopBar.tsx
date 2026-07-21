@@ -27,16 +27,28 @@ export function TopBar() {
     }
   };
 
+  const onFixSort = () => {
+    const { fixes, cycles } = useEditorStore.getState().autoFixSortOffsets();
+    const lines: string[] = [];
+    if (fixes.length) lines.push(`정렬 자동수정 ${fixes.length}건:\n` + fixes.map((f) => `  • ${f.name}: sortOffset ${f.from} → ${f.to}`).join("\n"));
+    if (cycles.length) lines.push(`⚠ 순환 ${cycles.length}건 — sortOffset 으로 해결 불가(에셋 분할/레이어 필요):\n` + cycles.map((c) => `  • ${c.aName} ⨯ ${c.bName}`).join("\n"));
+    alert(lines.length ? lines.join("\n\n") : "겹치는 멀티셀 오브젝트 정렬 문제 없음 ✓");
+  };
+
   const onExport = () => {
     const s = useEditorStore.getState();
+    // 겹침 정렬 누락을 export 전에 자동으로 없앤다(요구서: "항상 부여"). 순환은 아래 경고에 합류.
+    const sort = s.autoFixSortOffsets();
     const { errors, warnings } = validateMap({
       size: s.size,
       ground: s.ground,
       blocked: s.blocked,
       paletteCount: s.palette.length,
-      entities: s.entities,
+      entities: useEditorStore.getState().entities, // 자동수정 반영본
       npcClassIds: s.npcCatalog.byId,
     });
+    if (sort.fixes.length) warnings.push(`겹침 정렬 자동수정 ${sort.fixes.length}건 적용됨 (${sort.fixes.map((f) => `${f.name}=${f.to}`).join(", ")}).`);
+    for (const c of sort.cycles) errors.push(`정렬 순환: ${c.aName} ⨯ ${c.bName} — sortOffset 으로 해결 불가(에셋 분할/레이어 필요).`);
     if (errors.length > 0 || warnings.length > 0) {
       const lines = [...errors.map((e) => "• " + e), ...warnings.map((w) => "· " + w)];
       const ok = window.confirm(
@@ -81,6 +93,9 @@ export function TopBar() {
       </button>
       <button onClick={onExportRuids} title="palette_ruids_<Map>.json — build_map.cjs 가 소비">
         RUID export
+      </button>
+      <button onClick={onFixSort} title="겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(그 위 플레이어가 뒤로 숨는 문제 해소). Export 시 자동 실행됨">
+        겹침 정렬
       </button>
       <button onClick={requestFit}>뷰 맞춤</button>
       <span className="hint">좌클릭=페인팅 · 스페이스+드래그=팬 · 휠=줌 · 겹침: 다시 클릭=아래 것</span>
