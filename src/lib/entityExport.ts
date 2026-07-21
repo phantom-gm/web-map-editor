@@ -80,10 +80,13 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용.
     if (e.rotationDeg && e.rotationDeg !== 0) out.rotation = e.rotationDeg;
 
-    // layer — **항상 auto(동적 정렬)**. 인스펙터의 above/below 수동 선택은 제거됐다(정렬이 스프라이트
-    //   발위치 기준으로 정확해져 수동 레이어가 불필요). layer 를 아예 emit 안 하면 convert_map 이
-    //   auto 로 해석한다. 레거시 데이터에 above/below 가 남아 있어도 여기서 무시하고 auto 로 강제.
-    delete out.layer;
+    // layer — 플레이어 대비 렌더 평면. auto(기본)=동적 z 정렬(작은 오브젝트에만 신뢰 가능).
+    //   above/below=**고정 평면**(항상 위/아래). 여러 깊이 줄에 걸치는 큰 구조물(다리·큰 건물)은
+    //   단일 z 로 자동정렬이 불가능하므로(데크는 플레이어 뒤, 난간은 앞 — 한 스프라이트 z 로 모순),
+    //   조각별로 above/below 를 고정하는 게 프로덕션 방식이다. 예) 다리 데크=below, 가까운 난간=above.
+    //   auto 는 emit 안 함(convert_map 이 auto 로 해석) → 데이터 최소화.
+    if (e.layer === "above" || e.layer === "below") out.layer = e.layer;
+    else delete out.layer;
 
     return out;
   });

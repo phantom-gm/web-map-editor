@@ -211,6 +211,20 @@ export function EntityInspector() {
 
       {entity.kind === "object" && (
         <label className="ei-row">
+          <span>플레이어 레이어 — 자동은 작은 오브젝트에만 정확. 큰 구조물(다리·큰 건물)은 조각별 고정 권장</span>
+          <select
+            value={entity.layer ?? "auto"}
+            onChange={(e) => updateEntity(entity.id, { layer: (e.target.value === "auto" ? undefined : e.target.value) as MapEntity["layer"] })}
+          >
+            <option value="auto">자동 (동적 앞뒤 — 기본, 작은 오브젝트)</option>
+            <option value="below">항상 아래 ▼ (플레이어가 늘 위 — 예: 다리 데크·바닥 데칼)</option>
+            <option value="above">항상 위 ▲ (플레이어를 늘 가림 — 예: 가까운 난간·처마·천장)</option>
+          </select>
+        </label>
+      )}
+
+      {entity.kind === "object" && (
+        <label className="ei-row">
           <span>우선순위 (겹침) — 같은 줄에서 겹칠 때 값이 클수록 앞(위). 기본 0</span>
           <NumberField
             className=""

@@ -166,19 +166,41 @@ export function suggestedFootprint(e: MapEntity): [number, number] {
   return [n, n];
 }
 
+// GAME iso 상수 — build_map.cjs(TILE_W/TILE_H) · IsoProjectLogic.mlua 와 반드시 일치.
+//   여기 값이 게임과 어긋나면 점유 표시가 게임 정렬/충돌과 틀어진다.
+export const GAME_TILE_HALF_W = 0.28; // = TILE_W(0.56) * 0.5
+export const GAME_TILE_HALF_H = 0.14; // = TILE_H(0.28) * 0.5
+export const PX_TO_WORLD = 0.56 / 64; // 에디터 px → 게임 world (= 0.00875). entityExport 의 값과 동일.
+
+/**
+ * offset(px) 을 게임 셀 shift [dcx, dcy] (round 전 실수) 로 환산. build_map 의 offCx/offCy 와 동일 수식.
+ *   ox,oy = offset(world). export 규약대로 offsetY 는 부호 반전(화면 아래+ → world 위+).
+ */
+export function offsetCellShift(e: MapEntity): [number, number] {
+  const ox = (e.offsetX ?? 0) * PX_TO_WORLD;
+  const oy = -(e.offsetY ?? 0) * PX_TO_WORLD;
+  const dcx = (ox / GAME_TILE_HALF_W - oy / GAME_TILE_HALF_H) / 2;
+  const dcy = (-oy / GAME_TILE_HALF_H - ox / GAME_TILE_HALF_W) / 2;
+  return [dcx, dcy];
+}
+
 /** 엔티티가 점유하는 footprint 셀들(0-based). 포탈은 footprint 없음 → 빈 배열. */
 export function entityFootprintCells(e: MapEntity): Array<[number, number]> {
   if (e.kind === "portal") return [];
   const [w, h] = footprintWH(e);
+  // 앵커(gx,gy) + offset 을 **게임과 동일하게 정렬**한다 → 스프라이트 발셀 (ax,ay) = 앞-아래 tip,
+  //   거기서 −방향(북서)으로 w×h 뻗는다. build_map 의 offset-정렬(ax=round(gx+offCx), depthGx=ax−(w−1))
+  //   과 셀이 정확히 일치 → **에디터 점유 표시 = 게임 on-top(정렬) 영역 = 충돌 영역**. WYSIWYG.
+  //   offset 이 0이면 (ax,ay)=(gx,gy) → 예전 순수 −방향과 동일(하위호환).
+  //   ⚠ 예전엔 여기서 offset 을 무시했다. 그래서 offset 큰 오브젝트(다리 offset −0.63 등)의 점유가
+  //     게임 footprint 와 (−1,+1) 어긋나, 에디터에서 "위"로 저작한 셀이 게임에선 위로 안 올라오고
+  //     정작 게임이 올려주는 셀은 에디터에 안 보였다(사용자 신고: 다리_B 정렬·on-top 붕괴).
+  const [dcx, dcy] = offsetCellShift(e);
+  const ax = Math.round(e.gx + dcx);
+  const ay = Math.round(e.gy + dcy);
   const out: Array<[number, number]> = [];
-  // 앵커 (gx,gy) = 앞-아래 tip. 점유를 **−방향(북서, 화면 위)** 으로 뻗는다 → 스프라이트가
-  //   같은 방향(bottom-center pivot 이라 발에서 위로)으로 서므로 점유가 스프라이트를 덮어
-  //   WYSIWYG 이 맞는다. 예전엔 +방향(남동, 아래)이라 점유가 스프라이트 반대쪽 빈 땅에 생겨
-  //   어색했다(가로등: 밑동 앵커에서 점유가 아래로).
-  //   ⚠ 게임 정렬은 이 방향과 무관 — build_map 이 depthW/H(크기)+offset(스프라이트 발) 로만
-  //     footprint 를 만든다. 여기 방향은 캔버스 표시·충돌 walk(상대오프셋이라 자동 추종) 에만 영향.
   for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) out.push([e.gx - i, e.gy - j]);
+    for (let i = 0; i < w; i++) out.push([ax - i, ay - j]);
   }
   return out;
 }
