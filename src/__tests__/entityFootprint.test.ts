@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { entityFootprintCells, offsetCellShift, type MapEntity } from "../types/entity";
+import { entityFootprintCells, entityDisplayFootprintCells, offsetCellShift, type MapEntity } from "../types/entity";
 
-// entityFootprintCells 는 게임(build_map offset-정렬)과 셀이 일치해야 한다 — 에디터 점유 표시 =
-//   게임 on-top(정렬) 영역 = 충돌 영역(WYSIWYG). offset 큰 오브젝트(다리)에서 어긋나면 사용자가
-//   에디터에서 "위"로 저작한 셀이 게임에선 위로 안 올라온다(신고: 다리_B).
+// entityFootprintCells 는 **export/게임/충돌/sortOffset** 경로용 — build_map offset-정렬과 셀이
+//   일치해야 한다(offset 큰 오브젝트에서 어긋나면 게임 정렬·충돌이 틀어진다).
+//   ⚠ 에디터 캔버스 표시는 이제 entityDisplayFootprintCells(offset 무시, 앵커 고정)를 쓴다 —
+//   아래 별도 describe 참고. 둘의 분리가 이번 수정의 핵심.
 const ent = (p: Partial<MapEntity>): MapEntity => ({ id: "x", kind: "object", gx: 0, gy: 0, ...p });
 
 const bounds = (cells: Array<[number, number]>) => {
@@ -37,5 +38,27 @@ describe("entityFootprintCells — offset 정렬(게임 일치)", () => {
 
   it("포탈은 footprint 없음", () => {
     expect(entityFootprintCells(ent({ kind: "portal" }))).toEqual([]);
+  });
+});
+
+describe("entityDisplayFootprintCells — 에디터 표시(offset 무시, 앵커 고정)", () => {
+  it("offset=0 이면 entityFootprintCells 와 동일", () => {
+    const e = ent({ gx: 55, gy: 31, tilesW: 10, tilesH: 5 });
+    expect(bounds(entityDisplayFootprintCells(e))).toEqual([46, 55, 27, 31]);
+  });
+
+  it("offset 이 있어도 앵커(gx,gy)에 고정 — offset 을 따라가지 않는다", () => {
+    // entityFootprintCells 는 offset 으로 [45..54]×[28..32] 로 밀리지만(위 describe),
+    //   표시용은 offset 을 무시하고 [46..55]×[27..31] 에 그대로 머문다. 이게 사용자 요구.
+    const noOff = ent({ gx: 55, gy: 31, tilesW: 10, tilesH: 5 });
+    const withOff = ent({ gx: 55, gy: 31, tilesW: 10, tilesH: 5, offsetX: -72, offsetY: 7 });
+    expect(bounds(entityDisplayFootprintCells(withOff))).toEqual([46, 55, 27, 31]);
+    expect(entityDisplayFootprintCells(withOff)).toEqual(entityDisplayFootprintCells(noOff));
+    // 그리고 offset 정렬(export)과는 실제로 달라야 한다(분리 확인).
+    expect(bounds(entityDisplayFootprintCells(withOff))).not.toEqual(bounds(entityFootprintCells(withOff)));
+  });
+
+  it("포탈은 footprint 없음", () => {
+    expect(entityDisplayFootprintCells(ent({ kind: "portal" }))).toEqual([]);
   });
 });

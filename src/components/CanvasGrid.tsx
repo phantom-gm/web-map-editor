@@ -13,7 +13,7 @@ import { parseCellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
-import { ENTITY_META, entityFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
+import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { byGameDepth, entityImageRect, entityPivot } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
@@ -223,8 +223,10 @@ function draw(
         //   바깥에 바닥 셀 배열 `cells`(3600개)가 있어, 변수명을 cells 로 두면 외곽선 루프가
         //   스코프를 벗어나 바닥 전체를 그리는 치명 버그가 난다(엔티티마다 3600 stroke).
         //   점유 토글 꺼져 있으면 계산도 안 한다(draw 는 마우스 이동마다·엔티티마다 호출).
+        // 표시용 점유 = 앵커(gx,gy) 고정(offset 무시) — X/Y 이동(offset)은 이미지만 넛지하고
+        //   지면 점유 다이아몬드는 안 따라간다. export/게임 footprint 는 entityFootprintCells(offset-정렬).
         const footCells = visual.footprint
-          ? entityFootprintCells(e).filter(([gx, gy]) => gx >= 0 && gy >= 0 && gx < W && gy < H)
+          ? entityDisplayFootprintCells(e).filter(([gx, gy]) => gx >= 0 && gy >= 0 && gx < W && gy < H)
           : null;
 
         // 1) footprint 채움 — 스프라이트 아래. blocking=빨강, 아니면 종류색.
