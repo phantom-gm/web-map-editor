@@ -1,19 +1,72 @@
 {
-  "_comment": "게임 DT_NpcClass.csv(NpcClassID,NpcName,NpcType,...) 스냅샷. 게임에 새 몬스터/NPC 종류를 등록하면 이 파일을 갱신한다(무코드 경계: 여기 등록된 종류만 배치 가능). 에디터의 몬스터/NPC 드롭다운 소스이며 export 전 검증에도 사용된다. 갱신 시: 배포된 에디터는 재배포 전까지 이 시드가 안 바뀌므로, 우측 팔레트 'NPC목록' 버튼으로 이 파일을 직접 불러오면 즉시 반영된다.",
+  "_comment": "⚠ 자동 생성 파일 (scripts/sync-npcclass.mjs) — DT_NpcClass.csv 에서 파생. 손편집 금지. 기획자는 게임 DT_NpcClass.csv 만 편집하고 `npm run sync:npc`(또는 dev/build)로 갱신한다. 배포 에디터는 재배포 전까지 이 seed 를 쓰므로, 즉시 반영은 'NPC목록' 버튼으로 CSV 직접 로드.",
   "version": 2,
+  "generatedFrom": "legend_of_light/RootDesk/MyDesk/DataSet/DT_NpcClass.csv",
   "entries": [
-    { "id": 101, "name": "엘드릭", "type": "Npc" },
-    { "id": 102, "name": "토르칸", "type": "Npc" },
-    { "id": 103, "name": "로건", "type": "Npc" },
-    { "id": 104, "name": "바르몬", "type": "Npc" },
-    { "id": 105, "name": "셀레나", "type": "Npc" },
-    { "id": 106, "name": "리아", "type": "Npc" },
-    { "id": 107, "name": "가릭", "type": "Npc" },
-    { "id": 108, "name": "진", "type": "Npc" },
-    { "id": 109, "name": "카인", "type": "Npc" },
-    { "id": 110, "name": "엘린", "type": "Npc" },
-    { "id": 1000, "name": "말벌", "type": "Monster" },
-    { "id": 1001, "name": "사마귀", "type": "Monster" },
-    { "id": 1002, "name": "거미", "type": "Monster" }
+    {
+      "id": 101,
+      "name": "엘드릭",
+      "type": "Npc"
+    },
+    {
+      "id": 102,
+      "name": "토르칸",
+      "type": "Npc"
+    },
+    {
+      "id": 103,
+      "name": "로건",
+      "type": "Npc"
+    },
+    {
+      "id": 104,
+      "name": "바르몬",
+      "type": "Npc"
+    },
+    {
+      "id": 105,
+      "name": "셀레나",
+      "type": "Npc"
+    },
+    {
+      "id": 106,
+      "name": "리아",
+      "type": "Npc"
+    },
+    {
+      "id": 107,
+      "name": "가릭",
+      "type": "Npc"
+    },
+    {
+      "id": 108,
+      "name": "진",
+      "type": "Npc"
+    },
+    {
+      "id": 109,
+      "name": "카인",
+      "type": "Npc"
+    },
+    {
+      "id": 110,
+      "name": "엘린",
+      "type": "Npc"
+    },
+    {
+      "id": 1000,
+      "name": "말벌",
+      "type": "Monster"
+    },
+    {
+      "id": 1001,
+      "name": "사마귀",
+      "type": "Monster"
+    },
+    {
+      "id": 1002,
+      "name": "거미",
+      "type": "Monster"
+    }
   ]
 }

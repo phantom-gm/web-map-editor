@@ -33,7 +33,32 @@ export function parseNpcCatalog(json: unknown): NpcCatalog {
   return { entries, byId };
 }
 
-/** 번들 seed 기반 기본 카탈로그. */
+/**
+ * DT_NpcClass CSV 텍스트(헤더+행) → parseNpcCatalog 이 읽는 raw 행 배열.
+ * 게임 원본 `DT_NpcClass.csv` 를 에디터 'NPC목록' 로드에 **그대로** 넣을 수 있게 한다(JSON 변환 불필요).
+ * 헤더에서 NpcClassID/NpcName/NpcType 컬럼 위치를 찾아 매핑 — 열 순서·추가 컬럼에 무관. BOM 제거.
+ */
+export function npcCsvToRows(
+  csvText: string,
+): Array<{ NpcClassID?: string; NpcName?: string; NpcType?: string }> {
+  const lines = csvText.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length === 0) return [];
+  const header = lines[0].split(",").map((h) => h.trim());
+  const iId = header.indexOf("NpcClassID");
+  const iName = header.indexOf("NpcName");
+  const iType = header.indexOf("NpcType");
+  if (iId < 0) return []; // NpcClassID 컬럼 없으면 DT_NpcClass CSV 가 아님
+  return lines.slice(1).map((line) => {
+    const c = line.split(",");
+    return {
+      NpcClassID: c[iId]?.trim(),
+      NpcName: iName >= 0 ? c[iName]?.trim() : undefined,
+      NpcType: iType >= 0 ? c[iType]?.trim() : undefined,
+    };
+  });
+}
+
+/** 번들 seed 기반 기본 카탈로그. (seed 는 scripts/sync-npcclass.mjs 가 DT_NpcClass.csv 에서 파생) */
 export function defaultNpcCatalog(): NpcCatalog {
   return parseNpcCatalog(seed);
 }
