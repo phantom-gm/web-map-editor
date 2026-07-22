@@ -5,6 +5,7 @@ import { isEntityKind } from "../types/entity";
 import type { RegStatus } from "../lib/registry";
 import { resolveTiles, uploadTiles } from "../lib/apiClient";
 import { getSecret } from "../lib/secret";
+import { npcCsvToRows } from "../lib/npcClass";
 import { ResourceBrowser } from "./ResourceBrowser";
 
 const BADGE: Record<RegStatus, { sym: string; cls: string; label: string }> = {
@@ -81,7 +82,11 @@ export function PalettePanel() {
     e.target.value = "";
     if (!f) return;
     try {
-      loadNpcCatalog(JSON.parse(await f.text()));
+      const text = await f.text();
+      // 게임 원본 DT_NpcClass.csv 를 그대로 로드할 수 있게 CSV/JSON 자동 감지.
+      const head = text.trimStart();
+      const isCsv = f.name.toLowerCase().endsWith(".csv") || !(head.startsWith("{") || head.startsWith("["));
+      loadNpcCatalog(isCsv ? npcCsvToRows(text) : JSON.parse(text));
     } catch (err) {
       alert("NpcClass 카탈로그 로드 실패: " + (err instanceof Error ? err.message : String(err)));
     }
@@ -259,10 +264,10 @@ export function PalettePanel() {
           RUID파일
         </button>
         <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={onRegistry} />
-        <button className="reg-load" onClick={() => npcRef.current?.click()} title={`몬스터/NPC 종류 카탈로그(DT_NpcClass 스냅샷) 불러오기 — 현재 ${npcCount}종`}>
+        <button className="reg-load" onClick={() => npcRef.current?.click()} title={`몬스터/NPC 종류 카탈로그 불러오기 — 게임 DT_NpcClass.csv 또는 JSON 스냅샷 직접 선택. 현재 ${npcCount}종`}>
           NPC목록({npcCount})
         </button>
-        <input ref={npcRef} type="file" accept="application/json,.json" hidden onChange={onNpcCatalog} />
+        <input ref={npcRef} type="file" accept="application/json,.json,text/csv,.csv" hidden onChange={onNpcCatalog} />
         <button className="reg-load" onClick={onResolveOnline} disabled={busy !== "" || palette.length === 0} title="서버 /api/resolve 로 등록여부 조회">
           {busy === "resolve" ? "조회중…" : "서버 조회"}
         </button>

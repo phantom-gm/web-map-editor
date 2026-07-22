@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "MSW iso-RPG web map editor — Next.js (App Router) + Canvas 2D. Vercel 배포 + RUID 백엔드.",
   "scripts": {
+    "sync:npc": "node scripts/sync-npcclass.mjs",
+    "predev": "node scripts/sync-npcclass.mjs",
+    "prebuild": "node scripts/sync-npcclass.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
