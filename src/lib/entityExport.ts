@@ -22,6 +22,21 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
   for (const e of entities) if (e.kind === "portal") portalCells.add(`${e.gx},${e.gy}`);
 
   return entities.map((e) => {
+    // npc — 스폰 경로(DT_NpcSpawn)로 가므로 object 파이프라인을 안 탄다. 그래서 **시각 계약이 통째로
+    //   빠져 있었다**: 게임이 Transform.Scale=1 로 스폰 → 네이티브 픽셀 그대로 → 에디터보다 거대.
+    //   실측(엘드릭 256×256, 점유 1×1): 에디터 1타일 vs 게임 약 4.6타일.
+    //   → object 와 동일한 수식으로 scale 을 계산해 내보낸다(flipX 는 원본 필드 그대로 통과).
+    //   ⚠ monster 는 제외 — 현재 모델에 구운 작은 스프라이트로 정상 동작 중이라 건드리면 회귀.
+    if (e.kind === "npc") {
+      const img = imageOf(e);
+      const nw = img?.naturalWidth ?? 0;
+      if (nw <= 0) return e; // 팔레트 이미지 미해석 → scale 계산 불가(검증이 경고). 원본 그대로.
+      const out: MapEntity = { ...e };
+      const [fw] = renderWH(e); // npc 는 baseW 가 없어 tilesW 로 폴백 = 저작 크기
+      const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+      out.scale = Math.round(((fw * GAME_TILE_PX) / nw) * mul * 10000) / 10000;
+      return out;
+    }
     if (e.kind !== "object") return e;
     const out: MapEntity = { ...e };
 
