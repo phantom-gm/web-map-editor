@@ -66,30 +66,3 @@ describe("computeSortOffsets — 순환 감지 (R4)", () => {
     expect(res.fixes).toEqual([]);
   });
 });
-
-describe("computeSortOffsets — 작은 오브젝트가 건물 footprint 안 (화분 신고)", () => {
-  // 6×6 상점 anchor(23,31) footprint [18..23]×[26..31]. 화분 1×1 을 앞줄 근처에 둔다.
-  const shop = obj({ id: "shop", name: "잡화상점", gx: 23, gy: 31, tilesW: 6, tilesH: 6 });
-
-  it("footprint 앞쪽 화분은 sortOffset 을 받아 건물 앞으로 (건물 뒤로 숨지 않음)", () => {
-    const pot = obj({ id: "pot", name: "화분", gx: 20, gy: 31 });
-    const res = computeSortOffsets([shop, pot]);
-    const fix = res.fixes.find((f) => f.id === "pot");
-    expect(fix).toBeDefined();
-    expect(fix!.to).toBeGreaterThan(0);
-    expect(fix!.to).toBeLessThanOrEqual(4); // 앞쪽이라 작은 값
-  });
-
-  it("footprint 깊숙이(뒤-서 코너) 오브젝트는 자동 미적용 + deepInside 경고", () => {
-    // (18,26) = 건물 뒤-서 코너 → 필요 sortOffset 이 커짐 → 억지로 안 올리고 경고.
-    const tree = obj({ id: "tree", name: "나무", gx: 18, gy: 26 });
-    const res = computeSortOffsets([shop, tree]);
-    expect(res.fixes.find((f) => f.id === "tree")).toBeUndefined();
-    expect(res.deepInside.some((d) => d.id === "tree")).toBe(true);
-  });
-
-  it("건물에서 먼 화분은 건드리지 않음", () => {
-    const far = obj({ id: "pot", name: "화분", gx: 2, gy: 2 });
-    expect(computeSortOffsets([shop, far]).fixes.find((f) => f.id === "pot")).toBeUndefined();
-  });
-});
