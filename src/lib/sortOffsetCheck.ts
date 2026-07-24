@@ -113,6 +113,11 @@ export function computeSortOffsets(
       const A = multi[i], B = multi[j];
       const ra = rect.get(A.id)!, rb = rect.get(B.id)!;
       if (!rectsOverlap(ra, rb)) continue;
+      // ⚠ 자동 sortOffset 은 **같은 앵커에 겹쳐 놓인 조각(deck/rail 계열)** 만 안전하다. 다른 앵커의
+      //   멀티셀 겹침(록 vs 다리 등)은 스칼라 offset 으로 못 풀고, 억지로 밀면 새 역전(록이 다리 위로)이
+      //   난다. 그런 경우는 per-cell 분할이 근본 해결(docs/map/isometric/PER_CELL_DEPTH_SPLIT_PLAN.md).
+      //   → 자동수정은 손대지 않고, 사람이 배치/분할로 처리한다.
+      if (A.gx !== B.gx || A.gy !== B.gy) continue;
       let needBFront = false, needAFront = false;
       const gx = Math.min(ra.gx, rb.gx), gy = Math.min(ra.gy, rb.gy);
       const ax = Math.max(ra.ax, rb.ax), ay = Math.max(ra.ay, rb.ay);
