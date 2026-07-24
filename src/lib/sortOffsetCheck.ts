@@ -67,6 +67,10 @@ const isMultiCell = (e: MapEntity) => {
 const rectsOverlap = (a: FpRect, b: FpRect) =>
   a.gx <= b.ax && b.gx <= a.ax && a.gy <= b.ay && b.gy <= a.ay;
 
+/** 셀 (cx,cy) 가 rect 점유 안(경계 포함)인가. 작은 오브젝트가 건물 위에 서 있는지 판정. */
+const insideRect = (r: FpRect, cx: number, cy: number) =>
+  cx >= r.gx && cy >= r.gy && cx <= r.ax && cy <= r.ay;
+
 export interface SortOffsetCycle {
   aId: string;
   bId: string;
@@ -79,10 +83,23 @@ export interface SortOffsetFix {
   from: number;
   to: number;
 }
-export interface SortOffsetResult {
-  fixes: SortOffsetFix[]; // 적용할 sortOffset 변경(멀티셀 겹침 해소). 비어 있으면 이미 정상.
-  cycles: SortOffsetCycle[]; // R4 — sortOffset 으로 해결 불가(에셋 분할 필요). 경고만.
+export interface SortOffsetDeep {
+  id: string;
+  name: string;
+  buildingName: string;
+  need: number; // 앞에 오려면 필요한 sortOffset (너무 커서 자동 적용 안 함)
 }
+export interface SortOffsetResult {
+  fixes: SortOffsetFix[]; // 적용할 sortOffset 변경. 비어 있으면 이미 정상.
+  cycles: SortOffsetCycle[]; // R4 — sortOffset 으로 해결 불가(에셋 분할 필요). 경고만.
+  deepInside: SortOffsetDeep[]; // 큰 footprint 깊숙이 박힌 작은 오브젝트 — 자동 sortOffset 이 과해져(새 역전 유발) 미적용, 배치/footprint 검토 권장.
+}
+
+// 작은 오브젝트를 건물 앞으로 올릴 때 허용하는 최대 자동 sortOffset. 이보다 크면 그 오브젝트는
+//   footprint 깊숙이(=시각상 건물 뒤) 있다는 뜻 — 억지로 올리면 여러 칸 앞 것들까지 덮어 새 역전을
+//   만든다. 그 경우 자동 적용 대신 경고(deepInside)로 돌려 사람이 배치/footprint 를 검토한다.
+//   화분처럼 앞줄 근처는 2~3이면 충분 → 4는 그걸 포함하고 깊숙한 오탐(8~9)은 배제하는 경계값.
+const MAX_AUTO_SORTOFFSET = 4;
 
 /**
  * 겹치는 멀티셀 오브젝트에 필요한 sortOffset 을 계산한다(적용은 호출자/스토어).
@@ -94,11 +111,12 @@ export function computeSortOffsets(
   entities: MapEntity[],
   standable?: (gx: number, gy: number) => boolean,
 ): SortOffsetResult {
-  const multi = entities.filter(isMultiCell);
+  const objects = entities.filter((e) => e.kind === "object");
+  const multi = objects.filter(isMultiCell);
   const rect = new Map<string, FpRect>();
   const baseZ = new Map<string, number>(); // sortOffset 제외 base z
   const so = new Map<string, number>(); // 작업본 sortOffset (여기서 올린다)
-  for (const e of multi) {
+  for (const e of objects) {
     rect.set(e.id, footprintRect(e));
     baseZ.set(e.id, gameZ({ ...e, sortOffset: 0 }));
     so.set(e.id, e.sortOffset ?? 0);
@@ -137,7 +155,7 @@ export function computeSortOffsets(
   // 완화: front 의 z 가 back 보다 작아지도록 front 의 sortOffset 을 **최소 정수**만큼 올린다.
   //   DAG 면 수렴한다(순환은 위에서 이미 걸러 edges 에 안 들어옴). cap 은 안전장치.
   const EPS = 1e-6;
-  const cap = edges.length * (multi.length + 2) + 4;
+  const cap = edges.length * (objects.length + 2) + 4;
   for (let pass = 0; pass < cap; pass++) {
     let changed = false;
     for (const { frontId, backId } of edges) {
@@ -154,11 +172,46 @@ export function computeSortOffsets(
     if (!changed) break;
   }
 
+  // (2) 작은(비-멀티셀) 오브젝트가 멀티셀 건물 footprint **안**에 서 있으면 그 위(앞)로. 멀티셀 건물은
+  //   z 가 하나(앞-tip)뿐이라, 그 안의 작은 오브젝트가 건물 앞벽 앞이어도 건물 전체 뒤로 밀린다(오브젝트는
+  //   런타임 깊이보정을 안 받음 — 화분이 건물 뒤로 가는 문제). 건물 z 는 위 멀티셀 완화 후 값으로 고정.
+  //   ⚠ inside=앞 규칙은 원래 플레이어(툇마루)용이라 장식물엔 과할 수 있다 → 필요한 sortOffset 이
+  //     MAX_AUTO_SORTOFFSET 을 넘으면(=footprint 깊숙이=시각상 건물 뒤) 자동 적용 대신 deepInside 경고.
+  const deepInside: SortOffsetDeep[] = [];
+  for (const o of objects) {
+    if (isMultiCell(o)) continue;
+    const ro = rect.get(o.id)!; // 1×1 → ax/ay = 그 발셀
+    let need = so.get(o.id)!;
+    let deepBy: MapEntity | null = null;
+    for (const b of multi) {
+      if (!insideRect(rect.get(b.id)!, ro.ax, ro.ay)) continue;
+      // z_o < z_b:  baseZo − soO·D < zOf(b)  →  soO > (baseZo − zOf(b))/D
+      const t = (baseZ.get(o.id)! - zOf(b.id)) / CELL_DEPTH + EPS;
+      const soNeeded = Math.floor(t) + 1;
+      if (soNeeded > need) { need = soNeeded; deepBy = b; }
+    }
+    if (need > (so.get(o.id) ?? 0)) {
+      if (need <= MAX_AUTO_SORTOFFSET) {
+        so.set(o.id, need);
+      } else if (deepBy) {
+        deepInside.push({ id: o.id, name: o.name ?? o.id, buildingName: deepBy.name ?? deepBy.id, need });
+      }
+    }
+  }
+
   const fixes: SortOffsetFix[] = [];
-  for (const e of multi) {
+  for (const e of objects) {
     const to = so.get(e.id)!;
     const from = e.sortOffset ?? 0;
-    if (to !== from) fixes.push({ id: e.id, name: e.name ?? e.id, from, to });
+    if (to === from) continue;
+    // 균일 캡: 완화(멀티셀 겹침)가 낸 값도 MAX 초과면 자동 적용 안 함 — 큰 sortOffset 은 여러 칸 앞
+    //   것들까지 덮어 새 역전을 만든다(록 클러스터 등). 경고로 돌려 사람이 배치/footprint 를 검토.
+    //   deck/rail(1)·화분(2~3) 같은 작은 구조 보정만 적용된다.
+    if (to > MAX_AUTO_SORTOFFSET) {
+      deepInside.push({ id: e.id, name: e.name ?? e.id, buildingName: "겹침 정렬 과다", need: to });
+    } else {
+      fixes.push({ id: e.id, name: e.name ?? e.id, from, to });
+    }
   }
-  return { fixes, cycles };
+  return { fixes, cycles, deepInside };
 }

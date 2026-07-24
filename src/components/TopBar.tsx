@@ -28,11 +28,12 @@ export function TopBar() {
   };
 
   const onFixSort = () => {
-    const { fixes, cycles } = useEditorStore.getState().autoFixSortOffsets();
+    const { fixes, cycles, deepInside } = useEditorStore.getState().autoFixSortOffsets();
     const lines: string[] = [];
     if (fixes.length) lines.push(`정렬 자동수정 ${fixes.length}건:\n` + fixes.map((f) => `  • ${f.name}: sortOffset ${f.from} → ${f.to}`).join("\n"));
+    if (deepInside.length) lines.push(`⚠ 자동 미적용 ${deepInside.length}건 — 큰 건물 footprint 깊숙이 있어 필요 sortOffset 이 과함(억지로 올리면 앞 것들을 덮음). 배치/점유(W×H) 검토:\n` + deepInside.map((d) => `  • ${d.name} (need ${d.need}, ${d.buildingName})`).join("\n"));
     if (cycles.length) lines.push(`⚠ 순환 ${cycles.length}건 — sortOffset 으로 해결 불가(에셋 분할/레이어 필요):\n` + cycles.map((c) => `  • ${c.aName} ⨯ ${c.bName}`).join("\n"));
-    alert(lines.length ? lines.join("\n\n") : "겹치는 멀티셀 오브젝트 정렬 문제 없음 ✓");
+    alert(lines.length ? lines.join("\n\n") : "오브젝트 정렬 문제 없음 ✓");
   };
 
   const onExport = () => {
@@ -48,6 +49,7 @@ export function TopBar() {
       npcClassIds: s.npcCatalog.byId,
     });
     if (sort.fixes.length) warnings.push(`겹침 정렬 자동수정 ${sort.fixes.length}건 적용됨 (${sort.fixes.map((f) => `${f.name}=${f.to}`).join(", ")}).`);
+    for (const d of sort.deepInside) warnings.push(`정렬 미적용: ${d.name} — 큰 건물 footprint 깊숙이(need ${d.need}). 배치/점유 검토(자동 올리면 앞 것들을 덮음).`);
     for (const c of sort.cycles) errors.push(`정렬 순환: ${c.aName} ⨯ ${c.bName} — sortOffset 으로 해결 불가(에셋 분할/레이어 필요).`);
     if (errors.length > 0 || warnings.length > 0) {
       const lines = [...errors.map((e) => "• " + e), ...warnings.map((w) => "· " + w)];
