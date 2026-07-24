@@ -14,7 +14,7 @@ import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
-import { byGameDepth, entityImageRect, entityPivot } from "../lib/entityGeom";
+import { sortEntitiesForDraw, entityImageRect, entityPivot } from "../lib/entityGeom";
 import { EntityInspector } from "./EntityInspector";
 
 // 스트로크/이동 커밋용 언두 스냅샷(ground+blocked+entities). commitStroke 가 소비.
@@ -113,7 +113,7 @@ function entityHitCandidates(
   const hw = (TW / 2) * cam.zoom;
   const hh = (TH / 2) * cam.zoom;
   const lookup = makeEntityImageLookup(palette);
-  const sorted = [...entities].sort(byGameDepth);
+  const sorted = sortEntitiesForDraw(entities); // 히트테스트도 그리기 순서와 일치(최상단 우선 선택)
   const out: MapEntity[] = [];
   for (let i = sorted.length - 1; i >= 0; i--) {
     const e = sorted[i];
@@ -200,7 +200,7 @@ function draw(
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   if (entities.length > 0) {
     const lookup = makeEntityImageLookup(palette);
-    const sorted = [...entities].sort(byGameDepth);
+    const sorted = sortEntitiesForDraw(entities);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
