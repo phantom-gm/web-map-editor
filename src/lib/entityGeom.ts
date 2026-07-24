@@ -1,6 +1,6 @@
 // 엔티티 화면 지오메트리 — 순수 함수(캔버스/스토어 비의존). WYSIWYG 보증의 핵심 수식이라
 // CanvasGrid 에서 분리해 유닛으로 잠근다(OBJECT_PIVOT_ALIGNMENT.md §5 D3/D5).
-import { footprintWH, renderWH, type MapEntity } from "../types/entity";
+import { footprintWH, renderWH, entityDisplayFootprintCells, type MapEntity } from "../types/entity";
 import { TW } from "./grid";
 
 /**
@@ -80,4 +80,44 @@ function depthRow(e: MapEntity): number {
   if (e.kind !== "object") return e.gy;
   const [, fh] = footprintWH(e); // 정렬은 점유 footprint 기준(게임 build_map 과 동일)
   return e.gy + fh - 1;
+}
+
+interface Rect { gx: number; gy: number; ax: number; ay: number }
+function displayRect(e: MapEntity): Rect {
+  let gx = Infinity, gy = Infinity, ax = -Infinity, ay = -Infinity;
+  for (const [x, y] of entityDisplayFootprintCells(e)) {
+    if (x < gx) gx = x; if (y < gy) gy = y; if (x > ax) ax = x; if (y > ay) ay = y;
+  }
+  return { gx, gy, ax, ay };
+}
+const insideRect = (r: Rect, cx: number, cy: number) =>
+  cx >= r.gx && cy >= r.gy && cx <= r.ax && cy <= r.ay;
+
+/**
+ * 그리기 순서 — byGameDepth 에 **오브젝트 점유(footprint) 위 엔티티는 그 위로** 규칙을 더한 것.
+ *   게임 IsoPlayerDepthLogic/MonsterAppearanceComponent 가 플레이어·몬스터·NPC 를 큰 건물 footprint
+ *   안에서 앞(위)으로 올리는 것과 동일한 시각을 에디터에 재현한다(WYSIWYG). 오브젝트끼리·엔티티끼리는
+ *   기존 byGameDepth 그대로.
+ *   구현: 오브젝트(멀티셀) 표시 footprint 안에 선 비-object 엔티티의 실효 depthRow 를 그 오브젝트
+ *   앞줄(+0.5)로 끌어올린다. 표시용(entityDisplayFootprintCells, 앵커 고정)을 써서 에디터가 보여주는
+ *   점유와 일치시킨다. O(엔티티×오브젝트) — 에디터 규모에선 무시.
+ */
+export function sortEntitiesForDraw(entities: MapEntity[]): MapEntity[] {
+  const objRects = entities
+    .filter((e) => e.kind === "object" && (footprintWH(e)[0] > 1 || footprintWH(e)[1] > 1))
+    .map((e) => ({ rect: displayRect(e), frontRow: depthRow(e) }));
+
+  const effRow = (e: MapEntity): number => {
+    if (e.kind === "object") return depthRow(e);
+    let row = e.gy;
+    for (const o of objRects) {
+      if (insideRect(o.rect, e.gx, e.gy) && o.frontRow + 0.5 > row) row = o.frontRow + 0.5;
+    }
+    return row;
+  };
+  const key = (e: MapEntity) => effRow(e) * ORDER_PER_ROW + (e.sortOffset ?? 0);
+
+  return [...entities].sort(
+    (a, b) => bandRank(a) - bandRank(b) || key(a) - key(b) || a.gx - b.gx,
+  );
 }
