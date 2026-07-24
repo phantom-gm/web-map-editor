@@ -225,7 +225,10 @@ export function EntityInspector() {
 
       {entity.kind === "object" && (
         <label className="ei-row">
-          <span>우선순위 (겹침) — 같은 줄에서 겹칠 때 값이 클수록 앞(위). 기본 0</span>
+          <span>
+            우선순위 (앞으로 당기기) — <b>1 = 한 칸</b> 앞으로. 값이 클수록 앞(위), 음수는 뒤. 기본 0.
+            건물 같은 큰 오브젝트에 가려지면 값을 올려 <b>통째로</b> 앞에 세운다(게임 z 와 동일).
+          </span>
           <NumberField
             className=""
             value={entity.sortOffset ?? 0}

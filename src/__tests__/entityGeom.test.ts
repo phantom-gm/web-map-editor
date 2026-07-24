@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { byGameDepth, entityImageRect, entityPivot } from "../lib/entityGeom";
+import { byGameDepth, gameDepthZ, entityImageRect, entityPivot } from "../lib/entityGeom";
 import { TW, TH } from "../lib/grid";
 import type { MapEntity } from "../types/entity";
 
@@ -45,8 +45,13 @@ describe("entityImageRect — object (MSW 동형: bottom-center pivot @ 앵커 �
   });
 });
 
-describe("byGameDepth — 게임 z순서 미러(밴드 + 앞줄)", () => {
-  it("밴드: below < auto < above (행 무관)", () => {
+// 계약: 에디터 정렬키 = 게임 z(build_map.cjs:392) 를 그대로 미러한다.
+//   z = pos.y − sortOffset×0.14,  pos.y = −(gx+gy)×0.14 − offsetY_px×PX_TO_WORLD.  작을수록 앞(위).
+// 이 describe 가 그 등가성을 잠근다 — 하나라도 어긋나면 기획자가 에디터에서 본 앞뒤가 게임에서 달라진다.
+describe("byGameDepth / gameDepthZ — 게임 z 미러", () => {
+  const CELL = 0.14;
+
+  it("밴드: below < auto < above (깊이 무관)", () => {
     const below = ent({ layer: "below", gy: 99 });
     const auto = ent({ gy: 0 });
     const above = ent({ layer: "above", gy: 0 });
@@ -54,25 +59,41 @@ describe("byGameDepth — 게임 z순서 미러(밴드 + 앞줄)", () => {
     expect(byGameDepth(auto, above)).toBeLessThan(0);
   });
 
-  it("밴드 내 object 는 앞줄(gy+tilesH−1) — tilesH 큰 쪽이 앞", () => {
-    const shallow = ent({ gy: 5, tilesH: 1 }); // 앞줄 5
-    const deep = ent({ gy: 3, tilesH: 4 }); // 앞줄 6 → 더 앞(나중에 그림)
-    expect(byGameDepth(shallow, deep)).toBeLessThan(0);
+  it("z 식이 build_map 과 같다 — −(gx+gy)·0.14 − offsetY·PX_TO_WORLD − sortOffset·0.14", () => {
+    expect(gameDepthZ(ent({ gx: 3, gy: 4 }))).toBeCloseTo(-7 * CELL, 6);
+    expect(gameDepthZ(ent({ gx: 3, gy: 4, sortOffset: 2 }))).toBeCloseTo(-9 * CELL, 6);
+    // offsetY 64px = 한 타일 = 0.56 world (PX_TO_WORLD = 0.56/64)
+    expect(gameDepthZ(ent({ gx: 3, gy: 4, offsetY: 64 }))).toBeCloseTo(-7 * CELL - 0.56, 6);
   });
 
-  it("겹침 tiebreak: 같은 앞줄이면 sortOffset 큰 쪽이 앞(위) — 게임 order 미러", () => {
-    const lo = ent({ id: "lo", gy: 5, tilesH: 1, sortOffset: 0 });
-    const hi = ent({ id: "hi", gy: 5, tilesH: 1, sortOffset: 3 });
-    expect(byGameDepth(lo, hi)).toBeLessThan(0); // hi 가 나중에(앞에) 그려짐
-    // sortOffset ≥ 10 이면 한 줄 넘어 앞행 오브젝트도 앞지름(build_map 과 동일)
-    const back = ent({ gy: 4, tilesH: 1, sortOffset: 15 }); // 키 55
-    const front = ent({ gy: 5, tilesH: 1, sortOffset: 0 }); // 키 50
-    expect(byGameDepth(front, back)).toBeLessThan(0);
+  it("깊이축은 gx+gy — gy 만 보면 안 된다(구 버그 #1)", () => {
+    const east = ent({ id: "east", gx: 10, gy: 0 }); // 깊이 10 → 앞
+    const south = ent({ id: "south", gx: 0, gy: 5 }); // 깊이 5 → 뒤
+    expect(byGameDepth(south, east)).toBeLessThan(0); // east 가 나중에(위에) 그려짐
   });
 
-  it("몬스터/포탈은 gy 기준(auto 대)", () => {
-    const mob = ent({ kind: "monster", gy: 4 });
-    const obj = ent({ gy: 5, tilesH: 1 }); // 앞줄 5
+  it("sortOffset 1 = 정확히 한 칸(구 버그 #2: 0.1행이 아니다)", () => {
+    const a = ent({ gx: 5, gy: 5, sortOffset: 1 }); // 깊이 10 + 1칸
+    const b = ent({ gx: 5, gy: 6 }); // 깊이 11
+    expect(gameDepthZ(a)).toBeCloseTo(gameDepthZ(b), 6); // 정확히 동률
+    const a2 = ent({ gx: 5, gy: 5, sortOffset: 2 });
+    expect(byGameDepth(b, a2)).toBeLessThan(0); // 2칸 올리면 한 칸 앞 오브젝트를 앞지른다
+  });
+
+  it("offsetY 가 정렬에 반영된다(구 버그 #3)", () => {
+    const plain = ent({ id: "p", gx: 5, gy: 5 });
+    const nudged = ent({ id: "n", gx: 5, gy: 5, offsetY: 32 }); // 화면 아래로 → 앞
+    expect(byGameDepth(plain, nudged)).toBeLessThan(0);
+  });
+
+  it("tilesH 는 깊이를 밀지 않는다 — 앵커(gx,gy)가 이미 앞-아래 tip(구 버그 #4)", () => {
+    expect(gameDepthZ(ent({ gx: 5, gy: 5, tilesH: 1 })))
+      .toBeCloseTo(gameDepthZ(ent({ gx: 5, gy: 5, tilesH: 4 })), 6);
+  });
+
+  it("몬스터/포탈도 같은 깊이축(auto 대)", () => {
+    const mob = ent({ kind: "monster", gx: 0, gy: 4 }); // 깊이 4
+    const obj = ent({ gx: 0, gy: 5 }); // 깊이 5 → 앞
     expect(byGameDepth(mob, obj)).toBeLessThan(0);
   });
 });
