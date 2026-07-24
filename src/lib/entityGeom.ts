@@ -65,6 +65,8 @@ const CELL_DEPTH = GAME_TILE_HALF_H; // 0.14 = 셀 1칸당 world_y 변화량 (bu
 
 /**
  * 게임 z 미러 — **작을수록 앞(위)**. build_map.cjs:392 와 같은 식이어야 WYSIWYG 이 성립한다.
+ * 계약서: legend_of_light/docs/map/isometric/DEPTH_SORT_CONTRACT.md §3 (요약: ../../DEPTH_SORT.md)
+ *   식을 바꾸려면 계약서 → 이 함수 → build_map.cjs → 양쪽 테스트를 **한 커밋에서 같이** 바꾼다.
  *
  *   game:   z = pos.y − sortOffset × CELL_DEPTH
  *           pos.y = cellToWorld(gx,gy).y + offset[1]
