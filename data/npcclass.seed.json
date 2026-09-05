@@ -1,7 +1,12 @@
 {
-  "_comment": "⚠ 자동 생성 파일 (scripts/sync-npcclass.mjs) — DT_NpcClass.csv 에서 파생. 손편집 금지. 기획자는 게임 DT_NpcClass.csv 만 편집하고 `npm run sync:npc`(또는 dev/build)로 갱신한다. 배포 에디터는 재배포 전까지 이 seed 를 쓰므로, 즉시 반영은 'NPC목록' 버튼으로 CSV 직접 로드.",
-  "version": 2,
-  "generatedFrom": "legend_of_light/RootDesk/MyDesk/DataSet/DT_NpcClass.csv",
+  "_comment": "⚠ 자동 생성 파일 (scripts/sync-npcclass.mjs) — 게임 DataSet 에서 파생. 손편집 금지. 기획자는 게임 CSV 만 편집하고 `npm run sync:npc`(또는 dev/build)로 갱신한다. 배포 에디터는 재배포 전까지 이 seed 를 쓰므로, 즉시 반영은 'NPC목록' 버튼으로 CSV 직접 로드.",
+  "version": 3,
+  "generatedFrom": [
+    "legend_of_light/RootDesk/MyDesk/DataSet/npc/DT_NpcClass.csv",
+    "legend_of_light/RootDesk/MyDesk/DataSet/monster/DT_MonsterClass.csv",
+    "legend_of_light/RootDesk/MyDesk/DataSet/locale/ST_NpcName.csv",
+    "legend_of_light/RootDesk/MyDesk/DataSet/locale/ST_MonsterName.csv"
+  ],
   "entries": [
     {
       "id": 101,
@@ -54,6 +59,16 @@
       "type": "Npc"
     },
     {
+      "id": 111,
+      "name": "루미아",
+      "type": "Npc"
+    },
+    {
+      "id": 112,
+      "name": "녹스",
+      "type": "Npc"
+    },
+    {
       "id": 1000,
       "name": "말벌",
       "type": "Monster"
@@ -66,6 +81,36 @@
     {
       "id": 1002,
       "name": "거미",
+      "type": "Monster"
+    },
+    {
+      "id": 1003,
+      "name": "볏단",
+      "type": "Monster"
+    },
+    {
+      "id": 1004,
+      "name": "포포",
+      "type": "Monster"
+    },
+    {
+      "id": 1005,
+      "name": "여우",
+      "type": "Monster"
+    },
+    {
+      "id": 1006,
+      "name": "늑대",
+      "type": "Monster"
+    },
+    {
+      "id": 1007,
+      "name": "고블린",
+      "type": "Monster"
+    },
+    {
+      "id": 1008,
+      "name": "정예고블린",
       "type": "Monster"
     }
   ]
