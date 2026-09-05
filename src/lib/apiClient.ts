@@ -50,6 +50,16 @@ export interface ResourceListResult {
   nextCursor: string | null;
 }
 
+/**
+ * RUID 배치 → 실제 PNG dataURL(읽기 전용). 프로젝트 파일 v2 가 base64 를 안 갖는 대신 이 경로로
+ * 이미지를 복원한다. 값이 null 인 RUID = 스토리지에서 못 찾음(→ 폴백 스와치).
+ */
+export async function fetchImages(ruids: string[]): Promise<Record<string, string | null>> {
+  if (ruids.length === 0) return {};
+  const j = (await postJson("/api/images", { ruids })) as { images: Record<string, string | null> };
+  return j.images ?? {};
+}
+
 /** 그룹 소유 리소스 목록 + 썸네일 URL 조회(읽기 전용). 시크릿 불필요. cursor 로 페이지네이션. */
 export async function listResources(
   params: { category?: string; subcategory?: string; count?: number; searchWord?: string | null; cursor?: string | null },

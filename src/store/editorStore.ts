@@ -9,7 +9,7 @@ import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from ".
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
-import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
+import { PROJECT_TYPE, PROJECT_VERSION, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
@@ -174,7 +174,7 @@ export interface EditorState {
   importBlueprint: (r: ImportResult) => void;
   exportBlueprint: () => Blueprint;
   exportProject: () => ProjectFile;
-  loadProject: (p: ProjectFile, tiles: PaletteTile[]) => void;
+  loadProject: (p: ProjectFileInput, tiles: PaletteTile[]) => void;
   newProject: () => void;
   markSaved: () => void;
 }
@@ -677,7 +677,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
     return {
       type: PROJECT_TYPE,
-      version: 1,
+      version: PROJECT_VERSION, // 항상 v2(참조만) 로 저장 — v1 을 열었어도 저장 시 승격된다.
       map: s.mapName,
       size: s.size,
       groundOrigin: s.groundOrigin,

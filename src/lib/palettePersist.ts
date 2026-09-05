@@ -1,5 +1,7 @@
-// 팔레트 영속 — IndexedDB(idb-keyval). PNG dataURL 이 커질 수 있어 localStorage(5MB) 대신 사용.
-// 저장은 디바운스(연속 추가/폴더 업로드 시 1회만 쓰기). img(HTMLImageElement)는 직렬화 불가라 제외.
+// 팔레트 **메타** 영속 — IndexedDB(idb-keyval). 저장은 디바운스(연속 추가/폴더 업로드 시 1회만 쓰기).
+//   담기는 것: 이름 · RUID · px · 카테고리 · 등록상태 (= StoredTile). 이미지 바이트는 없다.
+//   이미지는 imageCache 가 **RUID 키로 따로** 캐시한다 — 맵이 달라도 같은 항목을 공유하고,
+//   프로젝트 파일(v2)과 저장 형태가 같아져 로드 경로가 하나로 합쳐진다(tilesFromStored).
 import { get as idbGet, set as idbSet } from "idb-keyval";
 import type { PaletteTile, StoredTile } from "./palette";
 import { toStoredTile } from "./palette";
