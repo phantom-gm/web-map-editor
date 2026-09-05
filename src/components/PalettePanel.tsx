@@ -5,7 +5,7 @@ import { isEntityKind } from "../types/entity";
 import type { RegStatus } from "../lib/registry";
 import { resolveTiles, uploadTiles } from "../lib/apiClient";
 import { getSecret } from "../lib/secret";
-import { npcCsvToRows } from "../lib/npcClass";
+import { buildCatalogFromCsv, catalogFromEntries } from "../lib/npcClass";
 import { ResourceBrowser } from "./ResourceBrowser";
 
 const BADGE: Record<RegStatus, { sym: string; cls: string; label: string }> = {
@@ -35,6 +35,7 @@ export function PalettePanel() {
   const clearPalette = useEditorStore((s) => s.clearPalette);
   const loadRegistry = useEditorStore((s) => s.loadRegistry);
   const loadNpcCatalog = useEditorStore((s) => s.loadNpcCatalog);
+  const setNpcCatalog = useEditorStore((s) => s.setNpcCatalog);
   const npcCount = useEditorStore((s) => s.npcCatalog.entries.length);
   const applyResolutions = useEditorStore((s) => s.applyResolutions);
   const [busy, setBusy] = useState<"" | "resolve" | "upload">("");
@@ -77,16 +78,31 @@ export function PalettePanel() {
     }
   };
 
+  // 몬스터/NPC 카탈로그 로드. 게임 CSV 를 변환 없이 **여러 장 한 번에** 받는다 —
+  //   클래스표가 NPC/몬스터로 쪼개지고 이름이 로컬라이즈 표(ST_*)로 빠져 한 장으로는 부족하다.
+  //   판별은 파일명이 아니라 헤더로 하므로 순서·개수·추가 파일에 무관하다(buildCatalogFromCsv).
+  //   JSON 스냅샷 1장도 그대로 지원(구 경로).
   const onNpcCatalog = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    if (!f) return;
+    if (files.length === 0) return;
     try {
-      const text = await f.text();
-      // 게임 원본 DT_NpcClass.csv 를 그대로 로드할 수 있게 CSV/JSON 자동 감지.
-      const head = text.trimStart();
-      const isCsv = f.name.toLowerCase().endsWith(".csv") || !(head.startsWith("{") || head.startsWith("["));
-      loadNpcCatalog(isCsv ? npcCsvToRows(text) : JSON.parse(text));
+      const sources = await Promise.all(files.map(async (f) => ({ name: f.name, text: await f.text() })));
+      // JSON 스냅샷 1장이면 구 경로로. (CSV 와 섞어 넣는 건 지원하지 않는다 — 의미가 모호하다.)
+      const head = sources[0].text.trimStart();
+      const isJson = sources.length === 1 && (head.startsWith("{") || head.startsWith("["));
+      if (isJson) {
+        loadNpcCatalog(JSON.parse(sources[0].text));
+        return;
+      }
+      const { entries, warnings, stats } = buildCatalogFromCsv(sources);
+      if (entries.length > 0) setNpcCatalog(catalogFromEntries(entries));
+      if (warnings.length > 0) {
+        alert(
+          `NPC목록 ${entries.length}종 불러옴 (NPC ${stats.npc} · 몬스터 ${stats.monster})\n\n` +
+            warnings.map((w) => "• " + w).join("\n"),
+        );
+      }
     } catch (err) {
       alert("NpcClass 카탈로그 로드 실패: " + (err instanceof Error ? err.message : String(err)));
     }
@@ -264,10 +280,10 @@ export function PalettePanel() {
           RUID파일
         </button>
         <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={onRegistry} />
-        <button className="reg-load" onClick={() => npcRef.current?.click()} title={`몬스터/NPC 종류 카탈로그 불러오기 — 게임 DT_NpcClass.csv 또는 JSON 스냅샷 직접 선택. 현재 ${npcCount}종`}>
+        <button className="reg-load" onClick={() => npcRef.current?.click()} title={`몬스터/NPC 종류 카탈로그 불러오기 — 게임 CSV 를 여러 장 한 번에 선택하세요:\n  DataSet/npc/DT_NpcClass.csv + monster/DT_MonsterClass.csv\n  + locale/ST_NpcName.csv + ST_MonsterName.csv (이름 표시용)\nJSON 스냅샷 1장도 가능. 현재 ${npcCount}종`}>
           NPC목록({npcCount})
         </button>
-        <input ref={npcRef} type="file" accept="application/json,.json,text/csv,.csv" hidden onChange={onNpcCatalog} />
+        <input ref={npcRef} type="file" accept="application/json,.json,text/csv,.csv" multiple hidden onChange={onNpcCatalog} />
         <button className="reg-load" onClick={onResolveOnline} disabled={busy !== "" || palette.length === 0} title="서버 /api/resolve 로 등록여부 조회">
           {busy === "resolve" ? "조회중…" : "서버 조회"}
         </button>

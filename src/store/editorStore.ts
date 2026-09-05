@@ -147,6 +147,7 @@ export interface EditorState {
   hydratePalette: (tiles: PaletteTile[]) => void;
   loadRegistry: (json: unknown) => void;
   loadNpcCatalog: (json: unknown) => void;
+  setNpcCatalog: (c: NpcCatalog) => void;
   applyResolutions: (results: Array<{ name: string; status: RegStatus; ruid: string | null }>) => void;
   exportPaletteRuids: () => { map: string; ruids: Record<string, string> };
   setActiveIdx: (i: number) => void;
@@ -302,6 +303,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return { registry: reg, palette: resolvePalette(s.palette, reg) };
     }),
   loadNpcCatalog: (json) => set({ npcCatalog: parseNpcCatalog(json) }),
+  // CSV 직접 로드 경로 — 이미 만들어진 카탈로그를 그대로 넣는다(buildCatalogFromCsv → catalogFromEntries).
+  setNpcCatalog: (c) => set({ npcCatalog: c }),
   applyResolutions: (results) =>
     set((s) => {
       const byName = new Map(results.map((r) => [r.name, r]));
