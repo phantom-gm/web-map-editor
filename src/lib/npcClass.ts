@@ -41,7 +41,7 @@ export function parseNpcCatalog(json: unknown): NpcCatalog {
 export function npcCsvToRows(
   csvText: string,
 ): Array<{ NpcClassID?: string; NpcName?: string; NpcType?: string }> {
-  const lines = csvText.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  const lines = csvText.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
   if (lines.length === 0) return [];
   const header = lines[0].split(",").map((h) => h.trim());
   const iId = header.indexOf("NpcClassID");

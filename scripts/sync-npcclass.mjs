@@ -24,7 +24,7 @@ if (!existsSync(CSV)) {
   process.exit(0); // 배포 환경(legend_of_light 부재)에서 정상 통과
 }
 
-const text = readFileSync(CSV, "utf8").replace(/^﻿/, "");
+const text = readFileSync(CSV, "utf8").replace(/^\uFEFF/, "");
 const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
 if (lines.length === 0) {
   console.error("[sync:npc] CSV 가 비어 있음 — 중단");

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { npcCsvToRows, parseNpcCatalog } from "../lib/npcClass";
 
 // 게임 DT_NpcClass.csv 를 에디터 'NPC목록' 로드에 그대로 넣을 수 있어야 한다(연동: 단일 소스).
-const CSV = `﻿NpcClassID,NpcName,NpcType,StatID,Exp,Level,Grade,AtkNature,DefNature,IsAggressive,AppearanceID,ModelID
+const CSV = `\uFEFFNpcClassID,NpcName,NpcType,StatID,Exp,Level,Grade,AtkNature,DefNature,IsAggressive,AppearanceID,ModelID
 101,엘드릭,Npc,1000,0,1,Normal,Earth,Earth,FALSE,,npc01
 1000,말벌,Monster,1000,10,1,Normal,Wind,Wind,TRUE,9000,monster01
 `;
