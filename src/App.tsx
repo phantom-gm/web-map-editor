@@ -41,6 +41,13 @@ export default function App() {
     };
   }, []);
 
+  // QA 자동화 훅(개발 빌드 한정) — 브라우저 스크립트가 스토어에 접근해 엔티티를 주입하고 화면(배지·바닥선)을 확인한다.
+  //   프로덕션 번들에는 들어가지 않는다.
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    (window as unknown as { __mswEditor?: typeof useEditorStore }).__mswEditor = useEditorStore;
+  }, []);
+
   // 미저장 변경이 있으면 페이지 이탈/닫기 시 브라우저 경고.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {

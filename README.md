@@ -34,6 +34,10 @@ npm run dev      # http://localhost:3000
 - **입력**: 좌클릭/드래그 = 도구 · 스페이스+드래그 또는 휠클릭 = 팬 · 휠 = 줌
 - **경계 클램프**: 페인팅은 size 안으로만, export 시 size 밖 셀은 무시(`buildBlueprint`).
 - **검증**: export 전 `validateMap`(빈 맵 · 경계 밖 셀 · 팔레트 범위 초과) → 문제 시 확인 다이얼로그.
+- **1×1 오브젝트 정렬 바닥선**(2026-09-26, 게임 MS-26 미러): `offsetY` 가 커서 바닥선이 앞 칸(남쪽 이웃) 중심에 붙거나 넘으면
+  캔버스 ▼ 배지(주황 경고 / 빨강 = 게임 빌드 게이트가 막음) + 인스펙터 경고(권장 11px 버튼) + 상태바 건수 + export 검증.
+  오브젝트를 선택하면 **정렬 바닥선**과 앞 칸 중심(점선·점)이 그려진다. 같은 RUID 를 새로 놓으면 마지막 저작값이 기본으로 채워진다.
+  상세: [`DEPTH_SORT.md`](DEPTH_SORT.md) §"1×1 오브젝트는 바닥선이 곧 순서다".
 - **Import/Export**: 기존 `map_blueprint_<Map>.json` 왕복. Ground·이동불가(Attribute) 편집,
   Static 레이어와 origin/palette 는 **verbatim 보존** → round-trip diff 0 (vitest 게이트).
   Attribute 레이어는 이동불가 Set 에서 **재생성**되며 원본과 의미적으로 동일함을 테스트로 검증

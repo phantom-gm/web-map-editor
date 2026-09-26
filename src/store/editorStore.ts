@@ -12,6 +12,35 @@ import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetChec
 import { PROJECT_TYPE, PROJECT_VERSION, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
+// ── 에셋(RUID)별 저작 기본값 (요청서 R3) ────────────────────────────────────────
+//   같은 RUID 를 새로 놓을 때 **마지막으로 저작한 값**을 기본으로 채운다. 가로등 12개가 전부 offsetY 17px 였던 것은
+//   "한 번 놓고 복사" 였고, 침엽수_A 10px · 침엽수_B 15px 처럼 같은 종류가 갈리는 것은 배치마다 손으로 다시 맞춰서다.
+//   값이 한 번 정해지면 맵 전체에 일관되게 퍼지게 한다. 기억의 출처는 둘 — ① 이 세션에서 저작(updateEntity)한 값,
+//   ② 없으면 지금 맵에서 같은 RUID 로 **가장 나중에 놓인** 오브젝트의 값. 프로젝트 파일에는 쓰지 않는다(②가 재로드를 덮는다).
+//   ⚠ sortOffset(이웃 상대값)·flipX(배치마다 다른 연출)·이름·좌표는 에셋 성질이 아니라 옮기지 않는다.
+export type ObjectTweaks = Pick<MapEntity, "offsetX" | "offsetY" | "scaleMul" | "rotationDeg" | "tilesW" | "tilesH" | "blocks" | "layer">;
+export const OBJECT_TWEAK_KEYS: ReadonlyArray<keyof ObjectTweaks> = [
+  "offsetX", "offsetY", "scaleMul", "rotationDeg", "tilesW", "tilesH", "blocks", "layer",
+];
+export function pickObjectTweaks(e: MapEntity): ObjectTweaks {
+  const out: ObjectTweaks = {};
+  for (const k of OBJECT_TWEAK_KEYS) {
+    const v = e[k];
+    if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+  }
+  return out;
+}
+/** 새 배치에 적용할 기본값 — 세션 기억 → 같은 RUID 의 마지막 오브젝트 → 없음(null). */
+export function objectDefaultsFor(ruid: string | undefined, memo: Record<string, ObjectTweaks>, entities: MapEntity[]): ObjectTweaks | null {
+  if (!ruid) return null;
+  if (memo[ruid]) return memo[ruid];
+  for (let i = entities.length - 1; i >= 0; i--) {
+    const e = entities[i];
+    if (e.kind === "object" && e.ruid === ruid) return pickObjectTweaks(e);
+  }
+  return null;
+}
+
 /** 팔레트 각 타일에 레지스트리 판정(ruid/regStatus)을 채워 새 배열로 반환. */
 function resolvePalette(palette: PaletteTile[], reg: TileRegistry | null): PaletteTile[] {
   // 레지스트리 없으면 기존 판정 유지(스토리지에서 온 RUID 보존 — 권위 있음).
@@ -122,6 +151,7 @@ export interface EditorState {
 
   entities: Entities;
   entitiesVer: number;
+  objectDefaults: Record<string, ObjectTweaks>; // RUID → 마지막 저작값(세션 한정, 요청서 R3)
   selectedEntityId: string | null;
 
   visual: VisualFlags; // 편집 오버레이 표시 여부 (격자/이동불가/점유)
@@ -202,6 +232,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   rectPreview: null,
   entities: [],
   entitiesVer: 0,
+  objectDefaults: {},
   selectedEntityId: null,
   visual: { grid: true, blocked: true, footprint: true },
   dirty: false,
@@ -454,6 +485,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         //   (몬스터·NPC 는 baseW 미설정 → 기존처럼 tilesW 가 이미지도 결정.)
         ent.baseW = nw > 0 ? nw / TW : 1;
         ent.baseH = nh > 0 ? nh / TW : 1;
+        // R3 — 같은 RUID 의 마지막 저작값(offset·배율·기울기·점유·충돌·레이어)을 기본으로. 아래 경계 클램프보다 먼저
+        //   (tilesW/H 가 바뀌면 앵커 하한이 달라진다).
+        const d = objectDefaultsFor(ruid, s.objectDefaults, s.entities);
+        if (d) Object.assign(ent, d);
       }
       if (kind === "monster") ent.spawnCount = 1;
       // 포탈 도착 셀 기본값 = 배치 위치(현재 셀). 목적지 맵만 채우면 되도록 하고, 필요 시 변경.
@@ -509,11 +544,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   updateEntity: (id, patch) =>
     set((s) => {
-      if (!s.entities.some((e) => e.id === id)) return {};
+      const cur = s.entities.find((e) => e.id === id);
+      if (!cur) return {};
       const before = snap(s.ground, s.blocked, s.entities);
+      const next: MapEntity = { ...cur, ...patch };
+      // R3 — 오브젝트의 저작값을 RUID 별로 기억한다(저작 키를 건드린 patch 만). undefined 로 지운 값은 기억에서도 빠진다.
+      let objectDefaults = s.objectDefaults;
+      if (next.kind === "object" && next.ruid && OBJECT_TWEAK_KEYS.some((k) => k in patch)) {
+        objectDefaults = { ...s.objectDefaults, [next.ruid]: pickObjectTweaks(next) };
+      }
       return {
-        entities: s.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+        entities: s.entities.map((e) => (e.id === id ? next : e)),
         entitiesVer: s.entitiesVer + 1,
+        objectDefaults,
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
         redoStack: [],
       };

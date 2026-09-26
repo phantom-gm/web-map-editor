@@ -9,13 +9,75 @@ import {
   type Camera,
   type Dims,
 } from "../lib/grid";
-import { parseCellKey } from "../lib/cell";
+import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { sortEntitiesForDraw, entityImageRect, entityPivot } from "../lib/entityGeom";
+import { baselineDyPx, buildStandCtx, judgeSouth, SOUTH_CELL_PX, type StandCtx } from "../lib/southIntrusion";
 import { EntityInspector } from "./EntityInspector";
+
+// 배지·바닥선 색 — 남쪽 침범 판정 단계별(요청서 R1·R2). watch=주황(경고) · block=빨강(빌드 게이트가 막음) · 없음=하늘(정상).
+const SOUTH_COLOR = { watch: "#ffb02e", block: "#ff3b30", ok: "#7fd6ff" } as const;
+
+/**
+ * 선택한 오브젝트의 **정렬 바닥선**(요청서 R2) — 게임이 앞뒤를 정하는 선(스프라이트 바닥 = 셀 중심 + offsetY)을 가로선으로,
+ * 남쪽 이웃 칸 중심(넘으면 그 칸 액터가 뒤로 감)을 점선 + 점(설 수 있으면 초록, 아니면 회색)으로 그린다.
+ * 저작자가 "왜 이 값이 문제인지"를 눈으로 보게 하는 것이 목적이라, 다른 스프라이트 위에 그린다(호출측이 루프 뒤로 미룬다).
+ */
+function drawSortBaseline(
+  ctx: CanvasRenderingContext2D,
+  e: MapEntity,
+  cx: number,
+  cy: number,
+  hw: number,
+  hh: number,
+  zoom: number,
+  stand: StandCtx,
+  level: "watch" | "block" | "ok",
+) {
+  const dyPx = baselineDyPx(e);
+  const by = cy + dyPx * zoom;
+  ctx.save();
+  // 남쪽 이웃 중심선(점선) — 바닥선이 여기 이하로 내려가면 앞 칸에 선 캐릭터가 오브젝트 뒤로 간다.
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx - hw * 1.3, cy + hh);
+  ctx.lineTo(cx + hw * 1.3, cy + hh);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // 이웃 두 칸의 중심점 — 판정 대상(설 수 있음)이면 초록.
+  for (const [nx, ny] of [[e.gx + 1, e.gy], [e.gx, e.gy + 1]] as Array<[number, number]>) {
+    const can = !stand.cannotStand.has(cellKey(nx, ny));
+    const sx = cx + (nx - e.gx - (ny - e.gy)) * hw;
+    ctx.fillStyle = can ? "#6fd08a" : "#6b7180";
+    ctx.beginPath();
+    ctx.arc(sx, cy + hh, Math.max(2.5, hh * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // 바닥선 — 단계 색.
+  ctx.strokeStyle = SOUTH_COLOR[level];
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx - hw, by);
+  ctx.lineTo(cx + hw, by);
+  ctx.stroke();
+  // 라벨 — 현재 offsetY 와 앞 칸까지의 여유(px). 여유 ≤ 0 이면 액터가 뒤.
+  const clearance = SOUTH_CELL_PX - dyPx;
+  const txt = `바닥선 ${dyPx}px · 앞 칸 여유 ${clearance}px`;
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const tw = ctx.measureText(txt).width;
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(cx + hw + 4, by - 8, tw + 8, 16);
+  ctx.fillStyle = SOUTH_COLOR[level];
+  ctx.fillText(txt, cx + hw + 8, by);
+  ctx.restore();
+}
 
 // 스트로크/이동 커밋용 언두 스냅샷(ground+blocked+entities). commitStroke 가 소비.
 //   입력은 store 상태(Snapshot 과 구조 동일) — ground/blocked 만 얕은 복사.
@@ -138,7 +200,7 @@ function draw(
   cam: Camera,
   hover: [number, number] | null,
   ground: Map<string, number>,
-  blocked: Set<string>,
+  blocked: Set<CellKey>,
   palette: PaletteTile[],
   rectPreview: [number, number, number, number] | null,
   entities: MapEntity[],
@@ -198,9 +260,13 @@ function draw(
   // 오브젝트에 가려지지 않고 보이도록(에디터 작업 UX). ↓ 엔티티 루프 다음에서 그림.
 
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
+  // 선택 오브젝트의 바닥선은 다른 스프라이트에 가리지 않게 루프가 끝난 뒤 그린다(클로저로 미룸).
+  let deferredOverlay: (() => void) | null = null;
   if (entities.length > 0) {
     const lookup = makeEntityImageLookup(palette);
     const sorted = sortEntitiesForDraw(entities);
+    // 1×1 오브젝트 남쪽 침범 판정 컨텍스트(이동불가 + 충돌 footprint) — 프레임당 1회.
+    const stand = buildStandCtx(entities, blocked);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
@@ -316,6 +382,31 @@ function draw(
         }
       }
 
+      // 남쪽 침범 판정(요청서 R1) — 1×1 auto 오브젝트의 바닥선이 앞 칸 중심에 붙거나 넘었는가.
+      const south = e.kind === "object" ? judgeSouth(e, stand) : null;
+      // 선택된 오브젝트 — 정렬 바닥선(요청서 R2). 루프 뒤에 그린다.
+      if (sel && e.kind === "object") {
+        const level = south ? south.level : "ok";
+        deferredOverlay = () => drawSortBaseline(ctx, e, cx, cy, hw, hh, cam.zoom, stand, level);
+      }
+      // 남쪽 침범 배지 — 미완성 배지와 같은 높이, 왼쪽(둘이 같이 뜰 수 있다). 항상 표시(오버레이 토글과 무관).
+      if (south) {
+        const bx = cx - hw * 0.6;
+        const by = labelTop + 2;
+        ctx.beginPath();
+        ctx.arc(bx, by, 6, 0, Math.PI * 2);
+        ctx.fillStyle = SOUTH_COLOR[south.level];
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "#0e0f12";
+        ctx.font = "bold 8px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("▼", bx, by + 0.5);
+      }
+
       // 미완성 배지 — 필수 필드(포탈 목적지/방향, 몬스터·NPC NpcClassID, 오브젝트 RUID) 누락.
       // 변환기 fail-closed 전에 눈으로 잡도록 항상 표시(오버레이 토글과 무관).
       if (isEntityIncomplete(e)) {
@@ -348,6 +439,7 @@ function draw(
       }
     }
   }
+  if (deferredOverlay) (deferredOverlay as () => void)();
 
   // 이동불가 셀 — 빨강 다이아몬드 오버레이. 엔티티 위에 그려 오브젝트 깔린 타일도 보이게(이동불가 표시 토글).
   if (visual.blocked && blocked.size > 0) {

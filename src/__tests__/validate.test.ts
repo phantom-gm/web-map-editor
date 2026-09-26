@@ -32,6 +32,27 @@ describe("validateMap", () => {
   });
 });
 
+describe("validateMap — 1×1 오브젝트 남쪽 침범(요청서 R1)", () => {
+  const lamp = (id: string, gy: number, offsetY: number) =>
+    ({ id, kind: "object", gx: 5, gy, name: "가로등_A", ruid: "r", tilesW: 1, tilesH: 1, offsetY }) as const;
+  const base = { size: [20, 20] as [number, number], ground: new Map([[cellKey(0, 0), 0]]), paletteCount: 1 };
+
+  it("offsetY 16 이상은 errors(빌드 게이트가 막음), 14~15 는 warnings, 13 이하는 없음", () => {
+    const v = validateMap({ ...base, blocked: new Set(), entities: [lamp("a", 1, 17), lamp("b", 4, 14), lamp("c", 8, 11)] });
+    expect(v.errors.filter((m) => m.includes("정렬 바닥선"))).toHaveLength(1);
+    expect(v.errors.some((m) => m.includes("object(5,1)") && m.includes("depth_check"))).toBe(true);
+    expect(v.warnings.filter((m) => m.includes("정렬 바닥선"))).toHaveLength(1);
+    expect(v.warnings.some((m) => m.includes("object(5,4)"))).toBe(true);
+    expect([...v.errors, ...v.warnings].some((m) => m.includes("object(5,8)"))).toBe(false);
+  });
+
+  it("남쪽 이웃 두 칸이 이동불가면 대상이 아니다(물속 바위)", () => {
+    const blocked = new Set([cellKey(6, 1), cellKey(5, 2)]);
+    const v = validateMap({ ...base, blocked, entities: [lamp("a", 1, 26)] });
+    expect([...v.errors, ...v.warnings].some((m) => m.includes("정렬 바닥선"))).toBe(false);
+  });
+});
+
 describe("buildBlueprint 경계 클램프", () => {
   it("size 밖 ground/blocked 셀은 export 에서 제외", () => {
     const ground = new Map([

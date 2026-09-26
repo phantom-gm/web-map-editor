@@ -1,6 +1,7 @@
 // 맵 검증 — export 전에 사용자에게 알릴 문제를 모은다. 순수 함수(렌더/스토어 비의존).
 import { parseCellKey, type CellKey } from "./cell";
 import { FACINGS, footprintWH, renderWH, type Facing, type MapEntity } from "../types/entity";
+import { southIssues, southMessage } from "./southIntrusion";
 
 export interface MapValidation {
   errors: string[]; // 좌표/팔레트가 어긋날 수 있는 문제 — export 전에 확인 권장
@@ -90,8 +91,29 @@ export function validateMap(args: {
   if (args.entities && args.entities.length > 0) {
     errors.push(...entityIssues(args.entities, size, args.npcClassIds, args.hasImage));
     warnings.push(...entityWarnings(args.entities));
+    const south = southValidation(args.entities, blocked);
+    errors.push(...south.errors);
+    warnings.push(...south.warnings);
   }
 
+  return { errors, warnings };
+}
+
+/**
+ * 1×1 지면 오브젝트의 정렬 바닥선이 남쪽 이웃 칸을 침범하는가(요청서 R1 · 게임 depth_check 검사 (10) 미러).
+ *   block(바닥선이 이웃 중심 이하) = errors — 게임 빌드 게이트가 exit 1 로 막는 것(동결 목록 밖)이라 export 전에 "•" 로 보인다.
+ *   watch(여유 2.5px 이하) = warnings — 게임은 관찰만, 에디터는 미리 알린다.
+ * 둘 다 export 를 막지는 않는다(확인 다이얼로그) — 동결 목록(식생·물가·벽 모서리 30건)은 저작자 판단으로 그대로 둘 수 있어야 한다.
+ */
+export function southValidation(entities: MapEntity[], blocked: Set<CellKey>): MapValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const issues = southIssues(entities, blocked);
+  for (const e of entities) {
+    const r = issues.get(e.id);
+    if (!r) continue;
+    (r.level === "block" ? errors : warnings).push(southMessage(e, r));
+  }
   return { errors, warnings };
 }
 

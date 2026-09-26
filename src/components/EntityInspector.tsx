@@ -3,6 +3,7 @@ import { ENTITY_META, FACINGS, FACING_LABEL, suggestedFootprint, type MapEntity 
 import { npcClassLabel } from "../lib/npcClass";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { TW } from "../lib/grid";
+import { buildStandCtx, judgeSouth, southMessage, RECOMMENDED_OFFSET_Y_PX, SAFE_OFFSET_Y_PX } from "../lib/southIntrusion";
 import { NumberField } from "./NumberField";
 
 // 선택된 엔티티의 속성 편집 패널(캔버스 우상단 플로팅). 종류별 필드 표시.
@@ -15,9 +16,14 @@ export function EntityInspector() {
   const removeEntity = useEditorStore((s) => s.removeEntity);
   const duplicateEntity = useEditorStore((s) => s.duplicateEntity);
   const selectEntity = useEditorStore((s) => s.selectEntity);
+  // 남쪽 침범 판정(요청서 R1)의 재료 — 다른 엔티티의 충돌 footprint 와 이동불가 칠. blocked 는 제자리 변이라 ver 로 구독한다.
+  const entities = useEditorStore((s) => s.entities);
+  const blockedVer = useEditorStore((s) => s.blockedVer);
 
   if (!selectedId || !entity) return null;
   const meta = ENTITY_META[entity.kind];
+  void blockedVer; // 구독용(값 자체는 안 쓴다) — blocked 변경 시 아래 판정을 다시 돌린다.
+  const south = entity.kind === "object" ? judgeSouth(entity, buildStandCtx(entities, useEditorStore.getState().blocked)) : null;
 
   // 팔레트 원본 이미지의 네이티브 픽셀 크기 — "네이티브 크기로" 복원의 기준(없으면 버튼 비활성).
   const img = makeEntityImageLookup(palette)(entity);
@@ -260,7 +266,7 @@ export function EntityInspector() {
               />
             </label>
             <label className="ei-row">
-              <span>Y 이동 (px)</span>
+              <span>Y 이동 (px) — 1×1 은 {SAFE_OFFSET_Y_PX} 이하(권장 {RECOMMENDED_OFFSET_Y_PX})</span>
               <NumberField
                 className=""
                 value={entity.offsetY ?? 0}
@@ -268,6 +274,14 @@ export function EntityInspector() {
               />
             </label>
           </div>
+          {south && (
+            <div className={`ei-warn ei-warn-${south.level}`} role="alert">
+              <span>{southMessage(entity, south)}</span>
+              <button className="ei-fit" onClick={() => updateEntity(entity.id, { offsetY: RECOMMENDED_OFFSET_Y_PX })}>
+                ↧ Y 이동을 권장값 {RECOMMENDED_OFFSET_Y_PX}px 로
+              </button>
+            </div>
+          )}
           <label className="ei-row">
             <span>기울기 (회전, 도)</span>
             <NumberField

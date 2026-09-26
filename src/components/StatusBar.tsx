@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import { useEditorStore, type Tool } from "../store/editorStore";
+import { southIssues } from "../lib/southIntrusion";
 
 const TOOL_LABEL: Record<Tool, string> = {
   cursor: "커서",
@@ -23,6 +25,21 @@ export function StatusBar() {
   const painted = useEditorStore((s) => s.ground.size);
   const blockedCount = useEditorStore((s) => s.blocked.size);
   const entityCount = useEditorStore((s) => s.entities.length);
+  // 1×1 오브젝트 남쪽 침범(요청서 R1) 건수 — 엔티티/이동불가가 바뀔 때만 다시 센다(blocked 는 제자리 변이라 ver 로).
+  const entitiesVer = useEditorStore((s) => s.entitiesVer);
+  const blockedVer = useEditorStore((s) => s.blockedVer);
+  const south = useMemo(() => {
+    void entitiesVer;
+    void blockedVer;
+    const st = useEditorStore.getState();
+    let block = 0;
+    let watch = 0;
+    for (const r of southIssues(st.entities, st.blocked).values()) {
+      if (r.level === "block") block++;
+      else watch++;
+    }
+    return { block, watch };
+  }, [entitiesVer, blockedVer]);
 
   const inRange =
     hover != null && hover[0] >= 0 && hover[1] >= 0 && hover[0] < size[0] && hover[1] < size[1];
@@ -42,6 +59,13 @@ export function StatusBar() {
       <span>
         셀 {painted} · 이동불가 {blockedCount} · 엔티티 {entityCount}
       </span>
+      {(south.block > 0 || south.watch > 0) && (
+        <span title="1×1 지면 오브젝트의 정렬 바닥선이 앞 칸 중심에 붙었거나 넘었습니다 — 오브젝트를 선택하면 바닥선과 처방이 보입니다">
+          정렬 바닥선: {south.block > 0 && <b className="sb-block">차단 {south.block}</b>}
+          {south.block > 0 && south.watch > 0 && " · "}
+          {south.watch > 0 && <b className="sb-warn">경고 {south.watch}</b>}
+        </span>
+      )}
       <span>줌: {Math.round(zoom * 100)}%</span>
     </div>
   );
