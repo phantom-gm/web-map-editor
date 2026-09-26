@@ -748,7 +748,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 1×1 오브젝트 남쪽 침범 경고(요청서 R1) — watch=주황(여유 얇음) · block=빨강(빌드 게이트가 막음). 캔버스 배지·바닥선과 같은 색. */
+/* 1×1 오브젝트 남쪽 침범 경고(요청서 R1) — watch=주황(여유 얇음) · block=빨강(빌드 게이트가 막음).
+   ⚠ #ffb02e / #ff3b30 은 캔버스 상수 SOUTH_COLOR(src/components/CanvasGrid.tsx)와 같은 값 — 캔버스는 CSS 변수를 못 읽어 두 벌이다. 같이 바꿀 것. */
 .entity-inspector .ei-warn {
   display: flex;
   flex-direction: column;

@@ -101,6 +101,12 @@ export function migrateEntity(raw: MapEntity): MapEntity {
   return out;
 }
 
+/** 사람에게 보여 줄 엔티티 라벨 — 검증·경고 문구 공용. `object(5,1) "가로등_A"`, 이름이 없으면 종류와 좌표만. */
+export function entityLabel(e: MapEntity): string {
+  const at = `${e.kind}(${e.gx},${e.gy})`;
+  return e.name ? `${at} "${e.name}"` : at;
+}
+
 /** 변환기가 fail-closed 시킬 미입력 엔티티인지(배지/경고용, 카탈로그 존재여부는 별도). */
 export function isEntityIncomplete(e: MapEntity): boolean {
   switch (e.kind) {

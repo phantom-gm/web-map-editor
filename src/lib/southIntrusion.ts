@@ -13,7 +13,8 @@
 //   처방은 저작(offsetY 를 자기 칸 안으로)이고, 이 모듈은 그 저작을 **빌드 전에** 알려 주는 자리다.
 import { TH } from "./grid";
 import { cellKey, type CellKey } from "./cell";
-import { entityFootprintCells, footprintWH, type MapEntity } from "../types/entity";
+import { walkBlockedCells } from "./walkCells";
+import { entityLabel, footprintWH, type MapEntity } from "../types/entity";
 
 /** 셀 중심에서 남쪽 이웃 칸 중심까지의 화면 y 거리(px) = 셀 한 칸 깊이. */
 export const SOUTH_CELL_PX = TH / 2; // 16
@@ -43,22 +44,11 @@ export interface StandCtx {
 }
 
 /**
- * 게임 export 와 같은 규칙으로 "설 수 없는 칸" 집합을 만든다 — convert_map 이 DT_Walk 로 굽는 것과 1:1:
- *   blocked(이동불가 칠) ∪ blocks=true 오브젝트의 footprintCells(offset-정렬, 포탈이 놓인 칸은 제외).
- *   entityExport.exportEntities 의 footprintCells 계산과 같은 재료를 쓴다.
+ * "설 수 없는 칸" 집합 — export 가 DT_Walk 로 굽는 것과 **같은 함수**(walkCells.walkBlockedCells)에서 나온다.
+ *   여기서 따로 계산하지 않는다 — 규칙이 갈리면 "에디터 통과 · 빌드 실패" 가 조용히 생긴다.
  */
-export function buildStandCtx(entities: MapEntity[], blocked: Set<CellKey>): StandCtx {
-  const cannotStand = new Set<CellKey>(blocked);
-  const portalCells = new Set<CellKey>();
-  for (const e of entities) if (e.kind === "portal") portalCells.add(cellKey(e.gx, e.gy));
-  for (const e of entities) {
-    if (e.kind !== "object" || e.blocks !== true) continue;
-    for (const [gx, gy] of entityFootprintCells(e)) {
-      const k = cellKey(gx, gy);
-      if (!portalCells.has(k)) cannotStand.add(k);
-    }
-  }
-  return { cannotStand };
+export function buildStandCtx(entities: MapEntity[], blocked: ReadonlySet<CellKey>): StandCtx {
+  return { cannotStand: walkBlockedCells(entities, blocked) };
 }
 
 /** 검사 대상인가 — auto 레이어(above/below 는 고정 평면) · 지면 점유 1×1(멀티셀은 런타임 클램프가 맡는다) 인 오브젝트. */
@@ -97,7 +87,7 @@ export function judgeSouth(e: MapEntity, ctx: StandCtx): SouthIntrusion | null {
 }
 
 /** 맵 전체 — id → 판정(경고·차단만). 캔버스 배지·상태바 카운트·export 검증이 공유한다. */
-export function southIssues(entities: MapEntity[], blocked: Set<CellKey>): Map<string, SouthIntrusion> {
+export function southIssues(entities: MapEntity[], blocked: ReadonlySet<CellKey>): Map<string, SouthIntrusion> {
   const ctx = buildStandCtx(entities, blocked);
   const out = new Map<string, SouthIntrusion>();
   for (const e of entities) {
@@ -109,7 +99,7 @@ export function southIssues(entities: MapEntity[], blocked: Set<CellKey>): Map<s
 
 /** 사람에게 보여 줄 문구 — 인스펙터·export 검증 공용. 처방(몇 px 이하로)을 반드시 싣는다. */
 export function southMessage(e: MapEntity, r: SouthIntrusion): string {
-  const who = `object(${e.gx},${e.gy}) "${e.name ?? ""}"`;
+  const who = entityLabel(e);
   const fix = `Y 이동(offsetY)을 ${SAFE_OFFSET_Y_PX}px 이하로(권장 ${RECOMMENDED_OFFSET_Y_PX}px)`;
   if (r.level === "block") {
     return `${who}: 정렬 바닥선(offsetY ${r.offsetY}px)이 앞 칸 (${r.neighbor[0]},${r.neighbor[1]}) 중심 아래입니다 — 그 칸에 선 캐릭터가 오브젝트에 가려집니다. 게임 빌드 게이트(depth_check 검사 (10))가 막습니다(동결 목록에 있는 것 제외). ${fix}`;

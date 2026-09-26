@@ -1,6 +1,5 @@
-import { useMemo } from "react";
 import { useEditorStore, type Tool } from "../store/editorStore";
-import { southIssues } from "../lib/southIntrusion";
+import { selectSouthCounts } from "../store/southSelectors";
 
 const TOOL_LABEL: Record<Tool, string> = {
   cursor: "커서",
@@ -25,21 +24,8 @@ export function StatusBar() {
   const painted = useEditorStore((s) => s.ground.size);
   const blockedCount = useEditorStore((s) => s.blocked.size);
   const entityCount = useEditorStore((s) => s.entities.length);
-  // 1×1 오브젝트 남쪽 침범(요청서 R1) 건수 — 엔티티/이동불가가 바뀔 때만 다시 센다(blocked 는 제자리 변이라 ver 로).
-  const entitiesVer = useEditorStore((s) => s.entitiesVer);
-  const blockedVer = useEditorStore((s) => s.blockedVer);
-  const south = useMemo(() => {
-    void entitiesVer;
-    void blockedVer;
-    const st = useEditorStore.getState();
-    let block = 0;
-    let watch = 0;
-    for (const r of southIssues(st.entities, st.blocked).values()) {
-      if (r.level === "block") block++;
-      else watch++;
-    }
-    return { block, watch };
-  }, [entitiesVer, blockedVer]);
+  // 1×1 오브젝트 남쪽 침범(요청서 R1) 건수 — 엔티티/이동불가가 바뀔 때만 다시 센다(버전 memo selector).
+  const south = useEditorStore(selectSouthCounts);
 
   const inRange =
     hover != null && hover[0] >= 0 && hover[1] >= 0 && hover[0] < size[0] && hover[1] < size[1];

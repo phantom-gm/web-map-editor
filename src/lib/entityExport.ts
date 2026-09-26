@@ -2,9 +2,10 @@
 //  - scale: 스프라이트 배율 (게임이 네이티브 크기로 배치해 거대해지는 버그 방지)
 //  - footprintCells: 충돌(blocks) 시 앵커 상대 오프셋 목록
 // 라이브 상태(store)는 blocks 만 갖고, scale/footprintCells 는 tilesW/tilesH·이미지에서 export 시 계산.
-import { entityFootprintCells, footprintWH, renderWH, type MapEntity } from "../types/entity";
+import { footprintWH, renderWH, type MapEntity } from "../types/entity";
 import { makeEntityImageLookup } from "./entityImage";
 import type { PaletteTile } from "./palette";
+import { blockingFootprintCells, portalCellSet } from "./walkCells";
 
 // 게임 iso 타일 폭(px/셀). 에디터 미리보기(TW=64)와 달리 게임 빌드는 56px 타일을 쓴다.
 // scale = 목표 footprint 픽셀(게임) / 스프라이트 네이티브 픽셀.
@@ -17,9 +18,8 @@ const PX_TO_WORLD = GAME_TILE_WORLD / EDITOR_TILE_PX; // ≈ 0.00875
 /** object 엔티티에 scale/footprintCells 부착(그 외 kind·이미지 없음은 원본 그대로). */
 export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): MapEntity[] {
   const imageOf = makeEntityImageLookup(palette);
-  // 포탈 셀 — 오브젝트 충돌에서 제외한다(오브젝트 위에 포탈이 있으면 진입 가능해야 함).
-  const portalCells = new Set<string>();
-  for (const e of entities) if (e.kind === "portal") portalCells.add(`${e.gx},${e.gy}`);
+  // 포탈 셀 — 오브젝트 충돌에서 제외한다(오브젝트 위에 포탈이 있으면 진입 가능해야 함). 재료는 walkCells 한 곳(남쪽 침범 판정과 공유).
+  const portalCells = portalCellSet(entities);
 
   return entities.map((e) => {
     // npc — 스폰 경로(DT_NpcSpawn)로 가므로 object 파이프라인을 안 탄다. 그래서 **시각 계약이 통째로
@@ -41,11 +41,10 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     const out: MapEntity = { ...e };
 
     // 오브젝트는 기본적으로 통과 가능(충돌 없음). "충돌" 체크(blocks=true)한 것만 이동을 막는다.
-    // footprint 셀 중 포탈이 놓인 셀은 충돌에서 제외 → 포탈 진입 가능.
+    // footprint 셀 중 포탈이 놓인 셀은 충돌에서 제외 → 포탈 진입 가능. 절대 셀은 walkCells.blockingFootprintCells 가 정하고
+    //   여기서는 변환기 계약대로 앵커 상대 오프셋으로만 바꾼다.
     if (e.blocks === true) {
-      out.footprintCells = entityFootprintCells(e)
-        .filter(([gx, gy]) => !portalCells.has(`${gx},${gy}`))
-        .map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
+      out.footprintCells = blockingFootprintCells(e, portalCells).map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
     }
 
     // scale — 이미지 렌더 기준폭(renderWH=baseW) × 사용자 배율(scaleMul). 종횡비 보존(균일).

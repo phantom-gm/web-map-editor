@@ -49,8 +49,9 @@ z = −(gx + gy) × 0.14  −  offsetY_px × PX_TO_WORLD  −  sortOffset × 0.1
 
 권장값은 **11px**. 판정은 [`src/lib/southIntrusion.ts`](src/lib/southIntrusion.ts) 한 곳이 소유하고, 캔버스 배지·선택 시
 **정렬 바닥선**(가로선 + 이웃 중심 점선)·인스펙터 경고(권장값 버튼)·상태바 건수·export 검증이 전부 그것을 부른다.
-"설 수 없는 칸"(이동불가 칠 + 충돌 오브젝트 footprint, 포탈 칸 제외)은 export 가 DT_Walk 로 굽는 것과 같은 재료다 — 맵 밖 이웃도
-설 수 있다고 보는 관대함까지 게임 게이트와 같다(다르면 "에디터 통과·빌드 실패"가 생긴다).
+"설 수 없는 칸"(이동불가 칠 + 충돌 오브젝트 footprint, 포탈 칸 제외)은 [`src/lib/walkCells.ts`](src/lib/walkCells.ts) **한 함수**에서 나오고
+export 의 `footprintCells`(DT_Walk 재료)도 같은 함수를 쓴다 — 맵 밖 이웃도 설 수 있다고 보는 관대함까지 게임 게이트와 같다(다르면
+"에디터 통과·빌드 실패"가 생긴다). 컨텍스트·집계는 `src/store/southSelectors.ts` 가 (entitiesVer, blockedVer) 로 memo 해 캔버스·인스펙터·상태바가 나눠 쓴다.
 
 ⚠ z 를 셀 기준으로 바꾸는 요청은 하지 않는다 — 게임이 셀 중심·발자국 tip 앵커를 시도했다가 신고 3건으로 폐기했다. 처방은 저작이다.
 같은 RUID 를 새로 놓으면 마지막 저작값(offset·배율·기울기·점유·충돌·레이어)이 기본으로 채워진다(`objectDefaults`, 세션 한정 +
@@ -60,6 +61,8 @@ z = −(gx + gy) × 0.14  −  offsetY_px × PX_TO_WORLD  −  sortOffset × 0.1
 ## 잠겨 있는 테스트
 
 - `src/__tests__/southIntrusion.test.ts` — 임계값(13/14~15/16)·대상(1×1 auto)·설 수 없는 칸·맵 밖 이웃 관대함
+- `src/__tests__/walkCells.test.ts` — export `footprintCells` ↔ 판정 컨텍스트 동치(DT_Walk 재료 단일 출처)
+- `src/__tests__/southSelectors.test.ts` — 버전 memo(참조 안정 · entitiesVer/blockedVer 무효화)
 - `src/__tests__/objectDefaults.test.ts` — RUID 별 마지막 저작값 기본 채움(옮기지 않는 필드 포함)
 
 - `src/__tests__/entityGeom.test.ts` — `gameDepthZ` 가 위 식과 같은지 (4개 과거 버그 회귀 가드)

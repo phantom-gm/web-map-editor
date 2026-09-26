@@ -15,10 +15,12 @@ import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { sortEntitiesForDraw, entityImageRect, entityPivot } from "../lib/entityGeom";
-import { baselineDyPx, buildStandCtx, judgeSouth, SOUTH_CELL_PX, type StandCtx } from "../lib/southIntrusion";
+import { baselineDyPx, judgeSouth, SOUTH_CELL_PX, type StandCtx } from "../lib/southIntrusion";
+import { selectStandCtx } from "../store/southSelectors";
 import { EntityInspector } from "./EntityInspector";
 
 // 배지·바닥선 색 — 남쪽 침범 판정 단계별(요청서 R1·R2). watch=주황(경고) · block=빨강(빌드 게이트가 막음) · 없음=하늘(정상).
+//   ⚠ globals.css 의 .ei-warn-watch/.ei-warn-block/.sb-warn/.sb-block 이 같은 두 색을 쓴다 — 캔버스는 CSS 변수를 못 읽어 값이 두 벌이다. 같이 바꿀 것.
 const SOUTH_COLOR = { watch: "#ffb02e", block: "#ff3b30", ok: "#7fd6ff" } as const;
 
 /**
@@ -33,29 +35,32 @@ function drawSortBaseline(
   cy: number,
   hw: number,
   hh: number,
-  zoom: number,
+  cam: Camera,
   stand: StandCtx,
   level: "watch" | "block" | "ok",
 ) {
   const dyPx = baselineDyPx(e);
-  const by = cy + dyPx * zoom;
+  const by = cy + dyPx * cam.zoom;
+  // 남쪽 이웃 두 칸 — 화면 좌표는 cellToScreen 하나가 정한다(손계산 투영 금지). 두 칸은 같은 y 라 점선은 첫 칸의 y 로 긋는다.
+  const neighbors = ([[e.gx + 1, e.gy], [e.gx, e.gy + 1]] as Array<[number, number]>).map(
+    ([nx, ny]) => ({ can: !stand.cannotStand.has(cellKey(nx, ny)), at: cellToScreen(nx, ny, cam) }),
+  );
+  const guideY = neighbors[0].at[1];
   ctx.save();
   // 남쪽 이웃 중심선(점선) — 바닥선이 여기 이하로 내려가면 앞 칸에 선 캐릭터가 오브젝트 뒤로 간다.
   ctx.setLineDash([4, 3]);
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(cx - hw * 1.3, cy + hh);
-  ctx.lineTo(cx + hw * 1.3, cy + hh);
+  ctx.moveTo(cx - hw * 1.3, guideY);
+  ctx.lineTo(cx + hw * 1.3, guideY);
   ctx.stroke();
   ctx.setLineDash([]);
   // 이웃 두 칸의 중심점 — 판정 대상(설 수 있음)이면 초록.
-  for (const [nx, ny] of [[e.gx + 1, e.gy], [e.gx, e.gy + 1]] as Array<[number, number]>) {
-    const can = !stand.cannotStand.has(cellKey(nx, ny));
-    const sx = cx + (nx - e.gx - (ny - e.gy)) * hw;
-    ctx.fillStyle = can ? "#6fd08a" : "#6b7180";
+  for (const n of neighbors) {
+    ctx.fillStyle = n.can ? "#6fd08a" : "#6b7180";
     ctx.beginPath();
-    ctx.arc(sx, cy + hh, Math.max(2.5, hh * 0.18), 0, Math.PI * 2);
+    ctx.arc(n.at[0], n.at[1], Math.max(2.5, hh * 0.18), 0, Math.PI * 2);
     ctx.fill();
   }
   // 바닥선 — 단계 색.
@@ -206,6 +211,7 @@ function draw(
   entities: MapEntity[],
   selectedEntityId: string | null,
   visual: VisualFlags,
+  stand: StandCtx, // 설 수 없는 칸(남쪽 침범 판정 재료) — 컴포넌트가 버전 memo selector 로 넘긴다(프레임마다 재계산 금지)
 ) {
   ctx.clearRect(0, 0, dims.w, dims.h);
   ctx.fillStyle = "#15161a";
@@ -265,8 +271,6 @@ function draw(
   if (entities.length > 0) {
     const lookup = makeEntityImageLookup(palette);
     const sorted = sortEntitiesForDraw(entities);
-    // 1×1 오브젝트 남쪽 침범 판정 컨텍스트(이동불가 + 충돌 footprint) — 프레임당 1회.
-    const stand = buildStandCtx(entities, blocked);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
@@ -387,7 +391,7 @@ function draw(
       // 선택된 오브젝트 — 정렬 바닥선(요청서 R2). 루프 뒤에 그린다.
       if (sel && e.kind === "object") {
         const level = south ? south.level : "ok";
-        deferredOverlay = () => drawSortBaseline(ctx, e, cx, cy, hw, hh, cam.zoom, stand, level);
+        deferredOverlay = () => drawSortBaseline(ctx, e, cx, cy, hw, hh, cam, stand, level);
       }
       // 남쪽 침범 배지 — 미완성 배지와 같은 높이, 왼쪽(둘이 같이 뜰 수 있다). 항상 표시(오버레이 토글과 무관).
       if (south) {
@@ -439,7 +443,7 @@ function draw(
       }
     }
   }
-  if (deferredOverlay) (deferredOverlay as () => void)();
+  if (deferredOverlay) deferredOverlay();
 
   // 이동불가 셀 — 빨강 다이아몬드 오버레이. 엔티티 위에 그려 오브젝트 깔린 타일도 보이게(이동불가 표시 토글).
   if (visual.blocked && blocked.size > 0) {
@@ -524,6 +528,7 @@ export function CanvasGrid() {
   const entitiesVer = useEditorStore((s) => s.entitiesVer);
   const selectedEntityId = useEditorStore((s) => s.selectedEntityId);
   const visual = useEditorStore((s) => s.visual);
+  const stand = useEditorStore(selectStandCtx); // 엔티티·이동불가 버전이 바뀔 때만 새 객체
   const setCamera = useEditorStore((s) => s.setCamera);
 
   useEffect(() => {
@@ -780,7 +785,7 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual);
+    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual, stand);
   }, [
     dims,
     size,
@@ -796,6 +801,7 @@ export function CanvasGrid() {
     entitiesVer,
     selectedEntityId,
     visual,
+    stand,
   ]);
 
   return (

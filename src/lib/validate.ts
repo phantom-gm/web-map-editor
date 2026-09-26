@@ -1,6 +1,6 @@
 // 맵 검증 — export 전에 사용자에게 알릴 문제를 모은다. 순수 함수(렌더/스토어 비의존).
 import { parseCellKey, type CellKey } from "./cell";
-import { FACINGS, footprintWH, renderWH, type Facing, type MapEntity } from "../types/entity";
+import { entityLabel, FACINGS, footprintWH, renderWH, type Facing, type MapEntity } from "../types/entity";
 import { southIssues, southMessage } from "./southIntrusion";
 
 export interface MapValidation {
@@ -25,7 +25,7 @@ export function entityIssues(
   const facingSet = new Set<Facing>(FACINGS);
   const out: string[] = [];
   for (const e of entities) {
-    const at = `${e.kind}(${e.gx},${e.gy})`;
+    const at = entityLabel(e);
     if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) out.push(`${at}: 맵(${W}×${H}) 경계 밖`);
     if (e.kind === "portal") {
       if (!e.destMap) out.push(`${at}: 목적지 맵(destMap) 없음`);
@@ -145,7 +145,7 @@ export function entityWarnings(entities: MapEntity[]): string[] {
     const sh = Math.max(1, Math.round(rh * mul));
     if (fw < sw || fh < sh) {
       out.push(
-        `object(${e.gx},${e.gy}) "${e.name ?? ""}": 충돌 범위(${fw}×${fh})가 스프라이트(약 ${sw}×${sh}타일)보다 작습니다 — 그 칸만 막힙니다. 의도한 게 아니면 지면 점유(W×H)를 올리세요.`,
+        `${entityLabel(e)}: 충돌 범위(${fw}×${fh})가 스프라이트(약 ${sw}×${sh}타일)보다 작습니다 — 그 칸만 막힙니다. 의도한 게 아니면 지면 점유(W×H)를 올리세요.`,
       );
     }
   }
