@@ -9,6 +9,11 @@
   ],
   "entries": [
     {
+      "id": 10,
+      "name": "테스트용볏단",
+      "type": "Monster"
+    },
+    {
       "id": 101,
       "name": "엘드릭",
       "type": "Npc"
@@ -69,48 +74,158 @@
       "type": "Npc"
     },
     {
-      "id": 1000,
-      "name": "말벌",
+      "id": 113,
+      "name": "엘마",
+      "type": "Npc"
+    },
+    {
+      "id": 101000,
+      "name": "잎새슬라임",
       "type": "Monster"
     },
     {
-      "id": 1001,
-      "name": "사마귀",
+      "id": 101100,
+      "name": "자수정슬라임",
       "type": "Monster"
     },
     {
-      "id": 1002,
-      "name": "거미",
+      "id": 102000,
+      "name": "숲뿔토끼",
       "type": "Monster"
     },
     {
-      "id": 1003,
+      "id": 103000,
       "name": "볏단",
       "type": "Monster"
     },
     {
-      "id": 1004,
-      "name": "포포",
-      "type": "Monster"
-    },
-    {
-      "id": 1005,
+      "id": 104000,
       "name": "여우",
       "type": "Monster"
     },
     {
-      "id": 1006,
-      "name": "늑대",
+      "id": 104100,
+      "name": "은빛여우",
       "type": "Monster"
     },
     {
-      "id": 1007,
-      "name": "고블린",
+      "id": 105000,
+      "name": "돌턱두꺼비",
       "type": "Monster"
     },
     {
-      "id": 1008,
+      "id": 105100,
+      "name": "독두꺼비",
+      "type": "Monster"
+    },
+    {
+      "id": 106000,
+      "name": "숲고블린",
+      "type": "Monster"
+    },
+    {
+      "id": 106100,
       "name": "정예고블린",
+      "type": "Monster"
+    },
+    {
+      "id": 107000,
+      "name": "고블린전사",
+      "type": "Monster"
+    },
+    {
+      "id": 107100,
+      "name": "정예고블린전사",
+      "type": "Monster"
+    },
+    {
+      "id": 108000,
+      "name": "고블린마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 108100,
+      "name": "정예고블린마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 109000,
+      "name": "이끼돌골렘",
+      "type": "Monster"
+    },
+    {
+      "id": 901000,
+      "name": "잎새슬라임",
+      "type": "Monster"
+    },
+    {
+      "id": 901100,
+      "name": "자수정슬라임",
+      "type": "Monster"
+    },
+    {
+      "id": 902000,
+      "name": "숲뿔토끼",
+      "type": "Monster"
+    },
+    {
+      "id": 903000,
+      "name": "볏단",
+      "type": "Monster"
+    },
+    {
+      "id": 904000,
+      "name": "여우",
+      "type": "Monster"
+    },
+    {
+      "id": 904100,
+      "name": "은빛여우",
+      "type": "Monster"
+    },
+    {
+      "id": 905000,
+      "name": "돌턱두꺼비",
+      "type": "Monster"
+    },
+    {
+      "id": 905100,
+      "name": "독두꺼비",
+      "type": "Monster"
+    },
+    {
+      "id": 906000,
+      "name": "숲고블린",
+      "type": "Monster"
+    },
+    {
+      "id": 906100,
+      "name": "정예고블린",
+      "type": "Monster"
+    },
+    {
+      "id": 907000,
+      "name": "고블린전사",
+      "type": "Monster"
+    },
+    {
+      "id": 907100,
+      "name": "정예고블린전사",
+      "type": "Monster"
+    },
+    {
+      "id": 908000,
+      "name": "고블린마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 908100,
+      "name": "정예고블린마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 909000,
+      "name": "이끼돌골렘",
       "type": "Monster"
     }
   ]
