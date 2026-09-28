@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { tilesFromStored } from "../lib/palette";
 import { isProjectFile } from "../lib/projectIO";
+import { driftMessage, pendingDrift } from "../lib/exportDrift";
 import { entityIssues } from "../lib/validate";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fsaAvailable, saveProject, openProjectViaPicker, resetFileHandle, currentFileName } from "../lib/projectFile";
@@ -78,8 +79,11 @@ export function FileMenu() {
     if (issues.length > 0) {
       const head = issues.slice(0, 8).map((s) => "• " + s).join("\n");
       const more = issues.length > 8 ? `\n…외 ${issues.length - 8}건` : "";
-      if (!window.confirm(`미완성 엔티티 ${issues.length}건 — 이대로 저장하면 게임 변환 시 거부됩니다:\n${head}${more}\n\n그대로 저장할까요?`)) return;
+      if (!window.confirm(`저장 전 검증 ${issues.length}건 — 이대로 저장하면 게임 변환·빌드가 거부합니다:\n${head}${more}\n\n그대로 저장할까요?`)) return;
     }
+    // 에디터 밖에서 고친 파생값(게임 쪽 json 손수정)이 이 저장으로 되돌아가는가 — 열 때 기억한 것 중 아직 바뀌게 될 것만.
+    const drift = pendingDrift(st.loadDrift, st.entities, st.palette);
+    if (drift.length > 0 && !window.confirm(`${driftMessage(drift)}\n\n그대로 저장할까요?`)) return;
     const json = JSON.stringify(useEditorStore.getState().exportProject(), null, 2);
     try {
       const name = await saveProject(json, suggestedName(), forceNew);

@@ -8,6 +8,7 @@ import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { parseRegistry, resolveTile, type TileRegistry, type RegStatus } from "../lib/registry";
 import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcClass";
 import { exportEntities } from "../lib/entityExport";
+import { exportDrift, type DriftItem } from "../lib/exportDrift";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
 import { PROJECT_TYPE, PROJECT_VERSION, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
@@ -153,6 +154,7 @@ export interface EditorState {
   entities: Entities;
   entitiesVer: number;
   objectDefaults: Record<string, ObjectTweaks>; // RUID → 마지막 저작값(세션 한정, 요청서 R3)
+  loadDrift: DriftItem[]; // 파일을 연 순간의 "에디터 밖에서 고친 파생값" — 저장 직전 확인용(세션 한정, lib/exportDrift)
   selectedEntityId: string | null;
 
   visual: VisualFlags; // 편집 오버레이 표시 여부 (격자/이동불가/점유)
@@ -234,6 +236,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   entities: [],
   entitiesVer: 0,
   objectDefaults: {},
+  loadDrift: [],
   selectedEntityId: null,
   visual: { grid: true, blocked: true, footprint: true },
   dirty: false,
@@ -242,7 +245,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redoStack: [],
 
   // 저장 완료 표시 — dirty 기준점 리셋(resetNonce 증가로 App 구독이 dirty 해제).
-  markSaved: () => set((s) => ({ resetNonce: s.resetNonce + 1 })),
+  // 저장한 파일은 파생값이 저작값에서 다시 만들어졌으므로 열 때의 손수정 목록도 끝난다.
+  markSaved: () => set((s) => ({ resetNonce: s.resetNonce + 1, loadDrift: [] })),
 
   setMapName: (n) => set({ mapName: n }),
   setSize: (w, h) =>
@@ -682,6 +686,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         attributeBase: r.attributeBase,
         palette: merged,
         entities: r.entities.map(migrateEntity),
+        loadDrift: [], // blueprint 은 게임이 읽는 파일이 아니다(레거시 경로) — 손수정 대조 대상 아님
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         activeIdx: 0,
@@ -746,6 +751,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), indexMap[idx] ?? idx);
       s.blocked.clear();
       for (const [gx, gy] of p.blocked) s.blocked.add(cellKey(gx, gy));
+      const entities = (p.entities ?? []).map(migrateEntity); // 레거시 target* → dest* 하위호환
       return {
         mapName: p.map,
         size: p.size,
@@ -753,8 +759,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         staticLayer: p.staticLayer ?? emptyLayer(),
         attributeBase: p.attributeBase ?? emptyLayer(),
         palette: merged,
-        entities: (p.entities ?? []).map(migrateEntity), // 레거시 target* → dest* 하위호환
+        entities,
         entitiesVer: s.entitiesVer + 1,
+        // 에디터 밖에서 고친 파생값 — 열 때 한 번 대조해 둔다(저장 직전 FileMenu 가 아직 바뀌게 될 것만 확인받는다).
+        loadDrift: exportDrift(entities, merged),
         selectedEntityId: null,
         activeIdx: 0,
         groundVer: s.groundVer + 1,
@@ -780,6 +788,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         attributeBase: emptyLayer(),
         entities: [],
         entitiesVer: s.entitiesVer + 1,
+        loadDrift: [],
         selectedEntityId: null,
         camera: { x: 0, y: 0, zoom: 1 },
         groundVer: s.groundVer + 1,
