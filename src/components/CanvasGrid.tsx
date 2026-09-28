@@ -15,7 +15,8 @@ import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
 import { sortEntitiesForDraw, entityImageRect, entityPivot } from "../lib/entityGeom";
-import { baselineDyPx, judgeSouth, SOUTH_CELL_PX, type StandCtx } from "../lib/southIntrusion";
+import { baselineDyPx, isSouthCandidate, judgeSouth, SOUTH_CELL_PX, type StandCtx } from "../lib/southIntrusion";
+import { isSortGateTarget, sortGatePx } from "../lib/sortGate";
 import { selectStandCtx } from "../store/southSelectors";
 import { EntityInspector } from "./EntityInspector";
 
@@ -81,6 +82,54 @@ function drawSortBaseline(
   ctx.fillRect(cx + hw + 4, by - 8, tw + 8, 16);
   ctx.fillStyle = SOUTH_COLOR[level];
   ctx.fillText(txt, cx + hw + 8, by);
+  ctx.restore();
+}
+
+// 정렬 게이트 경계 색 — 종류색(오브젝트 금 · 포탈 보라)·남쪽 침범색(주황·빨강·하늘)과 겹치지 않는 분홍.
+const GATE_COLOR = "#ff79c6";
+
+/**
+ * 선택한 멀티셀 오브젝트의 **정렬 게이트 경계**(sortPadX 요청서 R3) — 게임이 캐릭터를 이 건물 앞/뒤로 보정하는 가로 범위의
+ * 좌우 끝을 세로선 두 개로(세로 길이 = 게이트 세로 범위). 이 선이 걷는 길 한가운데를 지나면 그 좌우 칸의 캐릭터끼리
+ * 앞뒤가 뒤집힌다 → sortPadX 로 선을 이동불가·덜 다니는 쪽으로 옮긴다. 패딩이 있으면 패딩 0 자리를 옅은 점선으로 같이 그린다.
+ * 산식은 lib/sortGate(게임 SortGateSpan 미러) 한 곳이 소유한다.
+ */
+function drawSortGate(ctx: CanvasRenderingContext2D, e: MapEntity, cx: number, cy: number, zoom: number, naturalWidth: number) {
+  const g = sortGatePx(e, naturalWidth);
+  if (!g) return;
+  const X = (v: number) => cx + v * zoom;
+  const top = cy + g.y0 * zoom;
+  const bottom = cy + g.y1 * zoom;
+  const vline = (x: number) => {
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+  };
+  ctx.save();
+  ctx.strokeStyle = GATE_COLOR;
+  if (g.pad > 0) {
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    vline(X(g.baseX0));
+    vline(X(g.baseX1));
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+  ctx.lineWidth = 2;
+  vline(X(g.x0));
+  vline(X(g.x1));
+  // 라벨 — 왼쪽 선 위쪽. 패딩을 타일 수로 읽게 한다(값 고르는 기준이 게임 depth_check (11) 칸 목록이라 칸 단위가 맞다).
+  const txt = g.pad > 0 ? `정렬 경계 · sortPadX ${g.pad} (좌우 ${g.pad}칸 넓힘)` : "정렬 경계 · sortPadX 0";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const tw = ctx.measureText(txt).width;
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.fillRect(X(g.x0) + 4, top, tw + 8, 15);
+  ctx.fillStyle = GATE_COLOR;
+  ctx.fillText(txt, X(g.x0) + 8, top + 2);
   ctx.restore();
 }
 
@@ -388,10 +437,15 @@ function draw(
 
       // 남쪽 침범 판정(요청서 R1) — 1×1 auto 오브젝트의 바닥선이 앞 칸 중심에 붙거나 넘었는가.
       const south = e.kind === "object" ? judgeSouth(e, stand) : null;
-      // 선택된 오브젝트 — 정렬 바닥선(요청서 R2). 루프 뒤에 그린다.
-      if (sel && e.kind === "object") {
+      // 선택된 오브젝트의 "게임이 앞뒤를 정하는 선" — 루프 뒤에 그린다(다른 스프라이트에 가리지 않게).
+      //   1×1(auto)은 정렬 바닥선(1×1 요청서 R2) · 멀티셀(auto)은 정렬 게이트 경계(sortPadX 요청서 R3) · above/below 는 없음(고정 평면).
+      //   ⚠ 두 선은 뜻이 다르다 — 1×1 은 바닥 y 가 곧 순서지만 멀티셀은 런타임이 게이트 안 캐릭터를 보정하므로 바닥선이 틀린 정보다.
+      if (sel && isSouthCandidate(e)) {
         const level = south ? south.level : "ok";
         deferredOverlay = () => drawSortBaseline(ctx, e, cx, cy, hw, hh, cam, stand, level);
+      } else if (sel && isSortGateTarget(e)) {
+        const nw = img?.naturalWidth ?? 0;
+        deferredOverlay = () => drawSortGate(ctx, e, cx, cy, cam.zoom, nw);
       }
       // 남쪽 침범 배지 — 미완성 배지와 같은 높이, 왼쪽(둘이 같이 뜰 수 있다). 항상 표시(오버레이 토글과 무관).
       if (south) {

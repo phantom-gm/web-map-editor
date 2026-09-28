@@ -5,6 +5,7 @@ import { makeEntityImageLookup } from "../lib/entityImage";
 import { TW } from "../lib/grid";
 import { judgeSouth, southMessage, RECOMMENDED_OFFSET_Y_PX, SAFE_OFFSET_Y_PX } from "../lib/southIntrusion";
 import { selectStandCtx } from "../store/southSelectors";
+import { isSortGateTarget } from "../lib/sortGate";
 import { NumberField } from "./NumberField";
 
 // 선택된 엔티티의 속성 편집 패널(캔버스 우상단 플로팅). 종류별 필드 표시.
@@ -239,6 +240,30 @@ export function EntityInspector() {
             value={entity.sortOffset ?? 0}
             onCommit={(v) => updateEntity(entity.id, { sortOffset: v || undefined })}
           />
+        </label>
+      )}
+
+      {/* 정렬 경계 패딩(sortPadX 요청서 R3) — 멀티셀·자동 레이어에서만 의미가 있다. 다른 오브젝트에 값이 들어 있으면 지울 수 있게 보여 준다. */}
+      {entity.kind === "object" && (isSortGateTarget(entity) || (entity.sortPadX ?? 0) !== 0) && (
+        <label className="ei-row">
+          <span>
+            정렬 경계 패딩 (sortPadX) — <b>1 = 타일 한 칸</b>씩 좌우로 넓힘, 0.5 단위 권장. 캐릭터를 이 건물 앞/뒤로 가르는 경계
+            (캔버스 분홍 세로선)가 걷는 길을 지나면 그 칸의 캐릭터끼리 앞뒤가 뒤집힌다 — 경계를 이동불가·덜 다니는 쪽으로 옮길 때만.
+            값은 게임 depth_check 검사 (11) 칸 목록을 보고 고른다(크게 줄수록 좋은 게 아니다).
+          </span>
+          <NumberField
+            className=""
+            value={entity.sortPadX ?? 0}
+            min={0}
+            step={0.5}
+            float
+            onCommit={(v) => updateEntity(entity.id, { sortPadX: v || undefined })}
+          />
+          {!isSortGateTarget(entity) && (
+            <div className="ei-warn ei-warn-watch" role="alert">
+              <span>1×1 이나 고정 레이어(항상 위/아래) 오브젝트는 정렬 경계가 없어 게임이 무시합니다 — 0 으로 두세요.</span>
+            </div>
+          )}
         </label>
       )}
 

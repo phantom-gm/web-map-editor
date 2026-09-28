@@ -58,12 +58,41 @@ export 의 `footprintCells`(DT_Walk 재료)도 같은 함수를 쓴다 — 맵 �
 같은 맵의 마지막 오브젝트 폴백) — 한 번 정한 값이 맵 전체에 일관되게 퍼지게. 요청서:
 `legend_of_light/docs/map/depth/260926_웹맵에디터_1x1_오브젝트_offset_요청.md`.
 
+## 멀티셀은 정렬 게이트 — `sortPadX` (2026-09-28, AA-4)
+
+멀티셀(지면 점유 2칸 이상 · auto 레이어) 오브젝트는 z 가 하나라, 게임은 **캐릭터 쪽** z 를 건물 주변에서 보정해 앞/뒤를 맞춘다.
+그 보정은 **정렬 게이트** 안에서만 건다 — 가로 = 스프라이트 중심 ± (그림 폭/2 + 반 타일 + `sortPadX` × 타일 폭).
+경계 안 칸의 캐릭터는 건물 앞으로 당겨지고 바로 바깥 칸은 원래 자리라, 경계가 **걷는 길**을 지나면 경계 안 뒤 칸 캐릭터가
+경계 밖 앞 칸 캐릭터를 통째로 덮는다(페른델 여관 입구 신고). 경계는 없앨 수 없고 옮길 수만 있다 — `sortPadX` 가 그 손잡이다.
+
+- **저작 필드**다(0 이상 · 0.5 단위 권장 · 기본 0). export 가 계산하지 않고 그대로 싣는다. 1×1·above/below 는 게임이 무시한다(검증 경고).
+  음수는 게임 빌드가 멈춘다(저장 확인창). 값은 게임 `depth_check` 검사 (11) 의 칸 목록을 보고 오브젝트마다 고른다 — 크게 줄수록 좋은 게 아니다.
+- 멀티셀 오브젝트를 선택하면 게이트 좌우 경계가 **분홍 세로선**으로(패딩이 있으면 패딩 0 자리를 옅은 점선으로 같이) 그려진다.
+  산식은 [`src/lib/sortGate.ts`](src/lib/sortGate.ts) 한 곳 — 게임 `IsoPlayerDepthLogic:SortGateSpan` 미러이고, 여관 실측값과 소수 6자리까지 같다.
+  1×1 을 선택하면 위 절의 정렬 바닥선이 나온다(두 선은 뜻이 다르다 — 멀티셀에 바닥선을 그리면 틀린 정보다).
+- 같은 RUID 를 새로 놓을 때 `sortPadX` 는 옮기지 않는다 — 그 자리 주변 길에 맞춘 값이다.
+
+## 저장이 게임 값을 조용히 바꾸지 않는다 (2026-09-28)
+
+게임이 읽는 파일(`legend_of_light/map/<맵>.json`)은 이 에디터의 프로젝트 파일 그 자체다. 그래서 두 가지를 지킨다.
+
+1. **무변경 저장은 무손실** — 저작 필드는 스프레드로 그대로, 파생 필드(scale·footprintCells·depthW/H·spriteW/H·offset·rotation)는
+   저작 필드에서 **다시 만들고 만들 값이 없으면 지운다**(offset 을 0 으로 되돌려도 옛 값이 남아 게임이 계속 밀린 자리에 그리던 버그).
+   offset 반올림은 정수 산술(1px = 8.75 천분의 일 world)이다 — 부동소수로 하면 .5 경계에서 뒤집혀 무변경 저장이 전 맵 offset 239개를 바꿨다.
+   실측: 게임 `map/ferendel.json` 불러오기→저장 = 엔티티 JSON 동일(`src/__tests__/exportRoundTrip.test.ts`).
+2. **에디터 밖 손수정은 확인받는다** — 게임 쪽이 json 의 파생 필드를 직접 고친 값(예: 판매대 `depthW 4`)은 저장 한 번에 저작값 기준으로
+   되돌아간다. 파일을 열 때 그 차이를 기억해 두고(`loadDrift`), 저장 직전에 아직 바뀌게 될 것만 "게임 값 → 저장 값 · 유지하려면 …" 으로
+   확인받는다(`src/lib/exportDrift.ts`). 사용자가 에디터에서 직접 바꾼 값은 대상이 아니다.
+
 ## 잠겨 있는 테스트
 
 - `src/__tests__/southIntrusion.test.ts` — 임계값(13/14~15/16)·대상(1×1 auto)·설 수 없는 칸·맵 밖 이웃 관대함
 - `src/__tests__/walkCells.test.ts` — export `footprintCells` ↔ 판정 컨텍스트 동치(DT_Walk 재료 단일 출처)
 - `src/__tests__/southSelectors.test.ts` — 버전 memo(참조 안정 · entitiesVer/blockedVer 무효화)
 - `src/__tests__/objectDefaults.test.ts` — RUID 별 마지막 저작값 기본 채움(옮기지 않는 필드 포함)
+- `src/__tests__/sortGate.test.ts` — 정렬 게이트 경계 ↔ 게임 여관 실측값(가로 소수 6자리 · 세로 0.003u) · 대상 판정
+- `src/__tests__/exportRoundTrip.test.ts` — 무변경 왕복 무손실 · 파생 필드 재계산/삭제 · offset 정확 반올림 · sortPadX 보존
+- `src/__tests__/exportDrift.test.ts` — 에디터 밖 손수정 감지(열 때 기준 · 유지 힌트 · 사용자 편집 제외)
 
 - `src/__tests__/entityGeom.test.ts` — `gameDepthZ` 가 위 식과 같은지 (4개 과거 버그 회귀 가드)
 - `src/__tests__/entityDrawOrder.test.ts` — 멀티셀 점유 위 엔티티가 위로 오는지
