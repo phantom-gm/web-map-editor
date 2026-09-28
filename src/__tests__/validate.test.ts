@@ -53,6 +53,27 @@ describe("validateMap — 1×1 오브젝트 남쪽 침범(요청서 R1)", () => 
   });
 });
 
+describe("validateMap — 정렬 경계 패딩 sortPadX(AA-4)", () => {
+  const base = { size: [20, 20] as [number, number], ground: new Map([[cellKey(0, 0), 0]]), blocked: new Set<`${number},${number}`>(), paletteCount: 1 };
+  const obj = (id: string, sortPadX: number, extra: object = {}) =>
+    ({ id, kind: "object", gx: 8, gy: 8, name: id, ruid: "r", tilesW: 3, tilesH: 2, sortPadX, ...extra }) as const;
+  const all = (v: { errors: string[]; warnings: string[] }) => [...v.errors, ...v.warnings].filter((m) => m.includes("sortPadX"));
+
+  it("멀티셀·자동 레이어의 0 이상 값은 문제없음", () => {
+    expect(all(validateMap({ ...base, entities: [obj("inn", 2), obj("half", 0.5)] }))).toHaveLength(0);
+  });
+  it("음수·숫자 아님은 errors — 게임 빌드가 멈춘다", () => {
+    const v = validateMap({ ...base, entities: [obj("neg", -1), obj("nan", Number.NaN)] });
+    expect(v.errors.filter((m) => m.includes("sortPadX"))).toHaveLength(2);
+    expect(v.errors.some((m) => m.includes("빌드가 멈춥니다"))).toBe(true);
+  });
+  it("1×1 이나 above/below 에 준 값은 warnings — 게임이 무시한다", () => {
+    const v = validateMap({ ...base, entities: [obj("one", 2, { tilesW: 1, tilesH: 1 }), obj("above", 2, { layer: "above" })] });
+    expect(v.warnings.filter((m) => m.includes("게임이 무시합니다"))).toHaveLength(2);
+    expect(v.errors.filter((m) => m.includes("sortPadX"))).toHaveLength(0);
+  });
+});
+
 describe("buildBlueprint 경계 클램프", () => {
   it("size 밖 ground/blocked 셀은 export 에서 제외", () => {
     const ground = new Map([

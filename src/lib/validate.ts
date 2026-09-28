@@ -2,6 +2,7 @@
 import { parseCellKey, type CellKey } from "./cell";
 import { entityLabel, FACINGS, footprintWH, renderWH, type Facing, type MapEntity } from "../types/entity";
 import { southIssues, southMessage } from "./southIntrusion";
+import { isSortGateTarget } from "./sortGate";
 
 export interface MapValidation {
   errors: string[]; // 좌표/팔레트가 어긋날 수 있는 문제 — export 전에 확인 권장
@@ -39,6 +40,10 @@ export function entityIssues(
       if (!e.ruid) out.push(`${at}: RUID 없음 (팔레트에서 등록된 스프라이트로 배치)`);
       else if (hasImage && !hasImage(e)) {
         out.push(`${at}: 팔레트 이미지 미해석 — scale 계산 불가(게임에서 네이티브 크기로 거대 배치됨). 같은 RUID/이름 타일을 팔레트에 복원하세요`);
+      }
+      // 정렬 경계 패딩 — 게임 build_map 이 음수에서 **빌드를 멈춘다**(런타임은 0 으로 방어만). 숫자가 아니면 변환기가 조용히 0 으로 본다.
+      if (e.sortPadX !== undefined && !(Number.isFinite(e.sortPadX) && e.sortPadX >= 0)) {
+        out.push(`${at}: 정렬 경계 패딩(sortPadX) ${String(e.sortPadX)} — 0 이상의 숫자여야 합니다(음수면 게임 빌드가 멈춥니다)`);
       }
     }
   }
@@ -137,7 +142,12 @@ export function southValidation(entities: MapEntity[], blocked: Set<CellKey>): M
 export function entityWarnings(entities: MapEntity[]): string[] {
   const out: string[] = [];
   for (const e of entities) {
-    if (e.kind !== "object" || e.blocks !== true) continue;
+    if (e.kind !== "object") continue;
+    // 정렬 경계 패딩이 들어갈 자리가 없다 — 1×1·above/below 는 게임에 게이트가 없어 값이 무시된다(저장은 되지만 효과 0).
+    if ((e.sortPadX ?? 0) > 0 && !isSortGateTarget(e)) {
+      out.push(`${entityLabel(e)}: 정렬 경계 패딩(sortPadX ${e.sortPadX})은 멀티셀·자동 레이어 오브젝트에만 적용됩니다 — 게임이 무시합니다. 0 으로 두세요.`);
+    }
+    if (e.blocks !== true) continue;
     const [fw, fh] = footprintWH(e);
     const [rw, rh] = renderWH(e);
     const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;

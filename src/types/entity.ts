@@ -57,6 +57,13 @@ export interface MapEntity {
   //   |값|≥10 이면 한 줄 이상 넘어 다른 행 오브젝트와의 앞뒤도 뒤집음(주의).
   sortOffset?: number;
 
+  // 정렬 게이트 가로 저작 패딩(AA-4, 2026-09-28) — 멀티셀·auto 오브젝트에서 게임이 "캐릭터를 건물 앞/뒤로 보정하는" 가로 범위를
+  //   좌우 양쪽으로 sortPadX × 타일 폭(64px · 게임 2.56u)만큼 넓혀, 그 **경계가 걷는 길을 지나지 않게 옮긴다**.
+  //   0 이상(음수면 게임 빌드가 멈춘다) · 0.5 단위 권장 · 기본 0(= 지금과 같다). 1×1·above/below 는 게임이 무시한다(게이트가 없다).
+  //   **저작 필드**다 — export 가 계산하지 않고 그대로 싣는다. 값은 게임 depth_check 검사 (11) 의 칸 목록을 보고 오브젝트마다 고른다.
+  //   요청서: legend_of_light/docs/map/depth/260928_웹맵에디터_sortPadX_요청.md · 게임 IsoPlayerDepthLogic:SortGateSpan.
+  sortPadX?: number;
+
   // object 전용 게임 계약 필드 — export 시 채워진다(라이브 저장은 blocks 만).
   blocks?: boolean; // 이동 차단. 오브젝트는 기본 차단(관통 금지) — 명시적 false 만 통과 허용.
   footprintCells?: [number, number][]; // 앵커(gx,gy) 상대 오프셋 목록. export 계산값(차단 시, 포탈 셀 제외).

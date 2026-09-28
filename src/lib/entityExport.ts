@@ -1,7 +1,13 @@
 // object 엔티티를 게임 변환기(convert_map.cjs) 계약에 맞춰 export 형태로 보강한다.
-//  - scale: 스프라이트 배율 (게임이 네이티브 크기로 배치해 거대해지는 버그 방지)
-//  - footprintCells: 충돌(blocks) 시 앵커 상대 오프셋 목록
-// 라이브 상태(store)는 blocks 만 갖고, scale/footprintCells 는 tilesW/tilesH·이미지에서 export 시 계산.
+//
+// 필드는 두 부류다 — 섞으면 "무변경 저장이 게임을 바꾸는" 사고가 난다:
+//   ① **저작 필드**(사람이 에디터에서 정한 값): tilesW/H · baseW/H · scaleMul · offsetX/Y · rotationDeg · blocks · layer ·
+//      sortOffset · sortPadX · flipX … — export 는 **건드리지 않고 스프레드로 그대로 싣는다**. 화이트리스트로 바꾸려면 이 목록을
+//      전부 넣을 것(게임 쪽이 새로 배선한 필드가 조용히 사라진다 — sortPadX 요청서 R1).
+//   ② **파생 필드**(①에서 계산 — 게임 변환기가 읽는 것): scale · footprintCells · depthW/H · spriteW/H · offset · rotation.
+//      항상 ①에서 **다시 만들고, 만들 값이 없으면 지운다**. 불러온 파일의 옛 값이 남으면 게임은 그 옛 값을 읽는다
+//      (예: offsetX/Y 를 0 으로 되돌려도 옛 `offset` 이 남아 게임이 계속 밀린 자리에 그렸다 — 2026-09-28 실측).
+//      예외는 scale 하나 — 팔레트 이미지가 없으면 계산할 수 없어 마지막 값을 둔다(없애면 게임이 네이티브 크기로 거대 배치한다).
 import { footprintWH, renderWH, type MapEntity } from "../types/entity";
 import { makeEntityImageLookup } from "./entityImage";
 import type { PaletteTile } from "./palette";
@@ -9,11 +15,37 @@ import { blockingFootprintCells, portalCellSet } from "./walkCells";
 
 // 게임 iso 타일 폭(px/셀). 에디터 미리보기(TW=64)와 달리 게임 빌드는 56px 타일을 쓴다.
 // scale = 목표 footprint 픽셀(게임) / 스프라이트 네이티브 픽셀.
-const GAME_TILE_PX = 56;
+export const GAME_TILE_PX = 56;
 // 에디터 화면 px(TW=64/타일) → 게임 world 단위(0.56 world/타일) 변환. offset 을 같은 시각량으로 맞춘다.
 const EDITOR_TILE_PX = 64;
-const GAME_TILE_WORLD = 0.56;
-const PX_TO_WORLD = GAME_TILE_WORLD / EDITOR_TILE_PX; // ≈ 0.00875
+// offset 을 **천분의 일 world** 로 셀 때 1px 가 몇인가 = 0.56 × 1000 / 64 = 8.75 — 정수 나눗셈이라 **정확**하다.
+//   ⚠ `px × (0.56/64) × 1000` 로 계산하지 말 것 — 0.56/64 가 부동소수로 부정확해서 .5 경계(짝수 px 의 절반값)에서 반올림이
+//     뒤집힌다. 실측(2026-09-28): 무변경 저장이 전 맵 offset 239개를 −0.087 → −0.088 로 바꿨다(옛 저장값은 정확 산술과 670/674 일치).
+const GAME_TILE_MILLI = 560; // = 게임 타일 폭 0.56 world × 1000
+const OFFSET_MILLI_PER_PX = GAME_TILE_MILLI / EDITOR_TILE_PX; // 8.75 (정확)
+
+/**
+ * object 스프라이트 배율(export `scale`) — 이미지 렌더 기준폭(renderWH=baseW) × 배율(scaleMul) ÷ 네이티브 폭, 소수 셋째 자리.
+ *   이미지가 없으면(naturalWidth ≤ 0) null. export 와 정렬 게이트 표시(sortGate)가 같은 값을 써야 해서 여기 한 곳에 둔다.
+ *   ⚠ 식의 연산 순서를 바꾸지 말 것 — 저장된 값과 한 비트라도 달라지면 무변경 저장이 scale 을 흔든다.
+ */
+export function objectExportScale(e: MapEntity, naturalWidth: number): number | null {
+  if (!(naturalWidth > 0)) return null;
+  const [fw] = renderWH(e);
+  const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
+  const scale = ((fw * GAME_TILE_PX) / naturalWidth) * mul;
+  return Math.round(scale * 1000) / 1000;
+}
+
+/** 에디터 offset(px, 오른쪽+/아래+) → export offset(world 천분의 일 반올림, 오른쪽+/위+). 둘 다 0 이면 null. */
+export function exportOffset(offsetX: number | undefined, offsetY: number | undefined): [number, number] | null {
+  const ox = offsetX ?? 0;
+  const oy = offsetY ?? 0;
+  if (ox === 0 && oy === 0) return null;
+  // `|| 0` — 한 축만 0 일 때 y 부호 반전이 만드는 −0 을 +0 으로(파일엔 어차피 0 으로 써지지만 메모리 비교가 갈린다).
+  const milli = (v: number) => (Math.round(v * OFFSET_MILLI_PER_PX) || 0) / 1000;
+  return [milli(ox), milli(-oy)];
+}
 
 /** object 엔티티에 scale/footprintCells 부착(그 외 kind·이미지 없음은 원본 그대로). */
 export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): MapEntity[] {
@@ -45,18 +77,15 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
     //   여기서는 변환기 계약대로 앵커 상대 오프셋으로만 바꾼다.
     if (e.blocks === true) {
       out.footprintCells = blockingFootprintCells(e, portalCells).map(([gx, gy]) => [gx - e.gx, gy - e.gy] as [number, number]);
+    } else {
+      delete out.footprintCells; // 충돌을 끈 뒤 남은 옛 목록 — 변환기는 blocks 로 거르지만 파생값은 저작 상태와 같아야 한다
     }
 
     // scale — 이미지 렌더 기준폭(renderWH=baseW) × 사용자 배율(scaleMul). 종횡비 보존(균일).
     //   ⚠ 점유 footprintWH 가 아닌 renderWH — W×H(점유) 조절이 게임 스프라이트 크기에 영향 없도록.
-    const img = imageOf(e);
-    const nw = img?.naturalWidth ?? 0;
-    if (nw > 0) {
-      const [fw] = renderWH(e);
-      const mul = e.scaleMul && e.scaleMul > 0 ? e.scaleMul : 1;
-      const scale = ((fw * GAME_TILE_PX) / nw) * mul;
-      out.scale = Math.round(scale * 1000) / 1000;
-    }
+    //   이미지가 없으면 계산할 수 없어 **마지막 값을 둔다**(머리 주석 ②의 유일한 예외 — 검증이 이미지 미해석을 따로 경고한다).
+    const scale = objectExportScale(e, imageOf(e)?.naturalWidth ?? 0);
+    if (scale !== null) out.scale = scale;
 
     // depthW/depthH — 게임 y-정렬(깊이)용 **지면 점유 셀 수**. 저작값(tilesW/tilesH)을 그대로 내보낸다.
     //   계약: docs/map/depth/웹맵에디터_깊이footprint_export_요청.md (게임 파이프라인 요청)
@@ -82,17 +111,14 @@ export function exportEntities(entities: MapEntity[], palette: PaletteTile[]): M
       out.spriteH = Math.round(fh * mul * 1000) / 1000;
     }
 
-    // offset — 에디터 화면 px(오른쪽+/아래+) → 게임 world(오른쪽+/위+). y 부호 반전.
-    const oxPx = e.offsetX ?? 0, oyPx = e.offsetY ?? 0;
-    if (oxPx !== 0 || oyPx !== 0) {
-      out.offset = [
-        Math.round(oxPx * PX_TO_WORLD * 1000) / 1000,
-        Math.round(-oyPx * PX_TO_WORLD * 1000) / 1000,
-      ];
-    }
+    // offset — 에디터 화면 px(오른쪽+/아래+) → 게임 world(오른쪽+/위+). y 부호 반전. 0 으로 되돌렸으면 **지운다**(옛 값 잔존 금지).
+    const offset = exportOffset(e.offsetX, e.offsetY);
+    if (offset) out.offset = offset;
+    else delete out.offset;
 
-    // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용.
-    if (e.rotationDeg && e.rotationDeg !== 0) out.rotation = e.rotationDeg;
+    // rotation — 기울기(도) 그대로. build_map 이 Z축 회전(Quaternion)으로 적용. 0 으로 되돌렸으면 **지운다**.
+    if (e.rotationDeg) out.rotation = e.rotationDeg;
+    else delete out.rotation;
 
     // layer — 플레이어 대비 렌더 평면. auto(기본)=동적 z 정렬(작은 오브젝트에만 신뢰 가능).
     //   above/below=**고정 평면**(항상 위/아래). 여러 깊이 줄에 걸치는 큰 구조물(다리·큰 건물)은

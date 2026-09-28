@@ -17,7 +17,8 @@ import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, typ
 //   "한 번 놓고 복사" 였고, 침엽수_A 10px · 침엽수_B 15px 처럼 같은 종류가 갈리는 것은 배치마다 손으로 다시 맞춰서다.
 //   값이 한 번 정해지면 맵 전체에 일관되게 퍼지게 한다. 기억의 출처는 둘 — ① 이 세션에서 저작(updateEntity)한 값,
 //   ② 없으면 지금 맵에서 같은 RUID 로 **가장 나중에 놓인** 오브젝트의 값. 프로젝트 파일에는 쓰지 않는다(②가 재로드를 덮는다).
-//   ⚠ sortOffset(이웃 상대값)·flipX(배치마다 다른 연출)·이름·좌표는 에셋 성질이 아니라 옮기지 않는다.
+//   ⚠ sortOffset(이웃 상대값)·sortPadX(그 자리 주변 길에 맞춘 정렬 경계)·flipX(배치마다 다른 연출)·이름·좌표는
+//     에셋 성질이 아니라 옮기지 않는다 — 같은 여관을 다른 광장에 놓으면 경계를 옮길 방향부터 다르다.
 export type ObjectTweaks = Pick<MapEntity, "offsetX" | "offsetY" | "scaleMul" | "rotationDeg" | "tilesW" | "tilesH" | "blocks" | "layer">;
 export const OBJECT_TWEAK_KEYS: ReadonlyArray<keyof ObjectTweaks> = [
   "offsetX", "offsetY", "scaleMul", "rotationDeg", "tilesW", "tilesH", "blocks", "layer",

@@ -59,12 +59,13 @@ describe("objectDefaults (R3)", () => {
     expect(c.layer).toBe("below");
   });
 
-  it("sortOffset·flipX·이름·좌표는 옮기지 않는다 — 에셋 성질이 아니다", () => {
+  it("sortOffset·sortPadX·flipX·이름·좌표는 옮기지 않는다 — 에셋 성질이 아니다", () => {
     const a = place(3, 3);
-    useEditorStore.getState().updateEntity(a.id, { offsetY: 11, sortOffset: 2, flipX: true, name: "가로등(왼쪽)" });
+    useEditorStore.getState().updateEntity(a.id, { offsetY: 11, sortOffset: 2, sortPadX: 2, flipX: true, name: "가로등(왼쪽)" });
     const b = place(7, 7);
     expect(b.offsetY).toBe(11);
     expect(b.sortOffset).toBeUndefined();
+    expect(b.sortPadX).toBeUndefined();
     expect(b.flipX).toBeUndefined();
     expect(b.name).toBe("가로등_A");
     expect([b.gx, b.gy]).toEqual([7, 7]);
