@@ -1,0 +1,96 @@
+import { useState } from "react";
+import { useEditorStore } from "../store/editorStore";
+import { useGamePreviewStore } from "../store/gamePreviewStore";
+import { useWorkspaceSession } from "../lib/gameWorkspace";
+import { getComparisonCounts, type GameComparisonFilters } from "../lib/gameComparison";
+import { previewWorldToScreen } from "../lib/gamePreview";
+import { cellToScreen } from "../lib/grid";
+
+export function GameComparisonPanel() {
+  const view = useGamePreviewStore();
+  const gameSync = useEditorStore(s => s.gameSync);
+  const loading = useWorkspaceSession(s => s.loading);
+  if (!gameSync) return null;
+  const current = view.scene?.baselineId === gameSync.baselineId;
+  const ready = current && view.status === "ready" && !!view.comparison && !!view.comparisonBaseline;
+  const enter = () => {
+    const editor = useEditorStore.getState();
+    editor.clearGameSelection(); editor.setTool("cursor");
+    view.setComparisonEnabled(true);
+  };
+  return <div className="game-comparison-controls" aria-label="원본과 수정본 비교">
+    {!view.comparisonEnabled ? <button disabled={loading || !current || view.status !== "ready"} onClick={enter}>원본과 비교</button> : <>
+      <strong>원본 비교</strong>
+      <div className="comparison-modes" role="group" aria-label="비교 화면">
+        {([["original", "원본 보기"], ["edited", "수정본 보기"], ["changes", "변경 강조"]] as const).map(([mode, label]) =>
+          <button key={mode} aria-pressed={view.comparisonMode === mode} disabled={!ready} onClick={() => view.setComparisonMode(mode)}>{label}</button>)}
+      </div>
+      <button className="comparison-exit" onClick={() => view.setComparisonEnabled(false)}>비교 닫고 편집</button>
+      <span className="comparison-hint" role="status">{view.status === "error" ? "비교를 불러오지 못했습니다. 안내를 확인하세요."
+        : !ready ? "원본과 수정본을 읽는 중…" : "보기 전용 · 드래그로 화면 이동 · 휠로 확대"}</span>
+    </>}
+  </div>;
+}
+
+interface ChangeRow { key: string; label: string; kind: keyof GameComparisonFilters; cell?: [number, number]; position?: [number, number, number]; originalPosition?: [number, number, number] }
+export function GameComparisonSidebar() {
+  const view = useGamePreviewStore();
+  const [limit, setLimit] = useState(80);
+  const scene = view.scene, baseline = view.comparisonBaseline, comparison = view.comparison;
+  const ready = view.status === "ready" && scene && baseline && comparison;
+  if (!ready) return <section className="comparison-sidebar" aria-label="변경 내역">
+    <h3>변경 내역</h3><p>{view.error || "원본과 수정본을 읽는 중…"}</p>
+    <button onClick={() => view.setComparisonEnabled(false)}>비교 닫고 편집</button>
+  </section>;
+  const counts = getComparisonCounts(comparison);
+  const currentObjects = new Map(scene.objects?.map(object => [object.entityId, object]));
+  const originalObjects = new Map(baseline.scene.objects?.map(object => [object.entityId, object]));
+  const rows: ChangeRow[] = [
+    ...comparison.objects.moved.map(item => ({ key: "move-" + item.entityId, label: "이동 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.to, originalPosition: item.from })),
+    ...comparison.objects.added.map(item => ({ key: "add-" + item.entityId, label: "추가 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
+    ...comparison.objects.removed.map(item => ({ key: "remove-" + item.entityId, label: "삭제 · " + (originalObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
+    ...comparison.ground.changedCells.map(item => ({ key: "ground-" + item.gx + "," + item.gy, label: "바닥 " + (item.beforeRuid === null ? "추가" : item.afterRuid === null ? "삭제" : "변경") + " · " + item.gx + ", " + item.gy, kind: "ground" as const, cell: [item.gx, item.gy] as [number, number] })),
+    ...comparison.blocked.added.map(cell => ({ key: "block-add-" + cell.join(","), label: "이동불가 추가 · " + cell.join(", "), kind: "blocked" as const, cell })),
+    ...comparison.blocked.removed.map(cell => ({ key: "block-remove-" + cell.join(","), label: "이동불가 해제 · " + cell.join(", "), kind: "blocked" as const, cell })),
+  ];
+  const visible = rows.filter(row => view.comparisonFilters[row.kind]);
+  const focus = (row: ChangeRow) => {
+    const editor = useEditorStore.getState();
+    const rect = document.querySelector(".canvas-wrap")?.getBoundingClientRect();
+    if (!rect) return;
+    const position = view.comparisonMode === "original" ? row.originalPosition ?? row.position : row.position;
+    const point = row.cell ? cellToScreen(...row.cell, editor.camera)
+      : previewWorldToScreen(position!, scene, editor.camera);
+    editor.setCamera({ ...editor.camera, x: editor.camera.x + rect.width / 2 - point[0], y: editor.camera.y + rect.height / 2 - point[1] });
+  };
+  return <section className="comparison-sidebar" aria-label="변경 내역">
+    <h3>변경 내역</h3>
+    <p className="comparison-basis">이 작업을 시작할 때 가져온 게임 원본과 비교합니다.</p>
+    <div className="comparison-totals" aria-label="변경 수량">
+      <label><input type="checkbox" checked={view.comparisonFilters.ground} onChange={e => view.setComparisonFilter("ground", e.target.checked)} />바닥 수정 {counts.groundChangedCells}칸</label>
+      <small>주변 타일 재구성 {counts.groundRepackedCells}칸</small>
+      <label><input type="checkbox" checked={view.comparisonFilters.objects} onChange={e => view.setComparisonFilter("objects", e.target.checked)} />오브젝트</label>
+      <small>이동 {counts.objectsMoved} · 추가 {counts.objectsAdded} · 삭제 {counts.objectsRemoved}</small>
+      <label><input type="checkbox" checked={view.comparisonFilters.blocked} onChange={e => view.setComparisonFilter("blocked", e.target.checked)} />이동불가</label>
+      <small>추가 {counts.blockedAdded} · 해제 {counts.blockedRemoved}</small>
+    </div>
+    <details className="comparison-legend">
+      <summary>색상·표시 안내</summary>
+      <div className="comparison-legend-items">
+        <span className="compare-blue">파랑 · 직접 바닥 수정</span>
+        <span className="compare-amber">주황 · 이동 / 주변 재구성</span>
+        <span className="compare-green">초록 · 추가</span>
+        <span className="compare-red">빨강 · 삭제 / 해제</span>
+        <small>변경 강조에서 잔상·화살표·색 테두리로 표시합니다.</small>
+      </div>
+    </details>
+    {!rows.length ? <p className="comparison-empty">원본과 배치·이동불가 변경이 없습니다.</p> : <>
+      <p className="comparison-basis">항목을 누르면 해당 위치로 이동합니다.</p>
+      <div className="comparison-change-list">
+        {visible.slice(0, limit).map(row => <button key={row.key} onClick={() => focus(row)} title={row.label}>{row.label}</button>)}
+        {!visible.length && <p>표시할 종류를 선택하세요.</p>}
+        {visible.length > limit && <button onClick={() => setLimit(limit + 80)}>변경 {visible.length - limit}곳 더 보기</button>}
+      </div>
+    </>}
+  </section>;
+}

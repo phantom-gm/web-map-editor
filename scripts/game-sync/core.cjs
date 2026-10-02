@@ -385,7 +385,9 @@ function packCells(cells, catalog) {
   return result.sort((a, b) => a.gy - b.gy || a.gx - b.gx);
 }
 function inspectSyncProject(project, options) {
-  const state = loadBaseline(project, options);
+  return inspectLoadedProject(project, loadBaseline(project, options));
+}
+function inspectLoadedProject(project, state) {
   const { root, manifest, baseline } = state;
   verifySources(root, manifest);
   if (stable(protectedState(project)) !== stable(protectedState(baseline))) {
@@ -530,7 +532,9 @@ function previewMapSprites(mb, blocks) {
   return { sprites, warnings, spriteCount, hiddenSpriteCount, unsupportedSpriteCount: unsupportedSprites.length, unsupportedSprites };
 }
 function previewEditedProject(project, options) {
-  const checked = inspectSyncProject(project, options);
+  return previewFromChecked(project, inspectSyncProject(project, options));
+}
+function previewFromChecked(project, checked) {
   const { mb, deps } = buildCandidateMap(project, checked);
   const { root, manifest, affected, replacements, report } = checked;
   const blocks = manifest.blocks.filter(b => !affected.includes(b)).concat(replacements);
@@ -550,6 +554,46 @@ function previewEditedProject(project, options) {
       hiddenSpriteCount: scene.hiddenSpriteCount, unsupportedSpriteCount: scene.unsupportedSpriteCount,
       unsupportedSprites: scene.unsupportedSprites, previewMode: 'static-map', runtimeVerified: false }
   };
+}
+// Original and current previews share one scene encoder; neither path creates files.
+function previewBaselineProject({ mapName, baselineId } = {}, options) {
+  validMapName(mapName);
+  const state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, options);
+  const checked = inspectLoadedProject(state.baseline, state);
+  const scene = previewFromChecked(state.baseline, checked);
+  return {
+    version: VERSION, baselineId: state.manifest.baselineId, mapName: state.manifest.mapName,
+    size: clone(state.baseline.size), groundOrigin: clone(state.baseline.groundOrigin), scene,
+    ground: sortedKeys(checked.before).map(k => [...coord(k), checked.before.get(k)]),
+    blocked: sortedKeys(checked.walk.before).map(coord)
+  };
+}
+function comparisonFromChecked(checked) {
+  const { manifest, before, after, affected, replacements, dirty, objects, walk } = checked;
+  const changed = new Set(changesBetween(before, after));
+  const block = b => ({ name: b.name || 'Tile_' + b.gx + '_' + b.gy, gx: b.gx, gy: b.gy, size: b.n, ruid: b.ruid });
+  return {
+    version: VERSION, baselineId: manifest.baselineId, mapName: manifest.mapName,
+    ground: {
+      changedCells: sortedKeys(changed).map(k => { const [gx, gy] = coord(k); return { gx, gy, beforeRuid: before.get(k) ?? null, afterRuid: after.get(k) ?? null }; }),
+      repackedCells: sortedKeys(new Set([...dirty].filter(k => !changed.has(k)))).map(coord),
+      affectedBeforeBlocks: affected.map(block), replacementBlocks: replacements.map(block)
+    },
+    objects: {
+      // Editor IDs are stable across requests; generated native GUIDs intentionally are not.
+      moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...e.position] })),
+      added: objects.added.map(e => ({ entityId: e.entityId, prototypeId: e.prototypeId, position: [...e.position] })),
+      removed: objects.removed.map(e => ({ entityId: e.entityId, position: [...e.record.descriptor.sourcePosition] }))
+    },
+    blocked: {
+      added: sortedKeys(new Set([...walk.after].filter(k => !walk.before.has(k)))).map(coord),
+      removed: sortedKeys(new Set([...walk.before].filter(k => !walk.after.has(k)))).map(coord)
+    }
+  };
+}
+function compareEditedProject(project, options) {
+  const checked = inspectSyncProject(project, options);
+  return { scene: previewFromChecked(project, checked), comparison: comparisonFromChecked(checked) };
 }
 function validateStorageRoot(target, gameRoot) { return outsideGame(target, gamePath(gameRoot)); }
 
@@ -605,6 +649,6 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const reportPath = writeFile(candidateDir, 'report.json', jsonBytes(report), root);
   return { candidateDir, mapPath, reportPath, report };
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, validateStorageRoot,
+module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

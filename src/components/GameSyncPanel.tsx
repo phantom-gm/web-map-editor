@@ -16,6 +16,8 @@ interface SyncResult extends WorkspaceReceipt {
   candidateDir?: string;
   resumed?: boolean;
 }
+import { GameComparisonPanel } from "./GameComparisonPanel";
+
 export function GameSyncPanel() {
   const [maps, setMaps] = useState<string[]>([]);
   const [selected, setSelected] = useState("ferendel");
@@ -131,15 +133,16 @@ export function GameSyncPanel() {
         <button onClick={() => setConfirmation(null)}>취소</button>
       </div>}
       {linked && <div className="game-sync-view">
-        <label><input type="checkbox" checked={preview.showScene} onChange={e => preview.setShowScene(e.target.checked)} />게임 배치 보기</label>
+        <label><input type="checkbox" checked={preview.showScene} disabled={preview.comparisonEnabled} onChange={e => preview.setShowScene(e.target.checked)} />게임 배치 보기</label>
         <label><input type="checkbox" checked={preview.showOverlays} onChange={e => preview.setShowOverlays(e.target.checked)} />편집 표시</label>
         <button onClick={preview.refresh} disabled={preview.status === "loading" || locked}>이미지 다시 읽기</button>
         <span>{currentPreview && preview.status === "loading" ? "게임 배치·이미지 읽는 중…" :
           currentPreview && preview.status === "ready" ? "바닥·건물·장식 실제 배치" : "미리보기 준비 중"}</span>
         {currentPreview && preview.missingImages > 0 && <strong className="game-sync-error">이미지 미해석 {preview.missingImages}종</strong>}
       </div>}
+      {linked && <GameComparisonPanel />}
       {counts && <div className="game-sync-message">
-        {counts.groundCells.toLocaleString()}칸 / 타일 바닥 {counts.groundEntities.toLocaleString()}개
+        {preview.comparisonEnabled && "현재 작업 · "}{counts.groundCells.toLocaleString()}칸 / 타일 바닥 {counts.groundEntities.toLocaleString()}개
         {" · "}4×4 {counts.bySize["4"] ?? 0} / 2×2 {counts.bySize["2"] ?? 0} / 1×1 {counts.bySize["1"] ?? 0}
         {currentReport?.exactMapBytes === true && currentReport?.unchanged !== false && " · 원본 맵과 완전 일치"}
         {currentPreview && preview.scene?.objects && ` · 오브젝트 ${preview.scene.objects.length}개`}

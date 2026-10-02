@@ -952,3 +952,30 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .game-object-inspector .object-tabs { padding: 0; margin: 8px 0; }
 .game-object-inspector .ei-actions { flex-wrap: wrap; }
 .game-object-inspector .ei-actions button { flex: 1 1 45%; }
+
+/* Original / edited comparison */
+.game-comparison-controls { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:5px 0; }
+.game-comparison-controls button, .comparison-sidebar button { color:#dfe8f4; background:#25323e; border:1px solid #52677d; border-radius:5px; padding:6px 9px; cursor:pointer; }
+.game-comparison-controls button:disabled { opacity:.45; cursor:default; }
+.comparison-modes { display:flex; gap:4px; }
+.comparison-modes button[aria-pressed="true"] { background:#31566b; border-color:#77d8ec; color:#ddfaff; }
+.game-comparison-controls .comparison-exit { border-color:#d2aa55; color:#ffe2a0; }
+.comparison-hint { font-size:11px; color:#b9ccda; }
+.comparison-sidebar { display:flex; flex-direction:column; height:100%; min-height:0; overflow-y:auto; padding:10px; box-sizing:border-box; gap:10px; color:#d8e5f0; }
+.comparison-sidebar > * { flex-shrink:0; }
+.comparison-sidebar h3 { font-size:14px; margin:0; }
+.comparison-basis, .comparison-empty { font-size:11px; line-height:1.5; margin:0; color:#bbcbda; }
+.comparison-empty { background:#233b37; border-radius:5px; padding:10px; color:#abdfbd; }
+.comparison-totals { display:flex; flex-direction:column; gap:5px; padding:9px; background:#212b37; border-radius:6px; font-size:12px; }
+.comparison-totals label { display:flex; align-items:center; gap:5px; }
+.comparison-totals small { padding-left:20px; font-size:11px; color:#aebdd0; }
+.comparison-totals input { accent-color:#77d8ec; }
+.comparison-legend { font-size:11px; line-height:1.5; }
+.comparison-legend summary { cursor:pointer; color:#b9ccda; }
+.comparison-legend summary:focus-visible { outline:2px solid #77d8ec; outline-offset:3px; border-radius:2px; }
+.comparison-legend-items { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+.comparison-legend small { color:#9dadc1; font-size:10px; }
+.compare-blue { color:#4dabf7; }.compare-amber { color:#f5b942; }.compare-green { color:#52d18b; }.compare-red { color:#f07178; }
+.comparison-change-list { display:flex; flex-direction:column; gap:5px; }
+.comparison-change-list button { flex:0 0 auto; text-align:left; overflow-wrap:anywhere; font-size:11px; line-height:1.4; }
+.comparison-view-badge { position:absolute; top:12px; right:12px; pointer-events:none; border:1px solid #658095; border-radius:6px; padding:8px 12px; background:#17242be8; color:#d7edf8; font-size:12px; }

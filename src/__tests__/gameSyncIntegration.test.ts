@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureEditorSnapshot, useEditorStore } from "../store/editorStore";
@@ -628,6 +628,186 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
         evidence.push(row);
         console.log("[atomic-group-roundtrip]", JSON.stringify(row));
       }
+    }, 90_000);
+  }
+
+  type CompareBlock = { name: string; gx: number; gy: number; size: number; ruid: string };
+  type Comparison = {
+    version: 1; baselineId: string; mapName: string;
+    ground: {
+      changedCells: { gx: number; gy: number; beforeRuid: string | null; afterRuid: string | null }[];
+      repackedCells: [number, number][]; affectedBeforeBlocks: CompareBlock[]; replacementBlocks: CompareBlock[];
+    };
+    objects: {
+      moved: { entityId: string; from: [number, number, number]; to: [number, number, number] }[];
+      added: { entityId: string; prototypeId: string; position: [number, number, number] }[];
+      removed: { entityId: string; position: [number, number, number] }[];
+    };
+    blocked: { added: [number, number][]; removed: [number, number][] };
+  };
+  type OriginalPreview = {
+    version: 1; baselineId: string; mapName: string; size: [number, number]; groundOrigin: [number, number];
+    scene: ObjectScene; ground: [number, number, string][]; blocked: [number, number][];
+  };
+  const comparisonCore = core as Core & {
+    previewBaselineProject(input: { mapName: string; baselineId: string }, options: Options): OriginalPreview;
+    compareEditedProject(project: ProjectFile, options: Options): { scene: ObjectScene; comparison: Comparison };
+  };
+  function directoryHashes(root: string): Record<string, string> {
+    const entries: [string, string][] = [];
+    const visit = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const file = join(directory, entry.name);
+        if (entry.isDirectory()) visit(file);
+        else entries.push([file, hash(file)]);
+      }
+    };
+    visit(root);
+    return Object.fromEntries(entries);
+  }
+  const differenceLengths = (comparison: Comparison) => [
+    comparison.ground.changedCells.length, comparison.ground.repackedCells.length,
+    comparison.ground.affectedBeforeBlocks.length, comparison.ground.replacementBlocks.length,
+    comparison.objects.moved.length, comparison.objects.added.length, comparison.objects.removed.length,
+    comparison.blocked.added.length, comparison.blocked.removed.length,
+  ];
+  for (const mapName of ["ferendelmotel", "ferendel", "ironhallmine"]) {
+    it(mapName + ": original/diff previews stay read-only and agree with mixed edited native output and undo", () => {
+      const synced = core.createSyncProject({ ...options(), mapName });
+      useEditorStore.getState().loadProject(synced.project, memoryTiles(synced.project));
+      const baseline = exportStore();
+      const link = { mapName, baselineId: baseline.gameSync!.baselineId };
+      // If a preview accidentally exports, it would have to create this unused destination.
+      const readOnlyOptions = { ...options(), outputRoot: join(runRoot, mapName + "-preview-must-not-write") };
+      const snapshotHashes = directoryHashes(synced.baselineDir);
+      const assertReadOnly = () => {
+        expect(existsSync(readOnlyOptions.outputRoot)).toBe(false);
+        expect(directoryHashes(synced.baselineDir)).toEqual(snapshotHashes);
+      };
+      const original = builder.read(join(gameRoot!, "map", mapName + ".map"));
+      expect(original.getTileMapMode()).toBe(1);
+      const originalPreview = comparisonCore.previewBaselineProject(link, readOnlyOptions);
+      expect(originalPreview).toMatchObject({ version: 1, ...link, size: baseline.size, groundOrigin: baseline.groundOrigin });
+      assertPreviewFile(originalPreview.scene, original);
+      expect(new Map(originalPreview.ground.map(([x, y, ruid]) => [cellKey(x, y), ruid])))
+        .toEqual(new Map(baseline.ground.map(([x, y, index]) => [cellKey(x, y), baseline.palette[index].ruid])));
+      expect(new Set(originalPreview.blocked.map(([x, y]) => cellKey(x, y))))
+        .toEqual(new Set(baseline.blocked.map(([x, y]) => cellKey(x, y))));
+      const noOp = comparisonCore.compareEditedProject(baseline, readOnlyOptions);
+      expect(noOp.comparison).toMatchObject({ version: 1, ...link });
+      expect(differenceLengths(noOp.comparison)).toEqual(Array(9).fill(0));
+      expect(noOp.scene.sprites).toEqual(originalPreview.scene.sprites);
+      assertReadOnly();
+
+      const editable = originalPreview.scene.objects.filter(object => object.canMove && object.canDuplicate && object.canDelete &&
+        (mapName !== "ironhallmine" || /바닥/.test(object.name)));
+      const mover = editable[0], removed = editable[1];
+      expect(mover).toBeDefined(); expect(removed).toBeDefined();
+      const dx = originalPreview.scene.constants.TILE_W / 2, dy = -originalPreview.scene.constants.TILE_H / 2;
+      useEditorStore.getState().moveGameObjectTo(mover.entityId, [mover.position[0] + dx, mover.position[1] + dy]);
+      const copyId = useEditorStore.getState().addGameObject(mover.entityId, [mover.position[0] - dx, mover.position[1] + dy]);
+      expect(copyId).not.toBeNull();
+      useEditorStore.getState().removeGameObject(removed.entityId);
+      const beforeBlocked = captureEditorSnapshot(useEditorStore.getState());
+      const removedCell = baseline.blocked[0];
+      const occupied = new Set(baseline.blocked.map(([x, y]) => cellKey(x, y)));
+      let addedCell: [number, number] | undefined;
+      for (let y = 0; y < baseline.size[1] && !addedCell; y++) for (let x = 0; x < baseline.size[0]; x++) {
+        if (!occupied.has(cellKey(x, y))) { addedCell = [x, y]; break; }
+      }
+      expect(addedCell).toBeDefined();
+      useEditorStore.getState().setBlockedAt(...removedCell, false);
+      useEditorStore.getState().setBlockedAt(...addedCell!, true);
+      useEditorStore.getState().commitStroke(beforeBlocked);
+
+      const beforeGroundBlocks = mapName === "ironhallmine" ? [] : blocks(original);
+      const changedBlock = beforeGroundBlocks.find(block => block.asset.size === 4);
+      let painted: { gx: number; gy: number; beforeRuid: string; afterRuid: string } | undefined;
+      if (mapName !== "ironhallmine") {
+        expect(changedBlock, "representative map must exercise a real 4x4 split").toBeDefined();
+        const target = changedBlock!;
+        const gx = target.gx + 1, gy = target.gy + 1;
+        const index = baseline.palette.findIndex(tile => {
+          const asset = assets.get(tile.ruid ?? "");
+          return asset?.size === 1 && asset.material !== target.asset.material && asset.material !== "길경계";
+        });
+        expect(index).toBeGreaterThanOrEqual(0);
+        const before = captureEditorSnapshot(useEditorStore.getState());
+        useEditorStore.getState().setActiveIdx(index);
+        useEditorStore.getState().setTool("brush");
+        useEditorStore.getState().applyTool(gx, gy);
+        useEditorStore.getState().commitStroke(before);
+        painted = { gx, gy, beforeRuid: originalPreview.ground.find(([x, y]) => x === gx && y === gy)![2], afterRuid: baseline.palette[index].ruid! };
+      }
+      const edited = exportStore();
+      const result = comparisonCore.compareEditedProject(edited, readOnlyOptions);
+      const comparison = result.comparison;
+      expect(comparison.objects.moved).toHaveLength(1);
+      expect(comparison.objects.added).toHaveLength(1);
+      expect(comparison.objects.removed).toEqual([{ entityId: removed.entityId, position: removed.position }]);
+      expect(comparison.blocked).toEqual({ added: [addedCell], removed: [removedCell] });
+      expect(comparison.objects.moved[0]).toMatchObject({ entityId: mover.entityId, from: mover.sourcePosition });
+      expect(comparison.objects.added[0]).toMatchObject({ entityId: copyId, prototypeId: mover.entityId });
+      expect(comparison.objects.moved[0].to).toEqual(result.scene.objects.find(object => object.entityId === mover.entityId)!.position);
+      expect(comparison.objects.added[0].position).toEqual(result.scene.objects.find(object => object.entityId === copyId)!.position);
+      expect(result.scene.objects.some(object => object.entityId === removed.entityId)).toBe(false);
+      if (painted) {
+        expect(comparison.ground.changedCells).toEqual([painted]);
+        const target = changedBlock!;
+        const affectedCells = Array.from({ length: 16 }, (_, index) => [target.gx + index % 4, target.gy + Math.floor(index / 4)] as [number, number]);
+        const repacked = affectedCells.filter(([x, y]) => x !== painted!.gx || y !== painted!.gy);
+        expect(new Set(comparison.ground.repackedCells.map(([x, y]) => cellKey(x, y))))
+          .toEqual(new Set(repacked.map(([x, y]) => cellKey(x, y))));
+        expect(comparison.ground.repackedCells).toHaveLength(15);
+        expect(comparison.ground.affectedBeforeBlocks).toEqual([{ name: target.name, gx: target.gx, gy: target.gy, size: 4, ruid: target.asset.ruid }]);
+      } else {
+        expect(comparison.ground).toEqual({ changedCells: [], repackedCells: [], affectedBeforeBlocks: [], replacementBlocks: [] });
+      }
+
+      // Editing and removal never mutate the original DTO, including the deleted sprite's RUID.
+      const originalAgain = comparisonCore.previewBaselineProject(link, readOnlyOptions);
+      expect(originalAgain).toEqual(originalPreview);
+      const removedOriginalSprite = originalAgain.scene.sprites.find(sprite => sprite.objectEntityId === removed.entityId)!;
+      const removedNative = original.listEntities().find(entity => entity.id === removed.entityId)!;
+      expect(removedOriginalSprite.ruid).toBe(original.component(removedNative.path, SPRITE)!.SpriteRUID);
+      expect(result.scene.sprites.some(sprite => sprite.objectEntityId === removed.entityId)).toBe(false);
+      assertReadOnly();
+
+      const candidate = core.exportEditedProject(edited, options());
+      const output = builder.read(candidate.mapPath);
+      assertPreviewFile(result.scene, output);
+      if (painted) {
+        assertCoverage(output, edited);
+        const target = changedBlock!;
+        const replacements = blocks(output).filter(block =>
+          block.gx >= target.gx && block.gx < target.gx + 4 && block.gy >= target.gy && block.gy < target.gy + 4)
+          .map(block => ({ name: block.name, gx: block.gx, gy: block.gy, size: block.asset.size, ruid: block.asset.ruid }));
+        expect([...comparison.ground.replacementBlocks].sort((a, b) => a.name.localeCompare(b.name)))
+          .toEqual(replacements.sort((a, b) => a.name.localeCompare(b.name)));
+        expect(candidate.report.counts.groundEntities).toBe(beforeGroundBlocks.length - 1 + replacements.length);
+      }
+      const undoSteps = useEditorStore.getState().undoStack.length;
+      expect(undoSteps).toBe(painted ? 5 : 4);
+      for (let step = 0; step < undoSteps; step++) useEditorStore.getState().undo();
+      expect(exportStore()).toEqual(baseline);
+      const undoComparison = comparisonCore.compareEditedProject(exportStore(), readOnlyOptions);
+      expect(differenceLengths(undoComparison.comparison)).toEqual(Array(9).fill(0));
+      expect(undoComparison.scene.sprites).toEqual(originalPreview.scene.sprites);
+      const undoCandidate = core.exportEditedProject(exportStore(), options());
+      expect(hash(undoCandidate.mapPath)).toBe(hash(join(gameRoot!, "map", mapName + ".map")));
+      assertReadOnly();
+      const row = {
+        scenario: "original-and-comparison", mapName, baselineId: link.baselineId,
+        changedGroundCells: comparison.ground.changedCells.length, repackedCells: comparison.ground.repackedCells.length,
+        affectedBeforeBlocks: comparison.ground.affectedBeforeBlocks.length, replacementBlocks: comparison.ground.replacementBlocks.length,
+        objectChanges: { moved: comparison.objects.moved.length, added: comparison.objects.added.length, removed: comparison.objects.removed.length },
+        blockedChanges: comparison.blocked, candidateMap: candidate.mapPath, undoMap: undoCandidate.mapPath,
+        originalPreviewUnchanged: true, deletedSpriteRuidPreserved: true, previewCreatedNoCandidates: true,
+        baselineSnapshotHashesUnchanged: Object.keys(snapshotHashes).length, previewExportMatch: true, undoDiffZero: true,
+        sourceFilesChecked: assertSourceManifest(synced.baselineDir),
+      };
+      evidence.push(row);
+      console.log("[comparison-roundtrip]", JSON.stringify(row));
     }, 90_000);
   }
 

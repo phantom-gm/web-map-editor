@@ -100,7 +100,7 @@ export function Toolbar() {
             data-label={label}
             aria-label={label}
             aria-pressed={tool === t.id}
-            disabled={!!gameSync && !canPaint && t.id !== "cursor" && t.id !== "block"}
+            disabled={preview.comparisonEnabled || (!!gameSync && !canPaint && t.id !== "cursor" && t.id !== "block")}
             onClick={() => {
               preview.setSelectionMode("objects");
               if (gameSync && t.id === "block") { preview.setShowOverlays(true); if (!visual.blocked) toggleVisual("blocked"); }
@@ -112,7 +112,7 @@ export function Toolbar() {
         );
       })}
       <span className="sep" />
-      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); setTool("cursor"); }}>O</button>}
+      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); setTool("cursor"); }}>O</button>}
       {!gameSync && ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
         const label = withShortcut(`${meta.label} 배치`, k);
@@ -147,17 +147,17 @@ export function Toolbar() {
         ))}
       </span>
       <span className="sep" />
-      <button onClick={undo} disabled={!canUndo} title="실행취소 (⌘/Ctrl+Z)">
+      <button onClick={undo} disabled={!canUndo || preview.comparisonEnabled} title="실행취소 (⌘/Ctrl+Z)">
         ↶ 취소
       </button>
-      <button onClick={redo} disabled={!canRedo} title="다시실행 (⌘/Ctrl+Shift+Z)">
+      <button onClick={redo} disabled={!canRedo || preview.comparisonEnabled} title="다시실행 (⌘/Ctrl+Shift+Z)">
         ↷ 다시
       </button>
-      <button onClick={clearAll} disabled={!canPaint || (painted === 0 && blockedCount === 0)}>
+      <button onClick={clearAll} disabled={preview.comparisonEnabled || !canPaint || (painted === 0 && blockedCount === 0)}>
         {gameSync ? "바닥 지우기" : "전체 지우기"}
       </button>
       <span className="toolbar-info">
-        칠해진 셀: {painted} · 이동불가: {blockedCount}
+        {preview.comparisonEnabled && "현재 작업 · "}칠해진 셀: {painted} · 이동불가: {blockedCount}
       </span>
     </div>
   );

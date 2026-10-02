@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, validateStorageRoot, _test } = require('./core.cjs');
+const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -559,4 +559,148 @@ test('first blocked cells preserve an unterminated other-map row and alternate C
   project.blocked = [[2, 3]];
   const result = exportEditedProject(project, f.options);
   assert.equal(fs.readFileSync(path.join(result.candidateDir, f.walkRelative), 'utf8'), '\uFEFFCellY,MapName,CellX\r\n3,fixture,2\r\n"6","elsewhere","5"');
+});
+
+
+function compareIdentity(project) { return { mapName: project.map, baselineId: project.gameSync.baselineId }; }
+function assertEmptyComparison(value) {
+  assert.deepEqual(value.ground, { changedCells: [], repackedCells: [], affectedBeforeBlocks: [], replacementBlocks: [] });
+  assert.deepEqual(value.objects, { moved: [], added: [], removed: [] });
+  assert.deepEqual(value.blocked, { added: [], removed: [] });
+}
+function readWithoutWrites(callback) {
+  const methods = ['writeFileSync', 'appendFileSync', 'mkdirSync', 'copyFileSync', 'renameSync', 'unlinkSync', 'rmSync'];
+  const originals = methods.map(name => [name, fs[name]]);
+  for (const name of methods) fs[name] = () => assert.fail('Read-only preview attempted ' + name);
+  try { return callback(); } finally { for (const [name, method] of originals) fs[name] = method; }
+}
+function fileTreeHashes(root) {
+  const result = {};
+  function visit(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name), relative = path.relative(root, file);
+      if (entry.isDirectory()) { result[relative] = 'directory'; visit(file); }
+      else result[relative] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    }
+  }
+  visit(root); return result;
+}
+test('baseline and comparison readers create no files and return the original native scene and logical cells', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const before = fileTreeHashes(f.temp), identity = compareIdentity(project);
+  const { baseline, compared, regular } = readWithoutWrites(() => ({
+    baseline: previewBaselineProject(identity, f.options),
+    compared: compareEditedProject(project, f.options), regular: previewEditedProject(project, f.options)
+  }));
+  assert.deepEqual(fileTreeHashes(f.temp), before);
+  assert.equal(fs.existsSync(f.options.outputRoot), false);
+  assert.deepEqual(baseline.scene, regular); assert.deepEqual(compared.scene, regular);
+  assert.deepEqual(baseline.size, project.size); assert.deepEqual(baseline.groundOrigin, project.groundOrigin);
+  assert.deepEqual(baseline.ground, project.ground.map(([gx, gy, i]) => [gx, gy, project.palette[i].ruid]));
+  assert.deepEqual(baseline.blocked, [[2, 2], [3, 3]]);
+  assert.equal(compared.comparison.baselineId, identity.baselineId); assert.equal(compared.comparison.mapName, 'fixture');
+  assertEmptyComparison(compared.comparison);
+  assert.equal(Object.hasOwn(regular, 'comparison'), false); // Existing hot-path payload remains unchanged.
+});
+test('comparison separates one changed material cell from the fifteen repacked neighbours', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const baseline = previewBaselineProject(compareIdentity(project), f.options);
+  project.ground.find(c => c[0] === 1 && c[1] === 1)[2] = project.palette.findIndex(p => p.ruid === tile('물').ruid);
+  const { scene, comparison } = compareEditedProject(project, f.options);
+  assert.deepEqual(comparison.ground.changedCells, [{ gx: 1, gy: 1, beforeRuid: tile('잔디').ruid, afterRuid: tile('물').ruid }]);
+  assert.equal(comparison.ground.repackedCells.length, 15);
+  assert.equal(comparison.ground.repackedCells.some(([x, y]) => x === 1 && y === 1), false);
+  assert.deepEqual(comparison.ground.affectedBeforeBlocks, [{ name: 'Tile_0_0', gx: 0, gy: 0, size: 4, ruid: tile('잔디', 4).ruid }]);
+  for (const block of comparison.ground.replacementBlocks) {
+    const sprite = scene.sprites.find(s => s.name === block.name);
+    assert.equal(sprite.ruid, block.ruid); assert.deepEqual(sprite.ground, { gx: block.gx, gy: block.gy, size: block.size });
+  }
+  assert.equal(scene.report.changedCells, 1); assert.equal(scene.report.affectedCells, 16);
+  assert.deepEqual(previewBaselineProject(compareIdentity(project), f.options), baseline);
+  assert.equal(fs.existsSync(f.options.outputRoot), false);
+});
+test('comparison uses RUID semantics and explicit nulls for added and erased ground cells', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const originalIndex = project.ground[0][2];
+  project.palette.push({ ...project.palette[originalIndex], name: 'duplicate palette entry' });
+  project.ground[0][2] = project.palette.length - 1;
+  assertEmptyComparison(compareEditedProject(project, f.options).comparison);
+  project.ground = project.ground.filter(c => !(c[0] === 1 && c[1] === 1));
+  project.ground.push([7, 7, originalIndex]);
+  const result = compareEditedProject(project, f.options).comparison.ground;
+  assert.deepEqual(result.changedCells, [
+    { gx: 1, gy: 1, beforeRuid: tile('잔디').ruid, afterRuid: null },
+    { gx: 7, gy: 7, beforeRuid: null, afterRuid: tile('잔디').ruid }
+  ]);
+  assert.equal(result.repackedCells.length, 15);
+  assert.equal(result.affectedBeforeBlocks.length, 1);
+  assert.ok(result.replacementBlocks.some(b => b.gx === 7 && b.gy === 7 && b.size === 1));
+});
+test('comparison object changes use stable editor IDs and the same normalized world positions as its scene', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const original = JSON.parse(JSON.stringify(project));
+  const baseline = previewBaselineProject(compareIdentity(project), f.options);
+  const moving = baseline.scene.objects.find(o => o.name === 'Obj_editable');
+  const removed = baseline.scene.objects.find(o => o.name === 'Obj_floor');
+  const id = crypto.randomUUID();
+  project.gameObjectEdits = objectPatch([{ entityId: moving.entityId, position: [moving.position[0] + 1.28, moving.position[1] - 0.64] }], [removed.entityId],
+    [{ entityId: id, prototypeId: moving.entityId, position: [moving.position[0] - 1.28, moving.position[1] - 0.64] }]);
+  project.blocked = [[2, 2], [4, 4]];
+  const first = compareEditedProject(project, f.options), second = compareEditedProject(project, f.options);
+  assert.deepEqual(first.comparison, second.comparison);
+  const movedSprite = first.scene.objects.find(o => o.entityId === moving.entityId);
+  const addedSprite = first.scene.objects.find(o => o.entityId === id);
+  assert.deepEqual(first.comparison.objects, {
+    moved: [{ entityId: moving.entityId, from: moving.position, to: movedSprite.position }],
+    added: [{ entityId: id, prototypeId: moving.entityId, position: addedSprite.position }],
+    removed: [{ entityId: removed.entityId, position: removed.position }]
+  });
+  assert.notEqual(addedSprite.spriteId, second.scene.objects.find(o => o.entityId === id).spriteId);
+  assert.ok(first.scene.sprites.some(s => s.id === addedSprite.spriteId && s.objectEntityId === id));
+  assert.equal(first.scene.objects.some(o => o.entityId === removed.entityId), false);
+  assert.deepEqual(first.comparison.blocked, { added: [[4, 4]], removed: [[3, 3]] });
+  assert.deepEqual(previewBaselineProject(compareIdentity(project), f.options), baseline);
+  assertEmptyComparison(compareEditedProject(original, f.options).comparison);
+  original.gameObjectEdits = objectPatch([{ entityId: moving.entityId, position: moving.position.slice(0, 2).map(n => Number(n.toFixed(8))) }]);
+  assertEmptyComparison(compareEditedProject(original, f.options).comparison);
+});
+test('baseline comparison readers retain unsupported-ground warnings and independent object-floor changes', fixtureOptions, t => {
+  const f = objectFixture(t, { noGround: true }), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const baseline = previewBaselineProject(compareIdentity(project), f.options);
+  assert.equal(baseline.scene.report.groundEditingSupported, false); assert.deepEqual(baseline.ground, []);
+  const floor = baseline.scene.objects.find(o => o.name === 'Obj_floor');
+  project.gameObjectEdits = objectPatch([{ entityId: floor.entityId, position: [floor.position[0] + 1.28, floor.position[1] - 0.64] }]);
+  const result = compareEditedProject(project, f.options);
+  assert.equal(result.scene.report.groundEditingSupported, false); assert.equal(result.comparison.objects.moved.length, 1);
+  assert.deepEqual(result.comparison.ground, { changedCells: [], repackedCells: [], affectedBeforeBlocks: [], replacementBlocks: [] });
+});
+test('baseline comparison requests reject traversal, mismatched identities, stale sources and corrupted snapshots', fixtureOptions, t => {
+  const f = objectFixture(t), imported = createSyncProject({ ...f.options, mapName: 'fixture' }), { project } = imported;
+  const identity = compareIdentity(project);
+  assert.throws(() => previewBaselineProject({ ...identity, baselineId: '../escape' }, f.options), e => e.code === 'INVALID_BASELINE');
+  assert.throws(() => previewBaselineProject({ ...identity, mapName: '../escape' }, f.options), e => e.code === 'INVALID_MAP');
+  assert.throws(() => previewBaselineProject({ ...identity, mapName: 'another' }, f.options), e => e.code === 'BASELINE_MISMATCH');
+  assert.throws(() => compareEditedProject({ ...project, groundOrigin: [99, 99] }, f.options), e => e.code === 'UNSUPPORTED_EDIT');
+  fs.appendFileSync(path.join(f.root, 'map/fixture.map'), ' ');
+  assert.throws(() => previewBaselineProject(identity, f.options), e => e.code === 'STALE_SOURCE');
+  assert.throws(() => compareEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+  const again = createSyncProject({ ...f.options, mapName: 'fixture' });
+  fs.appendFileSync(again.projectPath, ' ');
+  assert.throws(() => previewBaselineProject(compareIdentity(again.project), f.options), e => e.code === 'BASELINE_CORRUPT');
+  assert.throws(() => compareEditedProject(again.project, f.options), e => e.code === 'BASELINE_CORRUPT');
+});
+test('baseline and comparison previews recheck sources after native scene generation', fixtureOptions, t => {
+  for (const action of ['baseline', 'compare']) {
+    const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+    const build = f.MapBuilder.prototype.build; let changed = false;
+    f.MapBuilder.prototype.build = function (...args) {
+      const value = build.apply(this, args);
+      if (!changed) { changed = true; fs.appendFileSync(path.join(f.root, 'map/fixture.map'), ' '); }
+      return value;
+    };
+    try {
+      assert.throws(() => action === 'baseline' ? previewBaselineProject(compareIdentity(project), f.options) : compareEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+      assert.equal(changed, true); assert.equal(fs.existsSync(f.options.outputRoot), false);
+    } finally { f.MapBuilder.prototype.build = build; }
+  }
 });

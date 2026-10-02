@@ -37,6 +37,8 @@ type SyncReport = Record<string, unknown>;
 interface SyncCore {
   validateStorageRoot(target: string, gameRoot: string): string;
   previewEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
+  previewBaselineProject(input: { mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
+  compareEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
   createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string }): { project: ProjectFile; report: SyncReport };
   exportEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): {
     candidateDir: string; mapPath: string; reportPath: string; report: SyncReport;
@@ -61,7 +63,7 @@ export function listGameMaps(): string[] {
 
 export async function runGameSync(body: unknown) {
   if (!body || typeof body !== "object") throw new GameSyncError("요청 형식을 확인해 주세요.");
-  const input = body as { action?: unknown; mapName?: unknown; project?: unknown; expectedRevision?: unknown };
+  const input = body as { action?: unknown; mapName?: unknown; baselineId?: unknown; project?: unknown; expectedRevision?: unknown };
   const paths = gameSyncPaths();
   const compiler = await core();
   const workspace = { ...paths, validateStorageRoot: compiler.validateStorageRoot };
@@ -81,9 +83,17 @@ export async function runGameSync(body: unknown) {
     const saved = saveWorkspace(input.project, (input.expectedRevision ?? null) as string | null, workspace);
     return { action: "save", revision: saved.revision, savedAt: saved.savedAt };
   }
-  if (input.action === "preview" || input.action === "export") {
+  if (input.action === "baseline-preview") {
+    if (typeof input.mapName !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(input.mapName) ||
+      typeof input.baselineId !== "string" || !/^[a-f0-9-]{36}$/.test(input.baselineId)) {
+      throw new GameSyncError("게임 동기화 기준 정보가 올바르지 않습니다.");
+    }
+    return { baseline: compiler.previewBaselineProject({ mapName: input.mapName, baselineId: input.baselineId }, paths) };
+  }
+  if (input.action === "preview" || input.action === "compare" || input.action === "export") {
     if (!input.project || typeof input.project !== "object") throw new GameSyncError("프로젝트가 필요합니다.");
     if (input.action === "preview") return { scene: compiler.previewEditedProject(input.project as ProjectFile, paths) };
+    if (input.action === "compare") return compiler.compareEditedProject(input.project as ProjectFile, paths);
     return { action: "export", ...compiler.exportEditedProject(input.project as ProjectFile, paths) };
   }
   throw new GameSyncError("지원하지 않는 작업입니다.");

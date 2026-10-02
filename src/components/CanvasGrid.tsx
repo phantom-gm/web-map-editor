@@ -1,3 +1,4 @@
+import { drawGameComparison } from "../lib/gameComparison";
 import { GameObjectInspector } from "./GameObjectPanel";
 import { previewScreenToWorld, gameObjectHitCandidates, snapObjectPosition, objectCellOffset, sceneWithGameObjectGroupDraft, drawGameObjectSelection, gameObjectsInScreenRect } from "../lib/gameObjectPreview";
 import type { GameObjectDescriptor, GameObjectPosition } from "../lib/gameObjects";
@@ -584,6 +585,12 @@ export function CanvasGrid() {
   const previewBaselineId = useGamePreviewStore(state => state.baselineId);
   const showScene = useGamePreviewStore(state => state.showScene);
   const showOverlays = useGamePreviewStore(state => state.showOverlays);
+  const comparisonEnabled = useGamePreviewStore(state => state.comparisonEnabled);
+  const comparisonMode = useGamePreviewStore(state => state.comparisonMode);
+  const comparisonBaseline = useGamePreviewStore(state => state.comparisonBaseline);
+  const comparison = useGamePreviewStore(state => state.comparison);
+  const comparisonFilters = useGamePreviewStore(state => state.comparisonFilters);
+  const previewStatus = useGamePreviewStore(state => state.status);
   const selectedGameObjectId = useEditorStore(state => state.selectedGameObjectId);
   const selectedGameObjectIds = useEditorStore(state => state.selectedGameObjectIds);
   const selectedBlockedCells = useEditorStore(state => state.selectedBlockedCells);
@@ -699,7 +706,7 @@ export function CanvasGrid() {
     };
     const unsubscribe = useGamePreviewStore.subscribe((state, previous) => {
       if (state.selectionMode !== previous.selectionMode || state.showScene !== previous.showScene ||
-        state.placementPrototypeId !== previous.placementPrototypeId || state.status === "error") cancel();
+        state.placementPrototypeId !== previous.placementPrototypeId || state.comparisonEnabled !== previous.comparisonEnabled || state.status === "error") cancel();
     });
     window.addEventListener("blur", cancel);
     return () => { unsubscribe(); window.removeEventListener("blur", cancel); };
@@ -718,6 +725,12 @@ export function CanvasGrid() {
       // 단축키는 e.code(물리 키)로 판정 — 한글 IME/레이아웃에서 e.key 가 자모로 바뀌어도 동작.
       const mod = e.metaKey || e.ctrlKey;
       const current = useEditorStore.getState();
+      if (current.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
+        if (e.key === "Escape") useGamePreviewStore.getState().setComparisonEnabled(false);
+        if ((mod && ["KeyZ", "KeyY", "KeyD"].includes(e.code)) ||
+          ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) e.preventDefault();
+        return;
+      }
       // Commands cancel a local drag before mouseup can commit a stale object.
       if (current.gameSync && (nativeDrag.current || selectionStart.current)) {
         nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); mode.current = null;
@@ -819,6 +832,10 @@ export function CanvasGrid() {
       const st = useEditorStore.getState();
       fittedPreviewBaseline.current = st.gameSync?.baselineId ?? null;
       const [gx, gy] = screenToCell(p.x, p.y, st.camera);
+      if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
+        if (e.button === 0 || e.button === 1) { mode.current = "pan"; drag.current = p; }
+        return;
+      }
       if (e.button === 1 || spaceDown.current) {
         mode.current = "pan";
         drag.current = p;
@@ -951,6 +968,7 @@ export function CanvasGrid() {
       const p = local(e);
       const st = useEditorStore.getState();
       const [gx, gy] = screenToCell(p.x, p.y, st.camera);
+      if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled && mode.current !== "pan") return;
       if (st.gameSync && (mode.current === "paint" || mode.current === "rect") &&
         (activeGroundBaseline.current !== st.gameSync.baselineId || useGamePreviewStore.getState().status === "error")) return;
       if (mode.current === "selectGameRegion" && selectionStart.current) {
@@ -983,6 +1001,11 @@ export function CanvasGrid() {
     };
     const onUp = (e: MouseEvent) => {
       const st = useEditorStore.getState();
+      if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
+        mode.current = null; drag.current = null; strokeBefore.current = null;
+        nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+        return;
+      }
       if (useWorkspaceSession.getState().loading ||
         (st.gameSync && (mode.current === "paint" || mode.current === "rect") && activeGroundBaseline.current !== st.gameSync.baselineId)) {
         mode.current = null; drag.current = null; strokeBefore.current = null;
@@ -1088,18 +1111,25 @@ export function CanvasGrid() {
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const shownScene = previewScene && objectDraft ? sceneWithGameObjectGroupDraft(previewScene, objectDraft.ids, objectDraft.delta) : previewScene;
+    const comparisonReady = previewStatus === "ready" && comparisonBaseline?.baselineId === gameSync?.baselineId &&
+      comparison?.baselineId === gameSync?.baselineId && !!comparisonBaseline && !!comparison;
+    const comparisonScene = comparisonReady ? comparisonMode === "original" ? comparisonBaseline.scene : previewScene : null;
     const preview = gameSync && showScene ? {
-      scene: previewBaselineId === gameSync.baselineId ? shownScene : null,
+      scene: previewBaselineId === gameSync.baselineId ? comparisonEnabled ? comparisonScene : shownScene : null,
       images: previewImages, showOverlays,
     } : null;
-    let shownBlocked = blocked;
+    let shownBlocked = comparisonEnabled && comparisonReady && comparisonMode === "original"
+      ? new Set(comparisonBaseline.blocked.map(([x, y]) => cellKey(x, y))) : blocked;
     if (objectDraft?.cells.length) {
       shownBlocked = new Set(blocked);
       for (const key of objectDraft.cells) shownBlocked.delete(key);
       for (const key of objectDraft.cells) { const [x, y] = parseCellKey(key); shownBlocked.add(cellKey(x + objectDraft.delta[0], y + objectDraft.delta[1])); }
     }
-    draw(ctx, dims, size, camera, hover, ground, shownBlocked, palette, rectPreview, entities, selectedEntityId, visual, stand, preview);
-    if (preview?.scene) {
+    draw(ctx, dims, size, camera, comparisonEnabled ? null : hover, ground, shownBlocked, palette, comparisonEnabled ? null : rectPreview, entities, selectedEntityId, visual, stand, preview);
+    if (comparisonEnabled && comparisonReady && comparisonMode === "changes" && previewScene) {
+      drawGameComparison(ctx, comparisonBaseline, previewScene, comparison, previewImages, camera, comparisonFilters);
+    }
+    if (preview?.scene && !comparisonEnabled) {
       for (const id of selectedGameObjectIds) drawGameObjectSelection(ctx, id, preview.scene, previewImages, camera, id === selectedGameObjectId ? "#ffd166" : "#75dce8");
       const highlight = new Set(selectedBlockedCells.map(key => {
         const [x, y] = parseCellKey(key);
@@ -1146,6 +1176,12 @@ export function CanvasGrid() {
     previewBaselineId,
     showScene,
     showOverlays,
+    comparisonEnabled,
+    comparisonMode,
+    comparisonBaseline,
+    comparison,
+    comparisonFilters,
+    previewStatus,
     selectedGameObjectId,
     selectedGameObjectIds,
     selectedBlockedCells,
@@ -1155,8 +1191,11 @@ export function CanvasGrid() {
 
   return (
     <div ref={wrapRef} className="canvas-wrap">
-      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" && selectionMode !== "blocked" ? "grab" : "crosshair" }} />
-      {gameSync ? <GameObjectInspector /> : <EntityInspector />}
+      <canvas ref={canvasRef} style={{ cursor: comparisonEnabled || (activeTool === "cursor" && selectionMode !== "blocked") ? "grab" : "crosshair" }} />
+      {gameSync && comparisonEnabled && <div className="comparison-view-badge" role="status">
+        {previewStatus !== "ready" ? "비교 준비 중" : comparisonMode === "original" ? "가져온 원본" : comparisonMode === "edited" ? "현재 수정본" : "현재 수정본 + 변경 강조"} · 보기 전용
+      </div>}
+      {gameSync ? !comparisonEnabled && <GameObjectInspector /> : <EntityInspector />}
     </div>
   );
 }

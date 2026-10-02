@@ -1,3 +1,4 @@
+import { GameComparisonSidebar } from "./GameComparisonPanel";
 import { GameObjectLibrary } from "./GameObjectPanel";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +27,7 @@ function tileTitle(t: PaletteTile): string {
 export function PalettePanel() {
   const gameSync = useEditorStore(s => s.gameSync);
   const showObjects = useGamePreviewStore(s => s.showObjects);
+  const comparisonEnabled = useGamePreviewStore(s => s.comparisonEnabled);
   const groundBrushRuids = useGamePreviewStore(s => s.scene?.baselineId === gameSync?.baselineId ? s.scene?.groundBrushRuids : undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
@@ -255,6 +257,7 @@ export function PalettePanel() {
     };
   }, [menu]);
 
+  if (gameSync && comparisonEnabled) return <div className="palette"><GameComparisonSidebar /></div>;
   if (gameSync && showObjects) return <div className="palette"><GameObjectLibrary /></div>;
 
   return (
