@@ -1,3 +1,4 @@
+import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { loadTiles, fallbackColor, DEFAULT_CATEGORY, type PaletteTile } from "../lib/palette";
@@ -22,6 +23,8 @@ function tileTitle(t: PaletteTile): string {
 }
 
 export function PalettePanel() {
+  const gameSync = useEditorStore(s => s.gameSync);
+  const groundBrushRuids = useGamePreviewStore(s => s.scene?.baselineId === gameSync?.baselineId ? s.scene?.groundBrushRuids : undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
   const regRef = useRef<HTMLInputElement>(null);
@@ -167,13 +170,14 @@ export function PalettePanel() {
   const groups = useMemo(() => {
     const m = new Map<string, Array<{ t: PaletteTile; i: number }>>();
     palette.forEach((t, i) => {
+      if (gameSync && (!t.ruid || !groundBrushRuids?.includes(t.ruid))) return;
       const c = t.category || DEFAULT_CATEGORY;
       const arr = m.get(c);
       if (arr) arr.push({ t, i });
       else m.set(c, [{ t, i }]);
     });
     return [...m.entries()];
-  }, [palette]);
+  }, [palette, gameSync, groundBrushRuids]);
 
   const toggleCat = (c: string) =>
     setCollapsed((prev) => {
@@ -209,6 +213,7 @@ export function PalettePanel() {
   // 우클릭: 선택에 없던 타일이면 그것만 선택한 뒤 메뉴 표시(파일 탐색기 관례).
   const onTileContext = (e: React.MouseEvent, i: number) => {
     e.preventDefault();
+    if (gameSync) return;
     if (!selected.has(i)) {
       setSelected(new Set([i]));
       setAnchor(i);
@@ -250,7 +255,8 @@ export function PalettePanel() {
 
   return (
     <div className="palette">
-      <div className="palette-head">
+      {gameSync && <div className="palette-head"><strong>바닥 소재</strong><small>큰 타일은 자동 배치</small></div>}
+      {!gameSync && <div className="palette-head">
         <span>팔레트 ({palette.length})</span>
         <button onClick={() => fileRef.current?.click()} title="PNG 이미지 파일 추가 (여러 장 선택)">
           + PNG
@@ -274,8 +280,8 @@ export function PalettePanel() {
         </button>
         <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={onFiles} />
         <input ref={dirRef} type="file" multiple hidden onChange={onFiles} />
-      </div>
-      <div className="palette-subhead">
+      </div>}
+      {!gameSync && <div className="palette-subhead">
         <button className="reg-load" onClick={() => regRef.current?.click()} title="RUID 매핑 JSON 불러오기(이미지 아님) — 오프라인: tile_registry.json / palette_ruids.json">
           RUID파일
         </button>
@@ -296,7 +302,7 @@ export function PalettePanel() {
         <span className="reg-count">
           <span className="reg">✓{registered}</span> · <span className="new">●{isNew}</span>
         </span>
-      </div>
+      </div>}
       <div className="palette-body">
         {palette.length === 0 && <div className="palette-empty">PNG 타일을 추가하세요</div>}
         {groups.map(([cat, items]) => {
@@ -342,8 +348,8 @@ export function PalettePanel() {
           );
         })}
       </div>
-      {browseOpen && <ResourceBrowser onClose={() => setBrowseOpen(false)} />}
-      {menu && (
+      {!gameSync && browseOpen && <ResourceBrowser onClose={() => setBrowseOpen(false)} />}
+      {!gameSync && menu && (
         <div
           className="palette-menu"
           style={{ left: menu.x, top: menu.y }}

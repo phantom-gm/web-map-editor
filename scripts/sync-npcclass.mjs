@@ -20,14 +20,20 @@
  *   ⚠ 배포(vercel)에는 legend_of_light 가 없다 → 소스 미발견 시 **커밋된 seed 를 유지하고 그냥 통과**한다.
  *      따라서 로컬에서 돌려 seed 를 커밋 → 그 커밋이 배포된다. (호스팅 CSV 런타임 fetch 는 별건)
  *
- * 경로 전제: web-map-editor 와 legend_of_light 가 같은 상위 폴더의 형제 디렉터리.
+ * 경로: MSW_GAME_ROOT(.env.local 지원) 우선. 미설정 시 형제 legend_of_light 사용.
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import nextEnv from "@next/env";
 
 const here = dirname(fileURLToPath(import.meta.url)); // web-map-editor/scripts
-const DATASET = join(here, "..", "..", "legend_of_light", "RootDesk", "MyDesk", "DataSet");
+const ROOT = resolve(here, "..");
+// predev/prebuild 는 Next 실행 전이므로 환경 파일도 여기서 먼저 읽는다.
+nextEnv.loadEnvConfig(ROOT, process.env.npm_lifecycle_event === "predev");
+const configuredRoot = process.env.MSW_GAME_ROOT?.trim();
+const GAME_ROOT = resolve(ROOT, configuredRoot || "../legend_of_light");
+const DATASET = join(GAME_ROOT, "RootDesk", "MyDesk", "DataSet");
 const OUT = join(here, "..", "data", "npcclass.seed.json");
 
 /**
@@ -41,6 +47,15 @@ const NPC_CSV = pick(["npc", "DT_NpcClass.csv"], ["DT_NpcClass.csv"]);
 const MON_CSV = pick(["monster", "DT_MonsterClass.csv"], ["DT_MonsterClass.csv"]);
 const NPC_ST = pick(["locale", "ST_NpcName.csv"], ["ST_NpcName.csv"]);
 const MON_ST = pick(["locale", "ST_MonsterName.csv"], ["ST_MonsterName.csv"]);
+
+// 명시한 로컬 경로가 잘못됐을 때 오래된 seed 로 성공한 척하지 않는다.
+if (configuredRoot && (!NPC_CSV || !MON_CSV || !NPC_ST || !MON_ST)) {
+  console.error("[sync:npc] MSW_GAME_ROOT 에 NPC/몬스터/이름 CSV 4개가 모두 필요합니다.");
+  console.error("           기준 경로: " + DATASET);
+  process.exit(1);
+}
+
+console.log("[sync:npc] 게임 경로: " + GAME_ROOT);
 
 if (!NPC_CSV && !MON_CSV) {
   // ⚠ 여기서 죽으면 안 된다 — 배포(vercel)에는 legend_of_light 가 아예 없다. 커밋된 seed 로 간다.

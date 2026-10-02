@@ -10,7 +10,7 @@ import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcC
 import { exportEntities } from "../lib/entityExport";
 import { exportDrift, type DriftItem } from "../lib/exportDrift";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
-import { PROJECT_TYPE, PROJECT_VERSION, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
+import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
 // ── 에셋(RUID)별 저작 기본값 (요청서 R3) ────────────────────────────────────────
@@ -80,6 +80,23 @@ function mergePalette(
   return { merged, indexMap };
 }
 
+/** 프로젝트 팔레트가 권위다. 같은 이름이어도 RUID/치수가 다르면 기존 라이브러리는 별도 항목으로 유지. */
+function mergeProjectPalette(existing: PaletteTile[], incoming: PaletteTile[]): PaletteTile[] {
+  const identity = (tile: PaletteTile) => JSON.stringify([
+    tile.name, tile.ruid ?? null, tile.px ?? null, tile.hash ?? null, tile.category ?? null,
+  ]);
+  const merged = incoming.map((tile) => ({ ...tile }));
+  const have = new Set(merged.map(identity));
+  for (const tile of existing) {
+    const key = identity(tile);
+    if (!have.has(key)) {
+      merged.push(tile);
+      have.add(key);
+    }
+  }
+  return merged;
+}
+
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
@@ -131,6 +148,7 @@ function blockedEqual(a: Blocked, b: Blocked): boolean {
 
 export interface EditorState {
   mapName: string;
+  gameSync: GameSyncMetadata | undefined;
   size: [number, number];
   camera: Camera;
   hover: [number, number] | null;
@@ -215,6 +233,7 @@ export interface EditorState {
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   mapName: "newmap",
+  gameSync: undefined,
   size: [20, 20],
   camera: { x: 0, y: 0, zoom: 1 },
   hover: null,
@@ -246,7 +265,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   // 저장 완료 표시 — dirty 기준점 리셋(resetNonce 증가로 App 구독이 dirty 해제).
   // 저장한 파일은 파생값이 저작값에서 다시 만들어졌으므로 열 때의 손수정 목록도 끝난다.
-  markSaved: () => set((s) => ({ resetNonce: s.resetNonce + 1, loadDrift: [] })),
+  markSaved: () => set((s) => ({ dirty: false, resetNonce: s.resetNonce + 1, loadDrift: [] })),
 
   setMapName: (n) => set({ mapName: n }),
   setSize: (w, h) =>
@@ -306,6 +325,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         palette,
         ground,
         activeIdx,
+        dirty: true,
         groundVer: s.groundVer + 1,
         undoStack: [],
         redoStack: [],
@@ -321,6 +341,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         palette: [],
         ground: new Map(),
         activeIdx: 0,
+        dirty: true,
         groundVer: s.groundVer + 1,
         undoStack: [],
         redoStack: [],
@@ -373,28 +394,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
       const key = cellKey(gx, gy);
       if (s.activeTool === "block") {
+        if (s.gameSync) return {};
         if (s.blocked.has(key)) return {};
         s.blocked.add(key);
         return { blockedVer: s.blockedVer + 1 };
       }
       if (s.activeTool === "eraser") {
         const g = s.ground.delete(key);
-        const b = s.blocked.delete(key);
+        const b = s.gameSync ? false : s.blocked.delete(key);
         if (!g && !b) return {};
         const patch: Partial<EditorState> = {};
-        if (g) patch.groundVer = s.groundVer + 1;
+        if (g) { patch.groundVer = s.groundVer + 1; patch.dirty = true; }
         if (b) patch.blockedVer = s.blockedVer + 1;
         return patch;
       }
       // brush
       if (s.ground.get(key) === s.activeIdx) return {};
       s.ground.set(key, s.activeIdx);
-      return { groundVer: s.groundVer + 1 };
+      return { groundVer: s.groundVer + 1, dirty: true };
     }),
 
   // 이동불가 단일 셀 on/off — block 도구 좌클릭(생성)/우클릭(지우기)에 사용.
   setBlockedAt: (gx, gy, on) =>
     set((s) => {
+      if (s.gameSync) return {};
       const [W, H] = s.size;
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
       const key = cellKey(gx, gy);
@@ -422,6 +445,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
       if (groundEqual(before.ground, s.ground)) return {};
       return {
+        dirty: true,
         groundVer: s.groundVer + 1,
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
         redoStack: [],
@@ -439,6 +463,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   clearAll: () =>
     set((s) => {
+      if (s.gameSync) {
+        if (s.ground.size === 0) return {};
+        const before = snap(s.ground, s.blocked, s.entities);
+        s.ground.clear();
+        return { dirty: true, groundVer: s.groundVer + 1, undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [] };
+      }
       if (s.ground.size === 0 && s.blocked.size === 0 && s.entities.length === 0) return {};
       const before = snap(s.ground, s.blocked, s.entities);
       s.ground.clear();
@@ -637,6 +667,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       s.blocked.clear();
       for (const k of prev.blocked) s.blocked.add(k);
       return {
+        dirty: true,
         entities: prev.entities,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
@@ -656,6 +687,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       s.blocked.clear();
       for (const k of next.blocked) s.blocked.add(k);
       return {
+        dirty: true,
         entities: next.entities,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
@@ -680,6 +712,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       for (const [gx, gy] of r.blocked) s.blocked.add(cellKey(gx, gy));
       return {
         mapName: r.mapName,
+        gameSync: undefined,
         size: r.size,
         groundOrigin: r.groundOrigin,
         staticLayer: r.staticLayer,
@@ -731,6 +764,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       type: PROJECT_TYPE,
       version: PROJECT_VERSION, // 항상 v2(참조만) 로 저장 — v1 을 열었어도 저장 시 승격된다.
       map: s.mapName,
+      ...(s.gameSync ? { gameSync: { ...s.gameSync } } : {}),
       size: s.size,
       groundOrigin: s.groundOrigin,
       ground,
@@ -738,22 +772,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       palette: s.palette.map(toStoredTile),
       staticLayer: s.staticLayer,
       attributeBase: s.attributeBase,
-      entities: exportEntities(s.entities, s.palette), // object 에 scale/footprintCells 부착
+      // 연결 프로젝트는 바닥만 후보 출력한다. 파생값 재계산으로 보호된 게임 엔티티가 변하지 않게 보존.
+      entities: s.gameSync ? s.entities : exportEntities(s.entities, s.palette),
     };
   },
 
   // 프로젝트 열기 — tiles 는 호출측에서 img 까지 로드해 넘긴다(tilesFromStored).
-  // 기존 팔레트는 유지하고 프로젝트 팔레트를 병합(이름 기준) + ground 인덱스를 병합 인덱스로 리맵.
+  // 프로젝트 팔레트/인덱스가 권위. 기존 라이브러리는 충돌 없는 항목만 뒤에 추가.
   loadProject: (p, tiles) =>
     set((s) => {
-      const { merged, indexMap } = mergePalette(s.palette, tiles);
+      const gameSync = parseGameSync(p.gameSync, p.map);
+      const merged = mergeProjectPalette(s.palette, tiles);
       s.ground.clear();
-      for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), indexMap[idx] ?? idx);
+      for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), idx);
       s.blocked.clear();
       for (const [gx, gy] of p.blocked) s.blocked.add(cellKey(gx, gy));
-      const entities = (p.entities ?? []).map(migrateEntity); // 레거시 target* → dest* 하위호환
+      // 연결 프로젝트의 보호 필드는 마이그레이션도 하지 않는다. 변경은 후보 생성 시 서버가 감지한다.
+      const entities = (p.entities ?? []).map((entity) => gameSync ? { ...entity } : migrateEntity(entity));
       return {
         mapName: p.map,
+        gameSync,
         size: p.size,
         groundOrigin: p.groundOrigin,
         staticLayer: p.staticLayer ?? emptyLayer(),
@@ -762,9 +800,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         entities,
         entitiesVer: s.entitiesVer + 1,
         // 에디터 밖에서 고친 파생값 — 열 때 한 번 대조해 둔다(저장 직전 FileMenu 가 아직 바뀌게 될 것만 확인받는다).
-        loadDrift: exportDrift(entities, merged),
+        loadDrift: gameSync ? [] : exportDrift(entities, merged),
         selectedEntityId: null,
-        activeIdx: 0,
+        // 연결 맵의 실제 바닥 소재를 기본 브러시로 선택(구 팔레트의 미지원 RUID 방지).
+        activeIdx: gameSync ? (p.ground[0]?.[2] ?? 0) : 0,
+        ...(gameSync ? { activeTool: "cursor" as Tool } : {}),
         groundVer: s.groundVer + 1,
         blockedVer: s.blockedVer + 1,
         fitNonce: s.fitNonce + 1,
@@ -782,6 +822,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       s.blocked.clear();
       return {
         mapName: "newmap",
+        gameSync: undefined,
         size: [20, 20],
         groundOrigin: [0, 0],
         staticLayer: emptyLayer(),

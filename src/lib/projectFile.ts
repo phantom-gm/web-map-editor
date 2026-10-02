@@ -57,7 +57,7 @@ export async function saveProject(json: string, suggestedName: string, forceNew:
 }
 
 /** FSA 로 프로젝트 열기. 반환: {text, name} 또는 null(취소). FSA 없으면 호출 금지(파일인풋 폴백 사용). */
-export async function openProjectViaPicker(): Promise<{ text: string; name: string } | null> {
+export async function openProjectViaPicker(): Promise<{ text: string; name: string; accept: () => void } | null> {
   if (!win?.showOpenFilePicker) return null;
   let h: FileHandleLike;
   try {
@@ -65,7 +65,6 @@ export async function openProjectViaPicker(): Promise<{ text: string; name: stri
   } catch {
     return null; // 취소
   }
-  handle = h;
   const file = await h.getFile();
-  return { text: await file.text(), name: file.name };
+  return { text: await file.text(), name: file.name, accept: () => { handle = h; } };
 }

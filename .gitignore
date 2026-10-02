@@ -13,3 +13,5 @@ next-env.d.ts
 .vercel
 .env*.local
 .env
+# Local game baselines and candidate outputs
+.game-sync/

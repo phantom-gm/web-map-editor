@@ -1,3 +1,4 @@
+import { beginProjectLoad, finishProjectLoad, isCurrentProjectLoad, clearWorkspaceSession } from "../lib/gameWorkspace";
 import { useRef } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { parseBlueprint, downloadText } from "../lib/blueprintIO";
@@ -8,6 +9,8 @@ import { NumberField } from "./NumberField";
 export function TopBar() {
   const fileRef = useRef<HTMLInputElement>(null);
   const mapName = useEditorStore((s) => s.mapName);
+  const gameSync = useEditorStore((s) => s.gameSync);
+  const resetNonce = useEditorStore((s) => s.resetNonce);
   const size = useEditorStore((s) => s.size);
   const setMapName = useEditorStore((s) => s.setMapName);
   const setSize = useEditorStore((s) => s.setSize);
@@ -18,13 +21,16 @@ export function TopBar() {
     const f = e.target.files?.[0];
     e.target.value = "";
     if (!f) return;
+    const token = beginProjectLoad();
     try {
       const text = await f.text();
       const result = parseBlueprint(JSON.parse(text));
+      if (!isCurrentProjectLoad(token)) return;
+      clearWorkspaceSession();
       importBlueprint(result);
     } catch (err) {
       alert("blueprint import 실패: " + (err instanceof Error ? err.message : String(err)));
-    }
+    } finally { finishProjectLoad(token); }
   };
 
   const onFixSort = () => {
@@ -74,31 +80,31 @@ export function TopBar() {
     <div className="topbar">
       <strong>MSW 맵 에디터</strong>
       <label>
-        맵 <input value={mapName} onChange={(e) => setMapName(e.target.value)} />
+        맵 <input disabled={!!gameSync} value={mapName} onChange={(e) => setMapName(e.target.value)} />
       </label>
       <label>
-        W <NumberField value={size[0]} min={1} onCommit={(w) => setSize(w, size[1])} />
+        W <NumberField disabled={!!gameSync} value={size[0]} min={1} onCommit={(w) => setSize(w, size[1])} />
       </label>
       <label>
-        H <NumberField value={size[1]} min={1} onCommit={(h) => setSize(size[0], h)} />
+        H <NumberField disabled={!!gameSync} value={size[1]} min={1} onCommit={(h) => setSize(size[0], h)} />
       </label>
-      <FileMenu />
+      <FileMenu key={resetNonce} />
       <span className="topbar-sep" />
-      <button onClick={() => fileRef.current?.click()} title="게임 blueprint JSON 가져오기">
+      {!gameSync && <button onClick={() => fileRef.current?.click()} title="게임 blueprint JSON 가져오기">
         Import
-      </button>
+      </button>}
       <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={onImportFile} />
-      <button onClick={onExport} title="게임 blueprint JSON 내보내기">
+      {!gameSync && <button onClick={onExport} disabled={!!gameSync} title={gameSync ? "동기화 맵은 후보 맵 굽기를 사용하세요." : "게임 blueprint JSON 내보내기"}>
         Export
-      </button>
-      <button onClick={onExportRuids} title="palette_ruids_<Map>.json — build_map.cjs 가 소비">
+      </button>}
+      {!gameSync && <button onClick={onExportRuids} title="palette_ruids_<Map>.json — build_map.cjs 가 소비">
         RUID export
-      </button>
-      <button onClick={onFixSort} title="겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(그 위 플레이어가 뒤로 숨는 문제 해소). Export 시 자동 실행됨">
+      </button>}
+      {!gameSync && <button disabled={!!gameSync} onClick={onFixSort} title="겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(그 위 플레이어가 뒤로 숨는 문제 해소). Export 시 자동 실행됨">
         겹침 정렬
-      </button>
+      </button>}
       <button onClick={requestFit}>뷰 맞춤</button>
-      <span className="hint">좌클릭=페인팅 · 스페이스+드래그=팬 · 휠=줌 · 겹침: 다시 클릭=아래 것</span>
+      <span className="hint">좌클릭=페인팅 · 스페이스+드래그=이동 · 휠=확대 · Ctrl+S=저장</span>
     </div>
   );
 }

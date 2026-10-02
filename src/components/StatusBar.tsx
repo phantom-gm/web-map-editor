@@ -15,6 +15,7 @@ const TOOL_LABEL: Record<Tool, string> = {
 };
 
 export function StatusBar() {
+  const linked = useEditorStore(s => !!s.gameSync);
   const hover = useEditorStore((s) => s.hover);
   const size = useEditorStore((s) => s.size);
   const zoom = useEditorStore((s) => s.camera.zoom);
@@ -43,9 +44,9 @@ export function StatusBar() {
       <span>도구: {TOOL_LABEL[tool]}</span>
       <span>활성: {activeName}</span>
       <span>
-        셀 {painted} · 이동불가 {blockedCount} · 엔티티 {entityCount}
+        셀 {painted} · 이동불가 {blockedCount} · {linked ? "편집 기준 항목" : "엔티티"} {entityCount}
       </span>
-      {(south.block > 0 || south.watch > 0) && (
+      {!linked && (south.block > 0 || south.watch > 0) && (
         <span title="1×1 지면 오브젝트의 정렬 바닥선이 앞 칸 중심에 붙었거나 넘었습니다 — 오브젝트를 선택하면 바닥선과 처방이 보입니다">
           정렬 바닥선: {south.block > 0 && <b className="sb-block">차단 {south.block}</b>}
           {south.block > 0 && south.watch > 0 && " · "}

@@ -5,6 +5,8 @@
 // 성능: 커넥션은 withMcpClient 로 1개 열어 배치 전체에서 재사용한다(타일마다 새로 열지 않음).
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { extractEmbeddedPng, parseSpriteMod, type SpriteProperty } from "./spriteMetadata";
+import type { SpriteMetadata } from "../lib/spriteAsset";
 
 const MCP_URL = process.env.MSW_MCP_URL || "https://msw-mcp.nexon.com/mcp";
 const GROUP = process.env.MSW_GROUP_CODE || "43bIK";
@@ -178,4 +180,117 @@ export async function createSpriteResource(
   const ruid = deepFind(j2, ["ruid", "guid", "resource_guid", "resourceGuid"]);
   if (!ruid) throw new Error("step2: RUID 를 찾지 못함 — 응답: " + JSON.stringify(j2).slice(0, 300));
   return { ruid };
+}
+
+/** Metadata lookup addresses each RUID directly; unlike listing, it has no pagination ceiling. */
+export interface SpriteResourceMetadata {
+  ruid: string;
+  resourceType: string;
+  version: string;
+  modPath: string | null;
+  contentHash: string;
+  properties: SpriteProperty[];
+}
+
+interface ResourceMetadataEnvelope {
+  resultList?: Array<{
+    resultCode?: number;
+    resultData?: {
+      ruid?: string;
+      resourceType?: string;
+      versionString?: string;
+      ugcInfo?: { versionString?: string };
+      properties?: SpriteProperty[];
+      windows?: { path?: string; md5?: string };
+      files?: { win?: { path?: string; md5?: string } };
+    };
+  }>;
+}
+
+export async function getGroupResourceMetadata(
+  client: Client, ruids: string[],
+): Promise<Map<string, SpriteResourceMetadata>> {
+  const out = new Map<string, SpriteResourceMetadata>();
+  const requested = new Map(ruids.map(r => [r.toLowerCase(), r]));
+  for (let i = 0; i < ruids.length; i += 50) {
+    const response = await client.callTool({
+      name: "asset_get_group_resource_metadata_bulk",
+      arguments: { groupCode: GROUP, guids: ruids.slice(i, i + 50), localize: false },
+    });
+    const parsed = parseToolJson(response) as ResourceMetadataEnvelope | null;
+    if (!parsed || !Array.isArray(parsed.resultList)) throw new Error("MSW 리소스 메타데이터 응답이 유효하지 않습니다.");
+    for (const entry of parsed.resultList) {
+      const d = entry.resultData;
+      if (entry.resultCode !== 0 || !d?.ruid) continue;
+      const requestedRuid = requested.get(d.ruid.toLowerCase());
+      if (!requestedRuid) continue;
+      const win = d.windows ?? d.files?.win;
+      out.set(requestedRuid, {
+        ruid: d.ruid,
+        resourceType: d.resourceType ?? "",
+        version: d.versionString ?? d.ugcInfo?.versionString ?? "",
+        modPath: win?.path ?? null,
+        contentHash: win?.md5 ?? "",
+        properties: d.properties ?? [],
+      });
+    }
+  }
+  return out;
+}
+
+// Cache versioned bytes only. Storage pivot overrides are applied afresh after each metadata lookup.
+// A bounded cache avoids downloading the same large tree/building after every canvas edit.
+const MOD_CACHE_BYTES = 64 * 1024 * 1024;
+const modBytesCache = new Map<string, Buffer>();
+const pendingModBytes = new Map<string, Promise<Buffer>>();
+let cachedBytes = 0;
+
+async function latestSpriteBytes(resource: SpriteResourceMetadata): Promise<Buffer> {
+  if (!resource.modPath) throw new Error("Sprite has no native file.");
+  const cacheKey = JSON.stringify([MOD_CDN, resource.ruid, resource.version, resource.modPath, resource.contentHash]);
+  const cached = modBytesCache.get(cacheKey);
+  if (cached) {
+    modBytesCache.delete(cacheKey);
+    modBytesCache.set(cacheKey, cached);
+    return cached;
+  }
+  const pending = pendingModBytes.get(cacheKey);
+  if (pending) return pending;
+  const download = (async () => {
+    const response = await fetch(`${MOD_CDN}/${resource.modPath}`, { signal: AbortSignal.timeout(MOD_TIMEOUT_MS), cache: "no-store" });
+    if (!response.ok) throw new Error("Native sprite download failed: " + response.status);
+    const announced = Number(response.headers.get("content-length"));
+    if (announced > MOD_CACHE_BYTES) throw new Error("Native sprite exceeds size limit.");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > MOD_CACHE_BYTES) throw new Error("Native sprite exceeds size limit.");
+    while (cachedBytes + bytes.length > MOD_CACHE_BYTES && modBytesCache.size) {
+      const oldest = modBytesCache.keys().next().value!;
+      cachedBytes -= modBytesCache.get(oldest)!.length;
+      modBytesCache.delete(oldest);
+    }
+    modBytesCache.set(cacheKey, bytes);
+    cachedBytes += bytes.length;
+    return bytes;
+  })();
+  pendingModBytes.set(cacheKey, download);
+  try { return await download; }
+  finally { pendingModBytes.delete(cacheKey); }
+}
+
+export async function fetchSpriteAsset(resource: SpriteResourceMetadata): Promise<{
+  imageUrl: string | null; metadata: SpriteMetadata | null; error?: string;
+}> {
+  const bytes = await latestSpriteBytes(resource);
+  try {
+    const parsed = parseSpriteMod(bytes, resource.properties, resource.version);
+    return { imageUrl: "data:image/png;base64," + parsed.png.toString("base64"), metadata: parsed.metadata };
+  } catch {
+    // Preserve image-only compatibility, but exact canvas rendering must treat missing metrics as unknown.
+    const png = extractEmbeddedPng(bytes);
+    return {
+      imageUrl: png ? "data:image/png;base64," + png.toString("base64") : null,
+      metadata: null,
+      error: png ? "native-metadata-unsupported" : "embedded-png-not-found",
+    };
+  }
 }

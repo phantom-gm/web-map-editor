@@ -13,6 +13,7 @@ export function NumberField({
   step = 1,
   className = "num",
   float = false,
+  disabled = false,
   onCommit,
 }: {
   value: number;
@@ -21,6 +22,7 @@ export function NumberField({
   step?: number;
   className?: string;
   float?: boolean;
+  disabled?: boolean;
   onCommit: (n: number) => void;
 }) {
   const [text, setText] = useState(String(value));
@@ -44,6 +46,7 @@ export function NumberField({
     <input
       className={className}
       type="number"
+      disabled={disabled}
       min={min}
       max={max}
       step={step}

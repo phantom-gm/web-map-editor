@@ -1,5 +1,8 @@
+import { useWorkspaceAutosave } from "./lib/useWorkspaceAutosave";
+import { useWorkspaceSession } from "./lib/gameWorkspace";
 import { useEffect } from "react";
 import { TopBar } from "./components/TopBar";
+import { GameSyncPanel } from "./components/GameSyncPanel";
 import { Toolbar } from "./components/Toolbar";
 import { PalettePanel } from "./components/PalettePanel";
 import { CanvasGrid } from "./components/CanvasGrid";
@@ -9,6 +12,8 @@ import { tilesFromStored } from "./lib/palette";
 import { loadStoredPalette, saveStoredPalette } from "./lib/palettePersist";
 
 export default function App() {
+  useWorkspaceAutosave();
+  const loadingProject = useWorkspaceSession(s => s.loading);
   // 영속 팔레트: 마운트 시 IndexedDB 에서 복원, 이후 palette 변경 시에만 디바운스 저장.
   useEffect(() => {
     let cancelled = false;
@@ -16,7 +21,7 @@ export default function App() {
       const stored = await loadStoredPalette();
       if (cancelled || stored.length === 0) return;
       const tiles = await tilesFromStored(stored);
-      if (!cancelled) useEditorStore.getState().hydratePalette(tiles);
+      if (!cancelled && !useEditorStore.getState().gameSync) useEditorStore.getState().hydratePalette(tiles);
     })();
 
     const unsub = useEditorStore.subscribe((s, prev) => {
@@ -61,8 +66,9 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
+    <div className={"app" + (loadingProject ? " project-loading" : "")} aria-busy={loadingProject}>
       <TopBar />
+      <GameSyncPanel />
       <Toolbar />
       <div className="body">
         <PalettePanel />

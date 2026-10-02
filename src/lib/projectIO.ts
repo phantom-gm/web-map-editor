@@ -16,10 +16,36 @@ import type { StoredTile, StoredTileInput } from "./palette";
 export const PROJECT_TYPE = "web-map-editor-project";
 export const PROJECT_VERSION = 2;
 
+/** 로컬 게임 스냅샷 참조. 게임 파일 자체나 절대 경로는 프로젝트에 담지 않는다. */
+export interface GameSyncMetadata {
+  version: 1;
+  baselineId: string;
+  mapName: string;
+}
+
+/** 잘못된 링크를 조용히 일반 프로젝트로 열면 원본 동기화 계약을 잃으므로 거부한다. */
+export function parseGameSync(value: unknown, mapName?: string): GameSyncMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("게임 동기화 정보 형식이 올바르지 않습니다.");
+  }
+  const link = value as Partial<GameSyncMetadata>;
+  if (link.version !== 1 || typeof link.baselineId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(link.baselineId) ||
+    typeof link.mapName !== "string" || !link.mapName.trim()) {
+    throw new Error("게임 동기화 정보의 버전·스냅샷 ID·맵 이름을 확인하세요.");
+  }
+  if (mapName !== undefined && link.mapName !== mapName) {
+    throw new Error("프로젝트 맵 이름과 게임 동기화 맵 이름이 다릅니다.");
+  }
+  return { version: 1, baselineId: link.baselineId, mapName: link.mapName };
+}
+
 export interface ProjectFile {
   type: typeof PROJECT_TYPE;
   version: number; // 쓰기는 항상 PROJECT_VERSION(2). 읽기는 1도 허용.
   map: string;
+  gameSync?: GameSyncMetadata;
   size: [number, number];
   groundOrigin: [number, number];
   ground: Array<[number, number, number]>; // [gx, gy, paletteIdx]

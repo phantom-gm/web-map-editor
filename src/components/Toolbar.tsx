@@ -1,3 +1,4 @@
+import { useGamePreviewStore } from "../store/gamePreviewStore";
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool, type VisualLayer } from "../store/editorStore";
 import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
@@ -73,6 +74,9 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
 ];
 
 export function Toolbar() {
+  const gameSync = useEditorStore(s => s.gameSync);
+  const preview = useGamePreviewStore();
+  const canPaint = !gameSync || (preview.baselineId === gameSync.baselineId && preview.status === "ready" && preview.scene?.report?.groundEditingSupported === true);
   const tool = useEditorStore((s) => s.activeTool);
   const setTool = useEditorStore((s) => s.setTool);
   const clearAll = useEditorStore((s) => s.clearAll);
@@ -96,6 +100,7 @@ export function Toolbar() {
             data-label={label}
             aria-label={label}
             aria-pressed={tool === t.id}
+            disabled={!!gameSync && (t.id === "block" || (!canPaint && t.id !== "cursor"))}
             onClick={() => setTool(t.id)}
           >
             {ICONS[t.id]}
@@ -103,7 +108,7 @@ export function Toolbar() {
         );
       })}
       <span className="sep" />
-      {ENTITY_KINDS.map((k) => {
+      {!gameSync && ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
         const label = withShortcut(`${meta.label} 배치`, k);
         return (
@@ -129,6 +134,7 @@ export function Toolbar() {
             className={"view-btn" + (visual[v.key] ? " on" : "")}
             aria-pressed={visual[v.key]}
             title={`${v.label} 표시 ${visual[v.key] ? "켜짐 — 클릭하여 숨기기" : "꺼짐 — 클릭하여 표시"}`}
+            disabled={!!gameSync && !preview.showOverlays}
             onClick={() => toggleVisual(v.key)}
           >
             {visual[v.key] ? "👁" : "🚫"} {v.label}
@@ -142,8 +148,8 @@ export function Toolbar() {
       <button onClick={redo} disabled={!canRedo} title="다시실행 (⌘/Ctrl+Shift+Z)">
         ↷ 다시
       </button>
-      <button onClick={clearAll} disabled={painted === 0 && blockedCount === 0}>
-        전체 지우기
+      <button onClick={clearAll} disabled={!canPaint || (painted === 0 && blockedCount === 0)}>
+        {gameSync ? "바닥 지우기" : "전체 지우기"}
       </button>
       <span className="toolbar-info">
         칠해진 셀: {painted} · 이동불가: {blockedCount}

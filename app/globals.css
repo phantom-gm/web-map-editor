@@ -862,3 +862,54 @@ body {
 .statusbar .sb-block {
   color: #ff6b62;
 }
+
+/* Local game synchronization: output controls, independent of canvas rendering. */
+.game-sync-panel {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  background: #17211d;
+  border-bottom: 1px solid #304737;
+  font-size: 12px;
+}
+.game-sync-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.game-sync-controls strong { color: #bce5c6; }
+.game-sync-controls select, .game-sync-controls button {
+  background: #22372b; color: #e4f3e8; border: 1px solid #45624e;
+  border-radius: 4px; padding: 4px 8px; font: inherit;
+}
+.game-sync-controls button { cursor: pointer; }
+.game-sync-controls button:disabled, .topbar button:disabled { opacity: .45; cursor: default; }
+.game-sync-controls small { margin-left: auto; color: #a4baab; }
+.game-sync-message { margin-top: 6px; color: #bce5c6; }
+.game-sync-error { margin-top: 6px; color: #ffb4a8; white-space: pre-wrap; }
+.game-sync-output { margin-top: 6px; overflow-wrap: anywhere; color: #bfcbc3; }
+.game-sync-output code { user-select: all; }
+/* Local game workflow: keep controls legible on narrow windows. */
+.topbar, .toolbar { flex-wrap: wrap; row-gap: 6px; }
+.topbar > strong, .topbar label, .toolbar button { white-space: nowrap; }
+.topbar > strong { flex-shrink: 0; }
+.topbar label { display: inline-flex; align-items: center; gap: 4px; }
+.topbar .hint { flex-basis: 100%; margin-left: 0; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.game-sync-panel { flex-shrink: 0; max-height: 35vh; overflow-y: auto; }
+.game-sync-controls button, .game-sync-view button { white-space: nowrap; }
+.game-sync-view { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; font-size: 12px; }
+.game-sync-view label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.game-sync-view button, .game-sync-details button { font-size: 12px; padding: 3px 7px; color: #deeee5; background: #223b2f; border: 1px solid #4b705b; border-radius: 4px; }
+.game-save-state { color: #b4d6bc; }
+.game-open { font-weight: 650; }
+.game-sync-details { font-size: 12px; margin-top: 5px; color: #b4c8bb; }
+.game-sync-details summary { cursor: pointer; }
+.game-sync-details p { margin: 6px 0; line-height: 1.5; }
+.project-loading .canvas-wrap, .project-loading .palette { pointer-events: none; opacity: .65; }
+.palette-head { flex-wrap: wrap; }
+.palette-head small { color: #a1a7b3; font-size: 11px; }
+.game-sync-output { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .topbar .hint, .toolbar-info { display: none; }
+  .topbar, .toolbar { padding: 6px 8px; gap: 5px; }
+  .topbar label input:not(.num) { width: 90px; }
+  .palette { width: 156px; min-width: 156px; }
+  .game-sync-controls { gap: 5px; }
+  .game-sync-controls select { max-width: 135px; }
+}

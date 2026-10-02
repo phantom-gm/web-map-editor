@@ -19,6 +19,18 @@ import { baselineDyPx, isSouthCandidate, judgeSouth, SOUTH_CELL_PX, type StandCt
 import { isSortGateTarget, sortGatePx } from "../lib/sortGate";
 import { selectStandCtx } from "../store/southSelectors";
 import { EntityInspector } from "./EntityInspector";
+import { drawGamePreview, fitPreviewCamera, type GamePreviewImages, type GamePreviewScene } from "../lib/gamePreview";
+import { useGamePreview } from "../lib/useGamePreview";
+import { useGamePreviewStore } from "../store/gamePreviewStore";
+import { useWorkspaceSession } from "../lib/gameWorkspace";
+
+const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper"]);
+interface PreviewFrame { scene: GamePreviewScene | null; images: GamePreviewImages; showOverlays: boolean }
+function linkedGroundReady(baselineId: string): boolean {
+  const preview = useGamePreviewStore.getState();
+  return preview.status === "ready" && preview.scene?.baselineId === baselineId &&
+    preview.scene.report?.groundEditingSupported === true;
+}
 
 // 배지·바닥선 색 — 남쪽 침범 판정 단계별(요청서 R1·R2). watch=주황(경고) · block=빨강(빌드 게이트가 막음) · 없음=하늘(정상).
 //   ⚠ globals.css 의 .ei-warn-watch/.ei-warn-block/.sb-warn/.sb-block 이 같은 두 색을 쓴다 — 캔버스는 CSS 변수를 못 읽어 값이 두 벌이다. 같이 바꿀 것.
@@ -261,6 +273,7 @@ function draw(
   selectedEntityId: string | null,
   visual: VisualFlags,
   stand: StandCtx, // 설 수 없는 칸(남쪽 침범 판정 재료) — 컴포넌트가 버전 memo selector 로 넘긴다(프레임마다 재계산 금지)
+  preview: PreviewFrame | null,
 ) {
   ctx.clearRect(0, 0, dims.w, dims.h);
   ctx.fillStyle = "#15161a";
@@ -274,22 +287,30 @@ function draw(
   const vis = (cx: number, cy: number) =>
     cx >= -hw && cx <= dims.w + hw && cy >= -hh && cy <= dims.h + hh;
 
-  // 빈 다이아몬드 그리드 (격자 표시 토글)
-  if (visual.grid) {
+  const drawOverlays = !preview || preview.showOverlays;
+  // 일반 편집기는 빈 셀 배경, 연결 미리보기는 실제 Sprite 위 격자만 그린다.
+  const drawGrid = (fill: boolean) => {
     ctx.lineWidth = 1;
-    ctx.strokeStyle = "#2c2f3a";
+    ctx.strokeStyle = fill ? "#2c2f3a" : "rgba(205,220,240,0.36)";
     for (let gy = 0; gy < H; gy++) {
       for (let gx = 0; gx < W; gx++) {
         const [cx, cy] = cellToScreen(gx, gy, cam);
         if (!vis(cx, cy)) continue;
         diamondPath(ctx, cx, cy, hw, hh);
-        ctx.fillStyle = "#1d1f26";
-        ctx.fill();
+        if (fill) {
+          ctx.fillStyle = "#1d1f26";
+          ctx.fill();
+        }
         ctx.stroke();
       }
     }
-  }
+  };
+  if (!preview && visual.grid) drawGrid(true);
 
+  // 연결 미리보기는 실제 후보 스프라이트를 그린다. 논리셀은 별도 1×1 이미지로 중복 렌더하지 않는다.
+  if (preview?.scene) drawGamePreview(ctx, preview.scene, preview.images, cam, dims);
+  if (preview?.showOverlays && visual.grid) drawGrid(false);
+  if (!preview) {
   // 칠해진 셀 — iso 깊이순(gx+gy)
   const cells: Array<[number, number, number]> = [];
   for (const [k, idx] of ground) {
@@ -311,15 +332,34 @@ function draw(
     }
   }
 
+  }
+
+  if (preview?.showOverlays && visual.footprint) {
+    ctx.strokeStyle = "rgba(240,210,90,0.6)";
+    ctx.lineWidth = 1;
+    for (const entity of entities) {
+      if (entity.kind !== "object") continue;
+      for (const [gx, gy] of entityDisplayFootprintCells(entity)) {
+        if (gx < 0 || gy < 0 || gx >= W || gy >= H) continue;
+        const [cx, cy] = cellToScreen(gx, gy, cam);
+        if (!vis(cx, cy)) continue;
+        diamondPath(ctx, cx, cy, hw, hh);
+        ctx.stroke();
+      }
+    }
+  }
+
   // 이동불가 셀 오버레이는 엔티티(오브젝트) 위에 그린다 — 오브젝트 깔린 타일에 이동불가를 칠해도
   // 오브젝트에 가려지지 않고 보이도록(에디터 작업 UX). ↓ 엔티티 루프 다음에서 그림.
 
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   // 선택 오브젝트의 바닥선은 다른 스프라이트에 가리지 않게 루프가 끝난 뒤 그린다(클로저로 미룸).
   let deferredOverlay: (() => void) | null = null;
-  if (entities.length > 0) {
-    const lookup = makeEntityImageLookup(palette);
-    const sorted = sortEntitiesForDraw(entities);
+  const displayedEntities = preview ? (drawOverlays ? entities.filter(entity => entity.kind !== "object") : []) : entities;
+  if (displayedEntities.length > 0) {
+    // 런타임 스폰 엔티티는 정적 게임 배치가 아니다. 연결 모드에서는 편집 마커로만 보여준다.
+    const lookup = makeEntityImageLookup(preview ? [] : palette);
+    const sorted = sortEntitiesForDraw(displayedEntities);
     for (const e of sorted) {
       if (e.gx < 0 || e.gy < 0 || e.gx >= W || e.gy >= H) continue;
       const [cx, cy] = cellToScreen(e.gx, e.gy, cam);
@@ -500,7 +540,7 @@ function draw(
   if (deferredOverlay) deferredOverlay();
 
   // 이동불가 셀 — 빨강 다이아몬드 오버레이. 엔티티 위에 그려 오브젝트 깔린 타일도 보이게(이동불가 표시 토글).
-  if (visual.blocked && blocked.size > 0) {
+  if (drawOverlays && visual.blocked && blocked.size > 0) {
     ctx.fillStyle = "rgba(220,70,70,0.32)";
     ctx.strokeStyle = "#e05050";
     ctx.lineWidth = 1.5;
@@ -516,7 +556,7 @@ function draw(
   }
 
   // rect 미리보기
-  if (rectPreview) {
+  if (drawOverlays && rectPreview) {
     const [x0, y0, x1, y1] = rectPreview;
     const minX = Math.min(x0, x1);
     const maxX = Math.max(x0, x1);
@@ -537,7 +577,7 @@ function draw(
   }
 
   // 호버
-  if (hover) {
+  if (drawOverlays && hover) {
     const [hx, hy] = hover;
     if (hx >= 0 && hy >= 0 && hx < W && hy < H) {
       const [cx, cy] = cellToScreen(hx, hy, cam);
@@ -552,6 +592,14 @@ function draw(
 }
 
 export function CanvasGrid() {
+  useGamePreview();
+  const workspaceLoading = useWorkspaceSession(state => state.loading);
+  const gameSync = useEditorStore(state => state.gameSync);
+  const previewScene = useGamePreviewStore(state => state.scene);
+  const previewImages = useGamePreviewStore(state => state.images);
+  const previewBaselineId = useGamePreviewStore(state => state.baselineId);
+  const showScene = useGamePreviewStore(state => state.showScene);
+  const showOverlays = useGamePreviewStore(state => state.showOverlays);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
@@ -560,12 +608,14 @@ export function CanvasGrid() {
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
+  const activeGroundBaseline = useRef<string | null>(null);
   // 겹침 선택 순환 — mousedown 시점의 후보(앞→뒤) + 눌린 지점. 드래그 없이 뗀 클릭에서만 순환한다
   //   (드래그=이동 규칙과 충돌 안 하도록). Illustrator/Figma 의 "제자리 재클릭 = 아래 것" 동작.
   const downPoint = useRef<{ x: number; y: number } | null>(null);
   const hitCands = useRef<MapEntity[]>([]);
   const spaceDown = useRef(false);
   const didInit = useRef(false);
+  const fittedPreviewBaseline = useRef<string | null>(null);
 
   const size = useEditorStore((s) => s.size);
   const camera = useEditorStore((s) => s.camera);
@@ -586,6 +636,12 @@ export function CanvasGrid() {
   const setCamera = useEditorStore((s) => s.setCamera);
 
   useEffect(() => {
+    if (!workspaceLoading) return;
+    mode.current = null; drag.current = null; strokeBefore.current = null;
+    rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
+  }, [workspaceLoading]);
+
+  useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
@@ -604,13 +660,33 @@ export function CanvasGrid() {
 
   useEffect(() => {
     if (!didInit.current) return;
-    setCamera(fitCamera(dims, size));
+    const linked = useEditorStore.getState().gameSync;
+    const preview = useGamePreviewStore.getState();
+    setCamera(linked && preview.scene?.baselineId === linked.baselineId
+      ? fitPreviewCamera(dims, size, preview.scene, preview.images)
+      : fitCamera(dims, size));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, fitNonce]);
+
+  // 첫 scene을 받은 뒤 상단 상태/경고 영역으로 인한 resize가 안정될 때 한 번 맞춘다.
+  // 이후 편집 응답이나 창 resize는 사용자가 정한 카메라를 움직이지 않는다.
+  useEffect(() => {
+    const baselineId = gameSync?.baselineId;
+    if (!baselineId) { fittedPreviewBaseline.current = null; return; }
+    if (workspaceLoading || previewScene?.baselineId !== baselineId ||
+      previewBaselineId !== baselineId || fittedPreviewBaseline.current === baselineId) return;
+    const timer = window.setTimeout(() => {
+      if (fittedPreviewBaseline.current === baselineId) return;
+      fittedPreviewBaseline.current = baselineId;
+      setCamera(fitPreviewCamera(dims, size, previewScene, previewImages));
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [gameSync, workspaceLoading, previewScene, previewImages, previewBaselineId, dims, size, setCamera]);
 
   // 키보드: Space(팬) + undo/redo
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
+      if (useWorkspaceSession.getState().loading) return;
       if (e.code === "Space") {
         spaceDown.current = true;
         return;
@@ -619,6 +695,11 @@ export function CanvasGrid() {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
       // 단축키는 e.code(물리 키)로 판정 — 한글 IME/레이아웃에서 e.key 가 자모로 바뀌어도 동작.
       const mod = e.metaKey || e.ctrlKey;
+      if (useEditorStore.getState().gameSync &&
+        ((mod && e.code === "KeyD") || ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key))) {
+        e.preventDefault();
+        return;
+      }
       if (mod && e.code === "KeyZ") {
         e.preventDefault();
         if (e.shiftKey) useEditorStore.getState().redo();
@@ -651,7 +732,7 @@ export function CanvasGrid() {
         }
       } else if (!mod) {
         const t = CODE_TO_TOOL[e.code];
-        if (t) useEditorStore.getState().setTool(t);
+        if (t && (!useEditorStore.getState().gameSync || GROUND_TOOLS.has(t))) useEditorStore.getState().setTool(t);
       }
     };
     const ku = (e: KeyboardEvent) => {
@@ -675,12 +756,16 @@ export function CanvasGrid() {
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
+      fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
       useEditorStore.getState().zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, p.x, p.y);
     };
     const onDown = (e: MouseEvent) => {
+      if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
       const st = useEditorStore.getState();
+      fittedPreviewBaseline.current = st.gameSync?.baselineId ?? null;
       const [gx, gy] = screenToCell(p.x, p.y, st.camera);
       if (e.button === 1 || spaceDown.current) {
         mode.current = "pan";
@@ -689,7 +774,7 @@ export function CanvasGrid() {
       }
       if (e.button === 2) {
         // 우클릭: 이동불가 도구일 때만 지우기 스트로크(드래그 지속).
-        if (st.activeTool === "block") {
+        if (!st.gameSync && st.activeTool === "block") {
           mode.current = "blockErase";
           strokeBefore.current = strokeSnap(st);
           st.setBlockedAt(gx, gy, false);
@@ -698,6 +783,16 @@ export function CanvasGrid() {
       }
       if (e.button !== 0) return;
       const tool = st.activeTool;
+      if (st.gameSync && !GROUND_TOOLS.has(tool)) return;
+      const paintsGround = tool === "brush" || tool === "eraser" || tool === "rect";
+      if (st.gameSync && paintsGround && !linkedGroundReady(st.gameSync.baselineId)) return;
+      activeGroundBaseline.current = paintsGround ? st.gameSync?.baselineId ?? null : null;
+      if (st.gameSync && tool === "cursor") {
+        st.selectEntity(null);
+        mode.current = "pan";
+        drag.current = p;
+        return;
+      }
       if (tool === "cursor") {
         // 엔티티 클릭 규칙:
         //  - 미선택 엔티티 클릭 → "선택만"(이동 안 함). 선택하려다 딸려 움직이던 문제 방지.
@@ -756,25 +851,34 @@ export function CanvasGrid() {
       }
     };
     const onMove = (e: MouseEvent) => {
+      if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
       const st = useEditorStore.getState();
       const [gx, gy] = screenToCell(p.x, p.y, st.camera);
+      if (st.gameSync && (mode.current === "paint" || mode.current === "rect") &&
+        (activeGroundBaseline.current !== st.gameSync.baselineId || useGamePreviewStore.getState().status === "error")) return;
       if (mode.current === "pan" && drag.current) {
         st.panBy(p.x - drag.current.x, p.y - drag.current.y);
         drag.current = p;
       } else if (mode.current === "paint") {
-        st.applyTool(gx, gy);
-      } else if (mode.current === "blockErase") {
+        if (!st.gameSync || GROUND_TOOLS.has(st.activeTool)) st.applyTool(gx, gy);
+      } else if (mode.current === "blockErase" && !st.gameSync) {
         st.setBlockedAt(gx, gy, false);
       } else if (mode.current === "rect" && rectStart.current) {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
-      } else if (mode.current === "moveEntity" && movingId.current) {
+      } else if (mode.current === "moveEntity" && movingId.current && !st.gameSync) {
         st.moveEntityTo(movingId.current, gx, gy);
       }
       st.setHover([gx, gy]);
     };
     const onUp = (e: MouseEvent) => {
       const st = useEditorStore.getState();
+      if (useWorkspaceSession.getState().loading ||
+        (st.gameSync && (mode.current === "paint" || mode.current === "rect") && activeGroundBaseline.current !== st.gameSync.baselineId)) {
+        mode.current = null; drag.current = null; strokeBefore.current = null;
+        rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
+        return;
+      }
       if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "moveEntity" && strokeBefore.current) {
@@ -790,7 +894,7 @@ export function CanvasGrid() {
         st.commitStroke(strokeBefore.current); // 이동 없으면 스토어가 no-op 로 흡수
       } else if (mode.current === "rect") {
         const rp = st.rectPreview;
-        if (rp) st.fillRect(rp[0], rp[1], rp[2], rp[3]);
+        if (rp && (!st.gameSync || useGamePreviewStore.getState().status !== "error")) st.fillRect(rp[0], rp[1], rp[2], rp[3]);
         st.setRectPreview(null);
       }
       mode.current = null;
@@ -798,6 +902,7 @@ export function CanvasGrid() {
       strokeBefore.current = null;
       rectStart.current = null;
       movingId.current = null;
+      activeGroundBaseline.current = null;
     };
     const onLeave = () => {
       useEditorStore.getState().setHover(null);
@@ -839,7 +944,11 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual, stand);
+    const preview = gameSync && showScene ? {
+      scene: previewBaselineId === gameSync.baselineId ? previewScene : null,
+      images: previewImages, showOverlays,
+    } : null;
+    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual, stand, preview);
   }, [
     dims,
     size,
@@ -856,6 +965,12 @@ export function CanvasGrid() {
     selectedEntityId,
     visual,
     stand,
+    gameSync,
+    previewScene,
+    previewImages,
+    previewBaselineId,
+    showScene,
+    showOverlays,
   ]);
 
   return (

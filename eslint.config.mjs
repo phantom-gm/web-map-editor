@@ -4,10 +4,14 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "node_modules", ".next"] },
+  { ignores: ["dist", "node_modules", ".next", ".game-sync/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   reactHooks.configs.flat["recommended-latest"],
+  {
+    files: ["scripts/**/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
   {
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
@@ -18,7 +22,7 @@ export default tseslint.config(
   },
   {
     // 설정/테스트/스크립트 파일은 Node 컨텍스트
-    files: ["*.{js,mjs,ts}", "scripts/**/*.{js,mjs}", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
+    files: ["*.{js,mjs,ts}", "scripts/**/*.{js,mjs,cjs}", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
     languageOptions: { globals: { ...globals.node } },
   },
 );
