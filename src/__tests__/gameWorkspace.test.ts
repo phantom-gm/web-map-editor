@@ -167,3 +167,33 @@ describe("editor-owned game workspace", () => {
     expect(fs.readdirSync(path.dirname(f.file)).some(n => n.endsWith(".tmp"))).toBe(false);
   });
 });
+
+describe("native object workspace drafts", () => {
+  it("saves and resumes sparse object edits with the original game link and entities intact", () => {
+    const f = fixture(), p = project();
+    p.entities = [{ id: "authoring-object", kind: "object", gx: 1, gy: 1, scale: 0.173, offset: [0.1, -0.2] }];
+    p.gameObjectEdits = {
+      version: 1,
+      moved: [{ entityId: "native-a", position: [1.28, -0.64] }],
+      removed: ["native-b"],
+      added: [{ entityId: "editor-copy", prototypeId: "native-a", position: [2.56, -1.28] }],
+    };
+    const source = path.join(f.options.gameRoot, "map", "fixture.map"), before = fs.readFileSync(source);
+    const saved = saveWorkspace(p, null, f.options);
+    expect(readWorkspace("fixture", f.options)).toEqual(saved);
+    expect(saved.project.gameSync).toEqual(p.gameSync);
+    expect(saved.project.entities).toEqual(p.entities);
+    expect(saved.project.gameObjectEdits).toEqual(p.gameObjectEdits);
+    expect(fs.readFileSync(source).equals(before)).toBe(true);
+  });
+  it("rejects malformed object overlays before creating a workspace", () => {
+    const f = fixture(), p = project();
+    for (const gameObjectEdits of [
+      { version: 2, moved: [], removed: [], added: [] },
+      { version: 1, moved: [{ entityId: "a", position: [Infinity, 0] }], removed: [], added: [] },
+      { version: 1, moved: [{ entityId: "a", position: [0, 0] }], removed: ["a"], added: [] },
+      { version: 1, moved: [], removed: [], added: [{ entityId: "a", prototypeId: "../bad", position: [0, 0] }] },
+    ]) expect(() => saveWorkspace({ ...p, gameObjectEdits }, null, f.options)).toThrow(WorkspaceError);
+    expect(fs.existsSync(f.options.workspaceRoot)).toBe(false);
+  });
+});

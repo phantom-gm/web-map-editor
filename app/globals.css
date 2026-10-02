@@ -913,3 +913,42 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .game-sync-controls { gap: 5px; }
   .game-sync-controls select { max-width: 135px; }
 }
+/* Native game-object editing shares the actual scene's geometry and asset metadata. */
+.game-object-library { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.object-tabs { display: flex; gap: 5px; padding: 8px; }
+.object-tabs button, .object-placement button, .object-nudge button, .object-selection-tools button { color: #dfe6ef; background: #2a303d; border: 1px solid #495366; border-radius: 5px; padding: 6px 8px; cursor: pointer; }
+.object-tabs button[aria-pressed="true"] { background: #594828; border-color: #c59b47; color: #ffe2a0; }
+.object-search { margin: 0 8px; width: calc(100% - 16px); box-sizing: border-box; padding: 8px; color: #e9edf3; background: #171b23; border: 1px solid #475164; border-radius: 5px; }
+.object-help { font-size: 12px; line-height: 1.5; color: #b4bfce; margin: 8px; }
+.game-object-list { overflow-y: auto; min-height: 0; flex: 1; padding: 0 8px; }
+.game-object-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 60px; margin-bottom: 5px; text-align: left; border: 1px solid #343e50; border-radius: 6px; color: #e2e8f1; background: #202631; padding: 6px; cursor: pointer; }
+.game-object-item img { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; flex: 0 0 48px; }
+.game-object-item span { overflow-wrap: anywhere; font-size: 12px; }
+.game-object-item small { display: block; margin-top: 5px; color: #a7b3c5; font-size: 11px; }
+.game-object-item.selected { border-color: #ffd36f; background: #3d3524; }
+.game-object-item:disabled { opacity: .65; cursor: wait; }
+.object-placement { color: #ffdf97; background: #453921; padding: 8px; font-size: 12px; line-height: 1.5; }
+.game-object-inspector { width: 286px; border-color: #9a7f40; }
+.game-object-inspector .ei-head { color: #ffe2a0; align-items: flex-start; }
+.game-object-inspector .ei-head strong { overflow-wrap: anywhere; flex: 1; }
+.game-object-inspector .object-help { margin: 0; }
+.game-object-inspector button:disabled { opacity: .4; cursor: default; }
+.object-collision { color: #dfc891; font-size: 12px; line-height: 1.5; border-left: 2px solid #ba9550; padding-left: 8px; margin: 0; }
+.object-nudge { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.object-nudge button { font-size: 18px; }
+.game-object-inspector .ei-actions { flex-wrap: wrap; }
+.game-object-inspector .ei-actions button { flex: 1; }
+
+/* Native group selection */
+.object-selection-tools { display: flex; gap: 6px; padding: 0 10px 8px; flex-wrap: wrap; }
+.object-selection-tools button { flex: 1 1 100%; font-size: 11px; padding: 6px; }
+.object-selection-tools button:disabled { opacity: .4; cursor: default; }
+.game-object-library > .object-help { font-size: 11px; line-height: 1.4; }
+.game-object-library > .object-help:last-child { display: none; }
+.object-selection-tools button[aria-pressed="true"] { border-color: #75dce8; background: #21434a; color: #c7f7ff; }
+.selection-count { margin: 8px 0; padding: 8px; background: #203840; border-radius: 5px; font-size: 12px; color: #a8eef4; }
+.selection-error { margin: 8px 0; padding: 9px; border: 1px solid #d97167; background: #422829; color: #ffd3c8; font-size: 12px; line-height: 1.5; border-radius: 5px; }
+.selection-help { color: #a8eef4; }
+.game-object-inspector .object-tabs { padding: 0; margin: 8px 0; }
+.game-object-inspector .ei-actions { flex-wrap: wrap; }
+.game-object-inspector .ei-actions button { flex: 1 1 45%; }

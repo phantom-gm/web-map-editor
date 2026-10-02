@@ -268,3 +268,43 @@ describe("managed workspace client races", () => {
     expect(canSwitch && useEditorStore.getState().dirty).toBe(false);
   });
 });
+
+describe("native object workspace client", () => {
+  it("resumes the same sparse edits before enabling the loaded session", async () => {
+    const p = fixture();
+    p.gameObjectEdits = { version: 1, moved: [{ entityId: "native-a", position: [1.28, -0.64] }], removed: [], added: [] };
+    const token = beginProjectLoad();
+    expect(await loadEditorProject(p, token, receipt("object-r0"))).toBe(true);
+    expect(useEditorStore.getState().exportProject().gameObjectEdits).toEqual(p.gameObjectEdits);
+    expect(useEditorStore.getState().dirty).toBe(false);
+    expect(useWorkspaceSession.getState()).toMatchObject({ baselineId: p.gameSync!.baselineId, revision: "object-r0", loading: false });
+  });
+  it("preserves object-only edits made while a save is in flight, then saves their stable IDs", async () => {
+    await open();
+    useEditorStore.getState().moveGameObjectTo("native-a", [1.28, -0.64]);
+    const pending = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response("objects-r2"));
+    const first = saveManagedProject();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const copyId = useEditorStore.getState().addGameObject("native-a", [2.56, -1.28]);
+    pending.resolve(response("objects-r1"));
+    await first;
+    expect(useEditorStore.getState().dirty).toBe(true);
+    expect(requestBody(0).project.gameObjectEdits?.added).toEqual([]);
+    await saveManagedProject();
+    expect(requestBody(1).expectedRevision).toBe("objects-r1");
+    expect(requestBody(1).project.gameObjectEdits?.added[0].entityId).toBe(copyId);
+    expect(useEditorStore.getState().dirty).toBe(false);
+  });
+  it("saves native object undo results without relying on App subscriptions", async () => {
+    await open();
+    useEditorStore.getState().moveGameObjectTo("native-a", [1.28, -0.64]);
+    fetchMock.mockResolvedValueOnce(response("objects-r1")).mockResolvedValueOnce(response("objects-r2"));
+    await saveManagedProject();
+    useEditorStore.getState().undo();
+    expect(useEditorStore.getState().dirty).toBe(true);
+    await preserveCurrentWork();
+    expect(requestBody(1).project).not.toHaveProperty("gameObjectEdits");
+    expect(useEditorStore.getState().dirty).toBe(false);
+  });
+});

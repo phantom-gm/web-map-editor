@@ -9,6 +9,7 @@
 //     v2 — 참조만. 같은 맵이 약 0.3MB. 상세·마이그레이션: legend_of_light
 //          docs/map/MAP_PROJECT_ASSET_REFERENCE_PLAN.md
 //   v1 파일은 계속 **열 수 있고**(인라인 base64 를 읽어 캐시로 승격), 저장하면 v2 로 승격된다.
+import type { GameObjectEdits } from "./gameObjects";
 import type { Layer } from "../types/blueprint";
 import type { MapEntity } from "../types/entity";
 import type { StoredTile, StoredTileInput } from "./palette";
@@ -46,6 +47,7 @@ export interface ProjectFile {
   version: number; // 쓰기는 항상 PROJECT_VERSION(2). 읽기는 1도 허용.
   map: string;
   gameSync?: GameSyncMetadata;
+  gameObjectEdits?: GameObjectEdits;
   size: [number, number];
   groundOrigin: [number, number];
   ground: Array<[number, number, number]>; // [gx, gy, paletteIdx]

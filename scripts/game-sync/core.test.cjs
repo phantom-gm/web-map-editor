@@ -162,7 +162,7 @@ test('erase one cell preserves a hole; deleting all ground remains a valid candi
 });
 test('protected data edits and missing/tampered sync pointer are explicitly rejected', fixtureOptions, t => {
   const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
-  for (const [field, value] of [['blocked', []], ['size', [9, 9]], ['entities', []], ['groundOrigin', [1, 0]]]) {
+  for (const [field, value] of [['size', [9, 9]], ['entities', []], ['groundOrigin', [1, 0]]]) {
     assert.throws(() => inspectSyncProject({ ...project, [field]: value }, f.options), e => e.code === 'UNSUPPORTED_EDIT');
   }
   assert.throws(() => inspectSyncProject({ ...project, gameSync: undefined }, f.options), e => e.code === 'INVALID_BASELINE');
@@ -293,7 +293,7 @@ test('edited preview and exported map use identical sprite RUIDs, transforms, or
   project.ground.find(c => c[0] === 1 && c[1] === 1)[2] = project.palette.findIndex(p => p.ruid === tile('물').ruid);
   const scene = previewEditedProject(project, f.options), result = exportEditedProject(project, f.options);
   const baked = _test.previewMapSprites(f.MapBuilder.read(result.mapPath), []);
-  const renderFields = sprite => Object.fromEntries(Object.entries(sprite).filter(([name]) => !['id', 'ground'].includes(name)));
+  const renderFields = sprite => Object.fromEntries(Object.entries(sprite).filter(([name]) => !['id', 'ground', 'objectEntityId'].includes(name)));
   assert.deepEqual(scene.sprites.map(renderFields), baked.sprites.map(renderFields));
   assert.deepEqual(scene.report.counts, result.report.counts);
   for (const name of ['Obj_keep', 'Tile_4_0', 'Tile_0_4', 'Tile_3_5']) {
@@ -359,4 +359,204 @@ test('preview preserves source order for ties and keeps protected-source rejecti
   assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
   assert.equal(validateStorageRoot(f.options.outputRoot, f.root), path.resolve(f.options.outputRoot));
   assert.throws(() => validateStorageRoot(path.join(f.root, 'output'), f.root), e => e.code === 'GAME_WRITE_FORBIDDEN');
+});
+
+function objectFixture(t, options) {
+  const f = fixture(t, options), mapPath = path.join(f.root, 'map/fixture.map');
+  const mb = f.MapBuilder.read(mapPath);
+  mb.sprite('Obj_editable', { ruid: 'editable-ruid', pos: [7, 8, 1.77], order: 0 });
+  mb.patchComponent('Obj_editable', 'MOD.Core.TransformComponent', {
+    Scale: { x: 1.4, y: 0.7, z: 1 }, QuaternionRotation: { x: 0, y: 0, z: Math.sin(0.2), w: Math.cos(0.2) }
+  });
+  mb.patchComponent('Obj_editable', 'MOD.Core.SpriteRendererComponent', {
+    FlipX: true, Color: { r: 0.4, g: 0.6, b: 0.8, a: 0.9 }
+  });
+  mb.upsertComponent('Obj_editable', 'script.IsoDepthMetaComponent', {
+    '@type': 'script.IsoDepthMetaComponent', GX: 2, GY: 3, W: 2, H: 3, StaticOrder: 0, StaticZ: 1.77,
+    BaseW: 7, BaseH: 5, ScaleX: 1.4, ScaleY: 0.7, Fade: true, SortPadX: 0.3
+  });
+  mb.sprite('Obj_floor', { ruid: 'floor-ruid', pos: [-1, 1, 0.24], order: -999 });
+  mb.write(mapPath);
+  const walkRelative = 'RootDesk/MyDesk/DataSet/world/DT_Walk.csv';
+  const walkPath = path.join(f.root, walkRelative);
+  fs.writeFileSync(walkPath, '\uFEFFMapName,CellX,CellY\r\n"elsewhere","5","6"\nfixture,2,2\r\nfixture,3,3\nlast,7,8');
+  const projectPath = path.join(f.root, 'map/fixture.json');
+  const p = JSON.parse(fs.readFileSync(projectPath, 'utf8')); p.blocked = [[2, 2], [3, 3]];
+  fs.writeFileSync(projectPath, JSON.stringify(p));
+  return { ...f, mapPath, walkRelative, walkPath };
+}
+const objectPatch = (moved = [], removed = [], added = []) => ({ version: 1, moved, removed, added });
+test('native object move preserves GUID, every unrelated field and source files while updating depth metadata', fixtureOptions, t => {
+  const f = objectFixture(t), before = f.hashes(), walkBefore = fs.readFileSync(f.walkPath);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), item = base.objects.find(o => o.name === 'Obj_editable');
+  assert.ok(item.canMove && item.canDelete && item.canDuplicate); assert.ok(item.collisionNote);
+  assert.equal(base.objects.find(o => o.name === 'existing').canMove, false);
+  project.gameObjectEdits = objectPatch([{ entityId: item.entityId, position: [8.28, 7.36] }]);
+  const preview = previewEditedProject(project, f.options), output = exportEditedProject(project, f.options);
+  const original = f.MapBuilder.read(f.mapPath), candidate = f.MapBuilder.read(output.mapPath);
+  const expected = JSON.parse(JSON.stringify(original.find('Obj_editable')));
+  const tf = expected.jsonString['@components'].find(c => c['@type'] === 'MOD.Core.TransformComponent');
+  tf.Position = { x: 8.28, y: 7.36, z: 1.63 };
+  const meta = expected.jsonString['@components'].find(c => c['@type'] === 'script.IsoDepthMetaComponent');
+  meta.GX = 3; meta.GY = 3; meta.StaticZ = 1.63;
+  assert.deepEqual(candidate.find('Obj_editable'), expected);
+  for (const e of original.listEntities().filter(e => e.name !== 'Obj_editable')) assert.deepEqual(candidate.find(e.path), original.find(e.path));
+  assert.equal(preview.sprites.find(s => s.objectEntityId === item.entityId).id, item.spriteId);
+  assert.deepEqual(preview.objects.find(o => o.entityId === item.entityId).position, [8.28, 7.36, 1.63]);
+  assert.deepEqual(output.report.objectChanges, { moved: 1, removed: 0, added: 0 });
+  assert.equal(output.report.changedCells, 0); assert.equal(output.report.walkChangedCells, 0);
+  assert.deepEqual(output.report.applyFiles, ['map/fixture.map']);
+  assert.deepEqual(f.hashes(), before); assert.ok(fs.readFileSync(f.walkPath).equals(walkBefore));
+});
+test('duplicate/delete use baseline prototypes, fresh native IDs and stable editor IDs; undo restores exact bytes', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), prototype = base.objects.find(o => o.name === 'Obj_editable');
+  const addedId = crypto.randomUUID();
+  project.gameObjectEdits = objectPatch([], [prototype.entityId], [{ entityId: addedId, prototypeId: prototype.entityId, position: [5.72, 7.36] }]);
+  const scene = previewEditedProject(project, f.options), exported = exportEditedProject(project, f.options);
+  const candidate = f.MapBuilder.read(exported.mapPath);
+  assert.equal(candidate.find('Obj_editable'), null);
+  const added = scene.objects.find(o => o.entityId === addedId);
+  assert.equal(added.prototypeId, prototype.entityId); assert.equal(added.canDuplicate, true);
+  assert.notEqual(added.spriteId, prototype.spriteId);
+  assert.equal(scene.objectPrototypes.some(o => o.entityId === prototype.entityId), true);
+  const native = candidate.find('Obj_Editor_' + addedId);
+  assert.notEqual(native.id, prototype.spriteId); assert.equal(native.jsonString.origin.root_entity_id, native.id);
+  const previewSprite = scene.sprites.find(s => s.objectEntityId === addedId);
+  const bakedSprite = _test.previewMapSprites(candidate, []).sprites.find(s => s.name === native.jsonString.name);
+  const visual = s => Object.fromEntries(Object.entries(s).filter(([k]) => !['id', 'objectEntityId'].includes(k)));
+  assert.deepEqual(visual(previewSprite), visual(bakedSprite));
+  assert.deepEqual(candidate.component(native.path, 'script.IsoDepthMetaComponent').GX, 2);
+  assert.deepEqual(candidate.component(native.path, 'script.IsoDepthMetaComponent').GY, 4);
+  delete project.gameObjectEdits;
+  const undone = exportEditedProject(project, f.options);
+  assert.ok(fs.readFileSync(undone.mapPath).equals(fs.readFileSync(f.mapPath)));
+  assert.equal(undone.report.unchanged, true);
+});
+test('empty overlays and identical moves remain exact byte no-ops', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const item = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
+  for (const patch of [objectPatch(), objectPatch([{ entityId: item.entityId, position: item.position.slice(0, 2) }])]) {
+    project.gameObjectEdits = patch;
+    assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  }
+});
+test('unsupported ground does not prevent independent object-floor edits', fixtureOptions, t => {
+  const f = objectFixture(t, { noGround: true }), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const scene = previewEditedProject(project, f.options);
+  assert.equal(scene.report.groundEditingSupported, false);
+  const floor = scene.objects.find(o => o.name === 'Obj_floor');
+  project.gameObjectEdits = objectPatch([{ entityId: floor.entityId, position: [0.28, 0.36] }]);
+  const result = exportEditedProject(project, f.options);
+  assert.equal(result.report.objectChanges.moved, 1);
+  assert.equal(result.report.counts.groundEntities, 0);
+});
+test('object patches reject unsafe IDs, unknown components, references, children, fractional moves and extra mutations', fixtureOptions, t => {
+  const f = objectFixture(t);
+  const mb = f.MapBuilder.read(f.mapPath);
+  mb.sprite('Obj_parent', { ruid: 'parent' }).sprite('Obj_parent/Child', { ruid: 'child' });
+  mb.sprite('Obj_ref', { ruid: 'referenced' });
+  mb.empty('Reference').upsertComponent('Reference', 'script.Other', { '@type': 'script.Other', Target: mb.find('Obj_ref').id });
+  mb.write(f.mapPath);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const scene = previewEditedProject(project, f.options), item = scene.objects.find(o => o.name === 'Obj_editable');
+  for (const name of ['existing', 'Obj_parent', 'Obj_ref']) {
+    const row = scene.objects.find(o => o.name === name); assert.equal(row.canMove, false, name);
+    project.gameObjectEdits = objectPatch([], [row.entityId]);
+    assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'PROTECTED_OBJECT');
+  }
+  const invalid = [
+    [objectPatch([{ entityId: item.entityId, position: [7.1, 8] }]), 'OBJECT_GRID_REQUIRED'],
+    [objectPatch([{ entityId: item.entityId, position: [7, Infinity] }]), 'INVALID_OBJECT_POSITION'],
+    [objectPatch([], [], [{ entityId: 'bad', prototypeId: item.entityId, position: [7, 8] }]), 'INVALID_OBJECT_ID'],
+    [objectPatch([], [], [{ entityId: crypto.randomUUID(), prototypeId: 'missing', position: [7, 8] }]), 'UNKNOWN_OBJECT'],
+    [objectPatch([{ entityId: item.entityId, position: [7, 8], ruid: 'changed' }]), 'INVALID_OBJECT_EDITS'],
+    [objectPatch([{ entityId: item.entityId, position: [7, 8] }], [item.entityId]), 'DUPLICATE_OBJECT_EDIT']
+  ];
+  for (const [patch, code] of invalid) {
+    project.gameObjectEdits = patch;
+    assert.throws(() => inspectSyncProject(project, f.options), e => e.code === code, code);
+  }
+});
+test('explicit blocked edits preserve map bytes, other map CSV records and current-map unchanged records exactly', fixtureOptions, t => {
+  const f = objectFixture(t), sourceMap = fs.readFileSync(f.mapPath), sourceWalk = fs.readFileSync(f.walkPath);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.equal(previewEditedProject(project, f.options).report.walkEditingSupported, true);
+  project.blocked = [[3, 3], [4, 4]];
+  const result = exportEditedProject(project, f.options);
+  assert.equal(result.report.mapUnchanged, true); assert.equal(result.report.unchanged, false);
+  assert.equal(result.report.walkChangedCells, 2); assert.equal(result.report.exactMapBytes, true);
+  assert.deepEqual(result.report.applyFiles, ['map/fixture.map', f.walkRelative]);
+  const candidate = fs.readFileSync(path.join(result.candidateDir, f.walkRelative), 'utf8');
+  assert.equal(candidate, '\uFEFFMapName,CellX,CellY\r\n"elsewhere","5","6"\nfixture,4,4\r\nfixture,3,3\nlast,7,8');
+  assert.ok(fs.readFileSync(path.join(result.candidateDir, 'reference', f.walkRelative)).equals(sourceWalk));
+  assert.ok(fs.readFileSync(f.mapPath).equals(sourceMap)); assert.ok(fs.readFileSync(f.walkPath).equals(sourceWalk));
+  assert.equal(result.report.walkComparison.unchangedOtherRowsExact, true);
+  project.blocked = [[2, 2], [3, 3]];
+  const undo = exportEditedProject(project, f.options);
+  assert.equal(undo.report.unchanged, true); assert.deepEqual(undo.report.applyFiles, ['map/fixture.map']);
+});
+test('target-map walk changes are stale while newer other-map CSV rows are preserved', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked = [[2, 2], [4, 4]];
+  fs.appendFileSync(f.walkPath, '\r\nother,1,1\r\n');
+  const good = exportEditedProject(project, f.options);
+  assert.ok(fs.readFileSync(path.join(good.candidateDir, f.walkRelative), 'utf8').endsWith('other,1,1\r\n'));
+  const changed = fs.readFileSync(f.walkPath, 'utf8').replace('fixture,2,2', 'fixture,2,3');
+  fs.writeFileSync(f.walkPath, changed);
+  assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_WALK_ROWS');
+});
+test('invalid blocked edits and mismatched walk baselines fail closed without preventing no-op export', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  for (const blocked of [[[1, 1], [1, 1]], [[-1, 0]], [[8, 0]], [[1.2, 1]], [[1, 1, 2]]]) {
+    assert.throws(() => inspectSyncProject({ ...project, blocked }, f.options), e => e.code === 'INVALID_BLOCKED');
+  }
+  fs.writeFileSync(f.walkPath, 'MapName,CellX,CellY\r\nfixture,0,0\r\n');
+  const imported = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.equal(previewEditedProject(imported.project, f.options).report.walkEditingSupported, false);
+  assert.equal(exportEditedProject(imported.project, f.options).report.exactMapBytes, true);
+  assert.throws(() => exportEditedProject({ ...imported.project, blocked: [] }, f.options), e => e.code === 'UNSUPPORTED_WALK');
+});
+
+test('rounded original positions remain no-op and plain floors retain their depth residual', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const scene = previewEditedProject(project, f.options), floor = scene.objects.find(o => o.name === 'Obj_floor');
+  project.gameObjectEdits = objectPatch([{ entityId: floor.entityId, position: [floor.position[0] + 1e-9, floor.position[1] - 1e-9] }]);
+  assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  project.gameObjectEdits.moved[0].position = [floor.position[0] + 1.28, floor.position[1] - 0.64];
+  const moved = previewEditedProject(project, f.options).objects.find(o => o.entityId === floor.entityId);
+  assert.ok(Math.abs(moved.position[2] - (floor.position[2] - 0.64 * 0.21875)) < 1e-12);
+  assert.ok(Math.abs((moved.position[2] - moved.position[1] * 0.21875) - (floor.position[2] - floor.position[1] * 0.21875)) < 1e-12);
+});
+test('opaque MapBuilder inputs still allow exact no-op export', fixtureOptions, t => {
+  const f = fixture(t), read = f.MapBuilder.read;
+  f.MapBuilder.read = () => { throw new Error('Opaque format'); };
+  try {
+    const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+    assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  } finally { f.MapBuilder.read = read; }
+});
+test('walk candidate source change during export is rejected before reporting success', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked = [[3, 3], [4, 4]];
+  const write = fs.writeFileSync; let changed = false;
+  fs.writeFileSync = function (file, ...args) {
+    if (!changed && String(file).startsWith(f.options.outputRoot) && String(file).endsWith('DT_Walk.csv')) {
+      changed = true; write.call(fs, f.walkPath, 'MapName,CellX,CellY\r\nfixture,0,0\r\n');
+    }
+    return write.call(fs, file, ...args);
+  };
+  try { assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'REFERENCE_CHANGED_DURING_EXPORT'); }
+  finally { fs.writeFileSync = write; }
+  assert.equal(changed, true);
+});
+test('first blocked cells preserve an unterminated other-map row and alternate CSV column order', fixtureOptions, t => {
+  const f = objectFixture(t), file = path.join(f.root, 'map/fixture.json');
+  const source = JSON.parse(fs.readFileSync(file, 'utf8')); source.blocked = []; fs.writeFileSync(file, JSON.stringify(source));
+  fs.writeFileSync(f.walkPath, '\uFEFFCellY,MapName,CellX\r\n"6","elsewhere","5"');
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked = [[2, 3]];
+  const result = exportEditedProject(project, f.options);
+  assert.equal(fs.readFileSync(path.join(result.candidateDir, f.walkRelative), 'utf8'), '\uFEFFCellY,MapName,CellX\r\n3,fixture,2\r\n"6","elsewhere","5"');
 });

@@ -191,8 +191,8 @@ describe("linked ground-only erasing", () => {
     expect(saved().ground).toEqual([]);
     expect(saved().blocked).toEqual([[5, 6]]);
     expect(saved().entities).toEqual([object]);
-    useEditorStore.getState().setBlockedAt(5, 6, false);
-    expect(saved().blocked).toEqual([[5, 6]]);
+    useEditorStore.getState().setBlockedAt(5, 6, false); // explicit collision editing is separate from the ground eraser
+    expect(saved().blocked).toEqual([]);
   });
   it("clear floor and undo preserve all protected fields", () => {
     const object: MapEntity = { id: "tree", kind: "object", gx: 5, gy: 6 };

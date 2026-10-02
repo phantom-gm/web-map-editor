@@ -1,3 +1,5 @@
+import type { GameSyncReport } from "./gameSync";
+import type { GameObjectDescriptor } from "./gameObjects";
 import { TH, TW, type Camera, type Dims } from "./grid";
 
 export interface GamePreviewConstants {
@@ -11,6 +13,7 @@ export interface GamePreviewConstants {
 }
 export interface GamePreviewSprite {
   id: string;
+  objectEntityId?: string;
   path: string;
   name: string;
   ruid: string;
@@ -34,15 +37,12 @@ export interface GamePreviewScene {
   constants: GamePreviewConstants;
   groundOrigin: [number, number];
   groundBrushRuids?: string[];
+  objects?: GameObjectDescriptor[];
+  objectPrototypes?: GameObjectDescriptor[];
   defaultSortingLayer: string;
   sprites: GamePreviewSprite[];
   warnings: string[];
-  report?: {
-    hiddenSpriteCount?: number;
-    unsupportedSpriteCount?: number;
-    counts?: { groundCells: number; groundEntities: number; bySize: Record<string, number> };
-    [key: string]: unknown;
-  };
+  report?: GameSyncReport;
 }
 /** Resource metadata pivot is normalized from the image's bottom-left corner. */
 export interface GamePreviewAsset {

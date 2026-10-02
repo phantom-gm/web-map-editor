@@ -18,7 +18,11 @@ function loadImage(url: string, signal: AbortSignal): Promise<HTMLImageElement> 
 
 /** Scene resource metadata is authoritative. A missing pivot never becomes a guessed object placement. */
 async function loadSceneImages(scene: GamePreviewScene, cache: GamePreviewImages, signal: AbortSignal) {
-  const ruids = [...new Set(scene.sprites.map(sprite => sprite.ruid))];
+  // Deleted placements still remain available in the baseline-prototype library.
+  const ruids = [...new Set([
+    ...scene.sprites.map(sprite => sprite.ruid),
+    ...(scene.objectPrototypes ?? []).map(object => object.ruid),
+  ])];
   const missing = ruids.filter(ruid => !cache.has(ruid));
   const failures: string[] = [];
   for (let offset = 0; offset < missing.length; offset += 100) {
@@ -52,6 +56,7 @@ export function useGamePreview(): void {
   const groundVer = useEditorStore(state => state.groundVer);
   const blockedVer = useEditorStore(state => state.blockedVer);
   const entitiesVer = useEditorStore(state => state.entitiesVer);
+  const gameObjectsVer = useEditorStore(state => state.gameObjectsVer);
   const palette = useEditorStore(state => state.palette);
   const size = useEditorStore(state => state.size);
   const mapName = useEditorStore(state => state.mapName);
@@ -102,5 +107,5 @@ export function useGamePreview(): void {
       })();
     }, 250);
     return () => { active = false; window.clearTimeout(timer); controller.abort(); };
-  }, [gameSync, groundVer, blockedVer, entitiesVer, palette, size, mapName, refreshNonce]);
+  }, [gameSync, groundVer, blockedVer, entitiesVer, gameObjectsVer, palette, size, mapName, refreshNonce]);
 }

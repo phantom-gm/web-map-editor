@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { parseGameObjectEdits } from "../lib/gameObjects";
 import { isProjectFile, parseGameSync, type ProjectFile } from "../lib/projectIO";
 
 export class WorkspaceError extends Error {
@@ -51,6 +52,7 @@ function validateProject(input: unknown): ProjectFile {
   mapKey(input.map);
   try {
     if (!parseGameSync(input.gameSync, input.map)) throw new WorkspaceError("게임에 연결된 맵만 작업 저장을 사용할 수 있습니다.");
+    parseGameObjectEdits(input.gameObjectEdits);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     throw new WorkspaceError(error instanceof Error ? error.message : "게임 동기화 정보 형식이 올바르지 않습니다.");

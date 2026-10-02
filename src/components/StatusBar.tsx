@@ -1,4 +1,5 @@
 import { useEditorStore, type Tool } from "../store/editorStore";
+import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { selectSouthCounts } from "../store/southSelectors";
 
 const TOOL_LABEL: Record<Tool, string> = {
@@ -16,6 +17,7 @@ const TOOL_LABEL: Record<Tool, string> = {
 
 export function StatusBar() {
   const linked = useEditorStore(s => !!s.gameSync);
+  const preview = useGamePreviewStore();
   const hover = useEditorStore((s) => s.hover);
   const size = useEditorStore((s) => s.size);
   const zoom = useEditorStore((s) => s.camera.zoom);
@@ -33,7 +35,9 @@ export function StatusBar() {
   // 타일/스프라이트 에셋을 쓰는 도구는 활성 팔레트 타일명을, 그 외(포탈/지우개 등)는 도구명 표시.
   const usesTile =
     tool === "brush" || tool === "rect" || tool === "eyedropper" || tool === "monster" || tool === "npc" || tool === "object";
-  const activeName = usesTile ? palette[activeIdx]?.name ?? "(타일 없음)" : TOOL_LABEL[tool];
+  const activeName = linked && tool === "object"
+    ? preview.scene?.objectPrototypes?.find(object => object.prototypeId === preview.placementPrototypeId)?.name ?? "원본 소재 선택"
+    : usesTile ? palette[activeIdx]?.name ?? "(타일 없음)" : TOOL_LABEL[tool];
 
   return (
     <div className="statusbar">
@@ -44,7 +48,7 @@ export function StatusBar() {
       <span>도구: {TOOL_LABEL[tool]}</span>
       <span>활성: {activeName}</span>
       <span>
-        셀 {painted} · 이동불가 {blockedCount} · {linked ? "편집 기준 항목" : "엔티티"} {entityCount}
+        셀 {painted} · 이동불가 {blockedCount} · {linked ? `오브젝트 ${preview.scene?.objects?.length ?? 0}` : `엔티티 ${entityCount}`}
       </span>
       {!linked && (south.block > 0 || south.watch > 0) && (
         <span title="1×1 지면 오브젝트의 정렬 바닥선이 앞 칸 중심에 붙었거나 넘었습니다 — 오브젝트를 선택하면 바닥선과 처방이 보입니다">

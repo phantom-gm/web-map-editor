@@ -1,89 +1,202 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { useEditorStore } from "../store/editorStore";
+import { captureEditorSnapshot, useEditorStore } from "../store/editorStore";
+import type { GameObjectDescriptor } from "../lib/gameObjects";
 import type { PaletteTile } from "../lib/palette";
 import type { ProjectFile, ProjectFileInput } from "../lib/projectIO";
 import { previewSpriteGeometry, type GamePreviewScene } from "../lib/gamePreview";
 import { cellToScreen } from "../lib/grid";
+import { cellKey } from "../lib/cell";
 
 type Counts = { groundCells: number; groundEntities: number; bySize: Record<string, number> };
 type SyncReport = {
-  counts: Counts; preservedEntities: number; groundEditingSupported: boolean;
+  counts: Counts; preservedEntities: number; groundEditingSupported: boolean; warnings: string[];
   exactMapBytes?: boolean; unchanged?: boolean; sourceFilesUnchanged: boolean;
-  datasetsExact?: boolean; gameApplied?: boolean; runtimeVerified?: boolean;
+  datasetsExact?: boolean; gameApplied?: boolean; runtimeVerified?: boolean; changedCells?: number;
+  walkEditingSupported?: boolean; walkChangedCells?: number; applyFiles?: string[];
 };
+type Options = { gameRoot: string; baselineRoot: string; outputRoot: string };
 interface Core {
-  previewEditedProject(project: ProjectFile, options: { gameRoot: string; baselineRoot: string }): GamePreviewScene;
-  createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string }): {
+  previewEditedProject(project: ProjectFile, options: Options): GamePreviewScene;
+  createSyncProject(options: Options & { mapName: string }): {
     project: ProjectFileInput; report: SyncReport; baselineDir: string;
   };
-  exportEditedProject(project: ProjectFile, options: { gameRoot: string; baselineRoot: string; outputRoot: string }): {
-    report: SyncReport; mapPath: string;
+  exportEditedProject(project: ProjectFile, options: Options): {
+    report: SyncReport; mapPath: string; reportPath: string; candidateDir: string;
   };
 }
-const core = createRequire(import.meta.url)("../../scripts/game-sync/core.cjs") as Core;
+interface NativeMap {
+  getTileMapMode(): number;
+  listEntities(): { name: string; path: string; id: string }[];
+  find(name: string): unknown;
+  component(name: string, type: string): Record<string, unknown> | undefined;
+}
+type NativeBuilder = { read(path: string): NativeMap };
+type Asset = { ruid: string; size: number; material: string; variant: string };
+type Block = { name: string; gx: number; gy: number; asset: Asset };
+const requireCjs = createRequire(import.meta.url);
+const core = requireCjs("../../scripts/game-sync/core.cjs") as Core;
 const gameRoot = process.env.MSW_GAME_SYNC_TEST_ROOT;
-const mapNames = ["ferendel", "velos", "ferenforest3"];
-// 로컬 실게임 읽기 전용 통합 검증은 명시적으로 켠다. CI/다른 PC에서는 skip 이유가 이름에 표시된다.
+const mapNames = ["ferendel", "velos", "ferenforest", "ferenforest2", "ferenforest3", "ferenforest4", "ferendelmotel", "ferendelshop"];
+const specialMaps = ["ironhallmine", "ironhallminedepths", "lumiatemple", "noxtemple"];
+// Local real-game reads are explicitly opted in. Missing installations skip in CI/other PCs.
 const enabled = !!gameRoot && mapNames.every(name => existsSync(join(gameRoot, "map", name + ".map")));
 const hash = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const memoryTiles = (p: ProjectFileInput): PaletteTile[] => p.palette.map(t => ({
   name: t.name, ruid: t.ruid, px: t.px, category: t.category, regStatus: t.regStatus,
   hash: t.hash ?? null, img: null, url: "",
 }));
+const exportStore = () => JSON.parse(JSON.stringify(useEditorStore.getState().exportProject())) as ProjectFile;
+const SPRITE = "MOD.Core.SpriteRendererComponent", TRANSFORM = "MOD.Core.TransformComponent";
+const materialKey = (asset: Asset) => asset.material === "길경계" ? asset.material + ":" + asset.variant : asset.material;
 
 describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: MSW_GAME_SYNC_TEST_ROOT)", () => {
-  let runRoot: string;
-  let tempParent: string;
+  let runRoot: string, tempParent: string, builder: NativeBuilder;
+  let assets: Map<string, Asset>;
+  let resourceNames: Map<string, string>;
+  let beforeSources: Record<string, string>;
+  const evidence: Record<string, unknown>[] = [];
+  const options = (): Options => ({
+    gameRoot: gameRoot!, baselineRoot: join(runRoot, "baselines"), outputRoot: join(runRoot, "candidates"),
+  });
+  const sourceFiles = () => execFileSync("git", [
+    "-c", "safe.directory=" + gameRoot!, "-C", gameRoot!, "ls-files", "-z", "--",
+    "map", "RootDesk/MyDesk/DataSet", "scripts/storage-inventory.lock.json", "scripts/build_map.cjs",
+  ], { encoding: "utf8" }).split("\0").filter(file => /\.(map|json|csv|cjs)$/.test(file) && existsSync(join(gameRoot!, file))).sort();
+  const sourceHashes = () => Object.fromEntries(sourceFiles().map(file => [file, hash(join(gameRoot!, file))]));
+
   beforeAll(() => {
     tempParent = realpathSync(tmpdir());
     runRoot = mkdtempSync(join(tempParent, "web-map-editor-store-sync-"));
+    const builderPath = [".agents", ".claude", ".codex"].map(dir =>
+      join(gameRoot!, dir, "skills/msw-general/scripts/map/msw_map_builder.cjs")).find(existsSync);
+    expect(builderPath).toBeDefined();
+    builder = (requireCjs(builderPath!) as { MapBuilder: NativeBuilder }).MapBuilder;
+    const lock = JSON.parse(readFileSync(join(gameRoot!, "scripts/storage-inventory.lock.json"), "utf8")) as {
+      resources: { name: string; ruid: string }[];
+    };
+    assets = new Map();
+    resourceNames = new Map(lock.resources.map(resource => [resource.ruid, resource.name]));
+    for (const resource of lock.resources) {
+      const match = /^페른델_(1|2|4)x\1_(.+)_(\d+)$/.exec(resource.name);
+      if (match) assets.set(resource.ruid, { ruid: resource.ruid, size: Number(match[1]), material: match[2], variant: match[3] });
+    }
+    beforeSources = sourceHashes();
   });
   afterAll(() => {
-    // 재귀 삭제의 절대 대상이 이 테스트가 만든 OS 임시 폴더인지 먼저 검증한다.
     if (!runRoot) return;
+    // Refuse a recursive cleanup unless the resolved target is our own OS temp child.
     if (dirname(runRoot) !== tempParent || !basename(runRoot).startsWith("web-map-editor-store-sync-")) {
       throw new Error("Unsafe test cleanup path");
     }
-    rmSync(runRoot, { recursive: true, force: true });
+    const afterSources = sourceHashes();
+    const changedSources = [...new Set([...Object.keys(beforeSources), ...Object.keys(afterSources)])]
+      .filter(file => beforeSources[file] !== afterSources[file]);
+    const evidencePath = runRoot + ".evidence.json";
+    writeFileSync(evidencePath, JSON.stringify({
+      gameRoot, runRoot, sourceFilesChecked: Object.keys(beforeSources).length,
+      changedSources, sourceHashesBefore: beforeSources, sourceHashesAfter: afterSources, maps: evidence,
+    }, null, 2));
+    console.log("[store-sync-evidence]", evidencePath);
+    // KEEP_OUTPUT is diagnostic only; every output is still outside the game and managed workspaces.
+    if (process.env.MSW_GAME_SYNC_KEEP_OUTPUT !== "1") rmSync(runRoot, { recursive: true, force: true });
+    expect(changedSources, "the test must never change original game inputs").toEqual([]);
   });
 
+  function blocks(map: NativeMap): Block[] {
+    return map.listEntities().filter(entity => entity.name.startsWith("Tile_")).map(entity => {
+      const coordinate = /^Tile_(\d+)_(\d+)$/.exec(entity.name);
+      const ruid = map.component(entity.path, SPRITE)?.SpriteRUID;
+      expect(coordinate, entity.path).not.toBeNull();
+      expect(typeof ruid, entity.path).toBe("string");
+      const asset = assets.get(String(ruid));
+      expect(asset, entity.path).toBeDefined();
+      return { name: entity.name, gx: Number(coordinate![1]), gy: Number(coordinate![2]), asset: asset! };
+    });
+  }
+  function assertCoverage(map: NativeMap, project: ProjectFile) {
+    const actual = new Map<string, string>();
+    for (const block of blocks(map)) {
+      for (let dy = 0; dy < block.asset.size; dy++) for (let dx = 0; dx < block.asset.size; dx++) {
+        const key = [block.gx + dx, block.gy + dy].join(",");
+        expect(actual.has(key), "overlapping exported ground cell " + key).toBe(false);
+        actual.set(key, materialKey(block.asset));
+      }
+    }
+    const expected = new Map(project.ground.map(([x, y, index]) => {
+      const asset = assets.get(project.palette[index].ruid!);
+      expect(asset, "registered editable ground material").toBeDefined();
+      return [[x, y].join(","), materialKey(asset!)] as const;
+    }));
+    expect(actual).toEqual(expected); // Independently expanded native rectangles vs editor cells.
+  }
+  function assertPreviewFile(scene: GamePreviewScene, map: NativeMap) {
+    expect(scene.report?.unsupportedSpriteCount).toBe(0);
+    for (const sprite of scene.sprites) {
+      // Preview and export build separately; new entity UUIDs can differ, native render values cannot.
+      const renderer = map.component(sprite.path, SPRITE);
+      const transform = map.component(sprite.path, TRANSFORM);
+      expect(renderer, sprite.path).toBeDefined();
+      expect(transform, sprite.path).toBeDefined();
+      expect(renderer!.SpriteRUID).toBe(sprite.ruid);
+      expect(transform!.Position).toMatchObject({ x: sprite.position[0], y: sprite.position[1], z: sprite.position[2] });
+      expect(transform!.Scale).toMatchObject({ x: sprite.scale[0], y: sprite.scale[1] });
+      expect(transform!.QuaternionRotation).toMatchObject({
+        x: sprite.quaternion[0], y: sprite.quaternion[1], z: sprite.quaternion[2], w: sprite.quaternion[3],
+      });
+      expect(renderer!.OrderInLayer ?? 0).toBe(sprite.orderInLayer);
+      expect(renderer!.FlipX === true).toBe(sprite.flipX);
+      expect(renderer!.FlipY === true).toBe(sprite.flipY);
+      expect(renderer!.SortingLayer ?? null).toBe(sprite.sortingLayer);
+    }
+    expect(scene.sprites.filter(sprite => sprite.kind === "ground")).toHaveLength(blocks(map).length);
+  }
+  function assertSourceManifest(baselineDir: string) {
+    const manifest = JSON.parse(readFileSync(join(baselineDir, "manifest.json"), "utf8")) as {
+      sourceFiles: { relative: string; exists: boolean; sha256: string | null }[];
+    };
+    for (const file of manifest.sourceFiles) {
+      const absolute = join(gameRoot!, file.relative);
+      expect(existsSync(absolute), file.relative).toBe(file.exists);
+      if (file.exists) expect(hash(absolute), file.relative).toBe(file.sha256);
+    }
+    return manifest.sourceFiles.length;
+  }
+
   for (const mapName of mapNames) {
-    it(mapName + ": 무변경 저장은 실맵 바이트/엔티티 수/데이터를 그대로 출력한다", () => {
-      const options = {
-        gameRoot: gameRoot!, baselineRoot: join(runRoot, "baselines"), outputRoot: join(runRoot, "candidates"),
-      };
+    it(mapName + ": no-op exact → edit preview/export agreement → undo exact, preserving all other entities", () => {
       const sourceMap = join(gameRoot!, "map", mapName + ".map");
-      const sourceProject = join(gameRoot!, "map", mapName + ".json");
       const beforeMap = hash(sourceMap);
-      const beforeProject = existsSync(sourceProject) ? hash(sourceProject) : null;
-      const synced = core.createSyncProject({ ...options, mapName });
+      const original = builder.read(sourceMap);
+      expect(original.getTileMapMode()).toBe(1);
+      const originalBlocks = blocks(original);
+      const synced = core.createSyncProject({ ...options(), mapName });
+      expect(synced.report.groundEditingSupported).toBe(true);
       const incoming = memoryTiles(synced.project);
       useEditorStore.getState().newProject();
       const first = incoming[0];
-      // 기존 개인 라이브러리 + 동일 이름의 오래된 RUID/치수가 있어도 원본 프로젝트가 권위다.
+      // A private library and old same-name metadata must never replace actual game palette entries.
       useEditorStore.setState({ palette: [
         { name: "personal-library", ruid: "private-unused", px: [64, 32], img: null, url: "", category: "foothold" },
         ...(first ? [{ ...first, ruid: "stale-ruid", px: [8192, 4096] as [number, number] }] : []),
       ] });
       useEditorStore.getState().loadProject(synced.project, incoming);
-      const exported = JSON.parse(JSON.stringify(useEditorStore.getState().exportProject())) as ProjectFile;
+      const exported = exportStore();
       expect(exported.gameSync).toEqual(synced.project.gameSync);
       expect(exported.entities).toEqual(synced.project.entities);
       expect(exported.ground).toEqual(synced.project.ground);
       expect(exported.palette.slice(0, incoming.length).map(t => t.ruid)).toEqual(synced.project.palette.map(t => t.ruid));
       expect(exported.palette.slice(incoming.length).map(t => t.ruid)).toContain("private-unused");
 
-      const scene = core.previewEditedProject(exported, options);
+      const scene = core.previewEditedProject(exported, options());
       expect(scene.baselineId).toBe(exported.gameSync?.baselineId);
       expect(scene.constants.TILE_W).toBe(2.56);
-      const groundSprites = scene.sprites.filter(sprite => sprite.kind === "ground" && sprite.ground);
-      expect(groundSprites).toHaveLength(synced.report.counts.groundEntities);
-      for (const sprite of groundSprites) {
+      for (const sprite of scene.sprites.filter(sprite => sprite.kind === "ground" && sprite.ground)) {
         const block = sprite.ground!;
         const cam = { x: 13, y: 29, zoom: 1.5 };
         const geometry = previewSpriteGeometry(sprite, {
@@ -94,31 +207,428 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
         expect(geometry.anchor[1]).toBeCloseTo(expected[1], 7);
         expect(geometry.bounds[2] - geometry.bounds[0]).toBeCloseTo(block.size * 64 * cam.zoom, 7);
       }
-      const candidate = core.exportEditedProject(exported, options);
-      expect(candidate.report.unchanged).toBe(true);
-      expect(candidate.report.exactMapBytes).toBe(true);
-      expect(candidate.report.counts).toEqual(synced.report.counts);
-      expect(candidate.report.sourceFilesUnchanged).toBe(true);
-      expect(candidate.report.datasetsExact).toBe(true);
-      expect(candidate.report.gameApplied).toBe(false);
-      expect(candidate.report.runtimeVerified).toBe(false);
-      expect(hash(candidate.mapPath)).toBe(beforeMap);
-      expect(hash(sourceMap)).toBe(beforeMap);
-      if (beforeProject) expect(hash(sourceProject)).toBe(beforeProject);
-      console.log("[store-sync-roundtrip]", JSON.stringify({
-        mapName, ...candidate.report.counts, entities: synced.report.preservedEntities,
-        exactMapBytes: candidate.report.exactMapBytes, originalGameUnchanged: true,
-      }));
-
-      // 저장 산출물을 재열어도 gameSync UUID와 ground-only 계약이 변하지 않는다.
+      const noOp = core.exportEditedProject(exported, options());
+      expect(noOp.report).toMatchObject({
+        unchanged: true, exactMapBytes: true, counts: synced.report.counts,
+        sourceFilesUnchanged: true, datasetsExact: true, gameApplied: false, runtimeVerified: false,
+      });
+      expect(hash(noOp.mapPath)).toBe(beforeMap);
+      assertCoverage(original, exported);
+      assertPreviewFile(scene, builder.read(noOp.mapPath));
       useEditorStore.getState().loadProject(exported, memoryTiles(exported));
-      const reopened = JSON.parse(JSON.stringify(useEditorStore.getState().exportProject())) as ProjectFile;
-      expect(reopened).toEqual(exported);
+      expect(exportStore()).toEqual(exported);
+
+      // Paint inside a largest existing rectangle, forcing a real 4x4/2x2 split when one exists.
+      const target = [...originalBlocks].sort((a, b) => b.asset.size - a.asset.size)[0];
+      const gx = target.gx + (target.asset.size > 1 ? 1 : 0), gy = target.gy + (target.asset.size > 1 ? 1 : 0);
+      const newIndex = exported.palette.findIndex(tile => {
+        const asset = assets.get(tile.ruid ?? "");
+        return asset?.size === 1 && asset.material !== target.asset.material && asset.material !== "길경계";
+      });
+      expect(newIndex).toBeGreaterThanOrEqual(0);
+      const store = useEditorStore.getState();
+      const beforeStroke = { ground: new Map(store.ground), blocked: new Set(store.blocked), entities: store.entities };
+      store.setActiveIdx(newIndex);
+      store.applyTool(gx, gy);
+      store.commitStroke(beforeStroke);
+      expect(useEditorStore.getState().dirty).toBe(true);
+      const edited = exportStore();
+      const differences = edited.ground.filter(([x, y, index]) => {
+        const previous = beforeStroke.ground.get([x, y].join(","));
+        return previous === undefined || exported.palette[previous].ruid !== edited.palette[index].ruid;
+      });
+      expect(differences).toEqual([[gx, gy, newIndex]]);
+      const editedScene = core.previewEditedProject(edited, options());
+      const editedCandidate = core.exportEditedProject(edited, options());
+      const nativeEdited = builder.read(editedCandidate.mapPath);
+      expect(editedCandidate.report).toMatchObject({ unchanged: false, exactMapBytes: false, changedCells: 1 });
+      expect(hash(editedCandidate.mapPath)).not.toBe(beforeMap);
+      expect(editedScene.report?.counts).toEqual(editedCandidate.report.counts);
+      assertCoverage(nativeEdited, edited);
+      assertPreviewFile(editedScene, nativeEdited);
+      // Full entity records, including UUIDs, scripts, RUID and Transform, survive outside the touched block.
+      const preserved = original.listEntities().filter(entity => entity.name !== target.name);
+      for (const entity of preserved) expect(nativeEdited.find(entity.path), entity.path).toEqual(original.find(entity.path));
+      expect(nativeEdited.listEntities().filter(entity => !entity.name.startsWith("Tile_")).length)
+        .toBe(original.listEntities().filter(entity => !entity.name.startsWith("Tile_")).length);
+
+      useEditorStore.getState().undo();
+      const undone = exportStore();
+      expect(undone).toEqual(exported);
+      const undoScene = core.previewEditedProject(undone, options());
+      const undoCandidate = core.exportEditedProject(undone, options());
+      expect(undoScene.sprites).toEqual(scene.sprites);
+      expect(undoCandidate.report).toMatchObject({ unchanged: true, exactMapBytes: true, counts: synced.report.counts });
+      expect(hash(undoCandidate.mapPath)).toBe(beforeMap);
+      const sourceFilesChecked = assertSourceManifest(synced.baselineDir);
+      expect(hash(sourceMap)).toBe(beforeMap);
+      const row = {
+        mapName, tileMapMode: 1, before: noOp.report.counts, edited: editedCandidate.report.counts,
+        undo: undoCandidate.report.counts, edit: { gx, gy, originalBlockSize: target.asset.size, toRuid: edited.palette[newIndex].ruid },
+        protectedEntityRecords: preserved.length, sourceFilesChecked, sourceMapSha256: beforeMap,
+        noOpExact: true, undoExact: true, previewExportMatch: true,
+        noOpMap: noOp.mapPath, editedMap: editedCandidate.mapPath, undoMap: undoCandidate.mapPath,
+      };
+      evidence.push(row);
+      console.log("[store-sync-roundtrip]", JSON.stringify(row));
+
       useEditorStore.setState({ entities: [
         ...useEditorStore.getState().entities,
         { id: "unsupported-extra", kind: "object", gx: 0, gy: 0, ruid: "test", name: "unsupported" },
       ] });
-      expect(() => core.exportEditedProject(useEditorStore.getState().exportProject(), options)).toThrow("바닥만 지원");
+      expect(() => core.exportEditedProject(exportStore(), options())).toThrow("보호된 원본 항목");
     }, 60_000);
   }
+
+  for (const mapName of specialMaps) {
+    it.skipIf(!existsSync(join(gameRoot ?? "", "map", mapName + ".map")))(mapName + ": support scope is explicit; untouched output stays exact", () => {
+      const sourceMap = join(gameRoot!, "map", mapName + ".map");
+      const original = builder.read(sourceMap);
+      expect(original.getTileMapMode()).toBe(1);
+      const synced = core.createSyncProject({ ...options(), mapName });
+      expect(typeof synced.report.groundEditingSupported).toBe("boolean");
+      expect(synced.report.warnings.length).toBeGreaterThan(0);
+      const project = synced.project as ProjectFile;
+      const scene = core.previewEditedProject(project, options());
+      const candidate = core.exportEditedProject(project, options());
+      expect(candidate.report.exactMapBytes).toBe(true);
+      expect(hash(candidate.mapPath)).toBe(hash(sourceMap));
+      const output = builder.read(candidate.mapPath);
+      for (const entity of original.listEntities()) expect(output.find(entity.path)).toEqual(original.find(entity.path));
+      if (!synced.report.groundEditingSupported) {
+        const edited = JSON.parse(JSON.stringify(project)) as ProjectFile;
+        if (edited.ground.length) edited.ground.pop();
+        else {
+          const leaf = [...assets.values()].find(asset => asset.size === 1)!;
+          edited.palette.push({ name: "unsupported-edit-probe", ruid: leaf.ruid, px: [256, 128] });
+          edited.ground.push([0, 0, edited.palette.length - 1]);
+        }
+        expect(() => core.previewEditedProject(edited, options())).toThrow("바닥 편집은 지원하지 않습니다");
+        expect(() => core.exportEditedProject(edited, options())).toThrow("바닥 편집은 지원하지 않습니다");
+      }
+      const mineFloorObjects = original.listEntities().filter(entity =>
+        /광산바닥/.test(resourceNames.get(String(original.component(entity.path, SPRITE)?.SpriteRUID)) ?? ""));
+      const row = {
+        mapName, groundEditingSupported: synced.report.groundEditingSupported, reasons: synced.report.warnings,
+        editableCellScope: synced.report.groundEditingSupported ? project.ground.map(([x, y]) => [x, y]) : [],
+        protectedMineFloorObjects: mineFloorObjects.map(entity => entity.name),
+        counts: synced.report.counts, visibleSprites: scene.sprites.length,
+        unsupportedSpriteCount: scene.report?.unsupportedSpriteCount, warnings: scene.warnings,
+        preservedEntityRecords: original.listEntities().length, noOpExact: true,
+        noOpMap: candidate.mapPath, sourceFilesChecked: assertSourceManifest(synced.baselineDir),
+      };
+      evidence.push(row);
+      console.log("[store-sync-special-map]", JSON.stringify(row));
+    }, 60_000);
+  }
+  type ObjectScene = GamePreviewScene & { objects: GameObjectDescriptor[]; objectPrototypes: GameObjectDescriptor[] };
+  type NativeRecord = { id: string; path: string; jsonString: { name: string; path: string; "@components": Record<string, unknown>[] } };
+  const depthType = "script.IsoDepthMetaComponent";
+  const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+  function componentsWithoutMove(map: NativeMap, name: string) {
+    const entity = map.find(name) as NativeRecord;
+    const result = cloneValue(entity.jsonString["@components"]);
+    for (const component of result) {
+      if (component["@type"] === TRANSFORM) delete component.Position;
+      if (component["@type"] === depthType) {
+        delete component.GX; delete component.GY; delete component.StaticZ;
+      }
+    }
+    return result;
+  }
+  function assertObjectTranslation(
+    original: NativeMap, output: NativeMap, from: string, to: string, dx: number, dy: number, scene: GamePreviewScene,
+  ) {
+    const before = original.component(from, TRANSFORM)!;
+    const after = output.component(to, TRANSFORM)!;
+    const oldPosition = before.Position as { x: number; y: number; z: number };
+    const newPosition = after.Position as { x: number; y: number; z: number };
+    expect(newPosition.x).toBeCloseTo(oldPosition.x + dx, 9);
+    expect(newPosition.y).toBeCloseTo(oldPosition.y + dy, 9);
+    expect(newPosition.z).toBeCloseTo(oldPosition.z + dy * scene.constants.DEPTH_SCALE, 9);
+    expect(componentsWithoutMove(output, to)).toEqual(componentsWithoutMove(original, from));
+    const oldDepth = original.component(from, depthType), newDepth = output.component(to, depthType);
+    if (oldDepth) {
+      expect(newDepth).toBeDefined();
+      expect(newDepth!.GX).toBe(Number(oldDepth.GX) + Math.round(dx / scene.constants.TILE_W - dy / scene.constants.TILE_H));
+      expect(newDepth!.GY).toBe(Number(oldDepth.GY) + Math.round(-dx / scene.constants.TILE_W - dy / scene.constants.TILE_H));
+      expect(newDepth!.StaticZ).toBeCloseTo(newPosition.z, 9);
+    } else expect(newDepth).toBe(oldDepth);
+  }
+  const csvLines = (file: string) => readFileSync(file, "utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
+
+  for (const mapName of ["ferendel", "ferenforest", "ferendelmotel", "ironhallmine", "lumiatemple"]) {
+    it(mapName + ": move/clone/delete + explicit blocked edits export together, then undo restores native map and walk data", () => {
+      const synced = core.createSyncProject({ ...options(), mapName });
+      const sourceMap = join(gameRoot!, "map", mapName + ".map");
+      const beforeMap = hash(sourceMap);
+      const original = builder.read(sourceMap);
+      expect(original.getTileMapMode()).toBe(1);
+      useEditorStore.getState().newProject();
+      useEditorStore.setState({ palette: [] });
+      useEditorStore.getState().loadProject(synced.project, memoryTiles(synced.project));
+      const baseline = exportStore();
+      const baselineScene = core.previewEditedProject(baseline, options()) as ObjectScene;
+      expect(baselineScene.objects.length).toBeGreaterThan(1);
+      const originals = original.listEntities().filter(entity => entity.name.startsWith("Obj_"));
+      const editable = originals.filter(entity => {
+        const source = baseline.entities.find(item => entity.name === "Obj_" + item.id.slice(0, 8));
+        const roomForBothMoves = !!source && (source.gx + 1 < baseline.size[0] || source.gx > 0) && source.gy + 1 < baseline.size[1];
+        return roomForBothMoves && baselineScene.objects.some(object =>
+          object.entityId === entity.id && object.canMove && object.canDuplicate && object.canDelete);
+      });
+      const wantsFloor = mapName === "ironhallmine" || mapName === "lumiatemple";
+      const mover = wantsFloor
+        ? editable.find(entity => /바닥/.test(resourceNames.get(String(original.component(entity.path, SPRITE)?.SpriteRUID)) ?? ""))
+        : editable.find(entity => {
+          const transform = original.component(entity.path, TRANSFORM);
+          return original.component(entity.path, depthType) &&
+            Math.abs(Number((transform?.QuaternionRotation as { z?: number })?.z ?? 0)) > 0;
+        }) ?? editable.find(entity => !!original.component(entity.path, depthType));
+      expect(mover, mapName + " representative native object").toBeDefined();
+      const removed = editable.find(entity => entity.id !== mover!.id)!;
+      const transform = original.component(mover!.path, TRANSFORM)!;
+      const position = transform.Position as { x: number; y: number; z: number };
+      // One GX step (inward at the map edge), and a separate +GY clone step.
+      const source = baseline.entities.find(item => mover!.name === "Obj_" + item.id.slice(0, 8))!;
+      const direction = source.gx + 1 < baseline.size[0] ? 1 : -1;
+      const dx = direction * baselineScene.constants.TILE_W / 2, dy = -direction * baselineScene.constants.TILE_H / 2;
+      const cloneDx = -baselineScene.constants.TILE_W / 2, cloneDy = -baselineScene.constants.TILE_H / 2;
+      useEditorStore.getState().moveGameObjectTo(mover!.id, [position.x + dx, position.y + dy]);
+      const cloneId = useEditorStore.getState().addGameObject(mover!.id, [position.x + cloneDx, position.y + cloneDy]);
+      expect(cloneId).not.toBeNull();
+      useEditorStore.getState().removeGameObject(removed.id);
+      // Collision cells are authored explicitly, with no guessed ownership or automatic object migration.
+      const blockedBefore = captureEditorSnapshot(useEditorStore.getState());
+      const removeCell = baseline.blocked[0];
+      expect(removeCell).toBeDefined();
+      const occupied = new Set(baseline.blocked.map(cell => cell.join(",")));
+      let addCell: [number, number] | undefined;
+      for (let y = 0; y < baseline.size[1] && !addCell; y++) for (let x = 0; x < baseline.size[0]; x++) {
+        if (!occupied.has([x, y].join(","))) { addCell = [x, y]; break; }
+      }
+      expect(addCell).toBeDefined();
+      useEditorStore.getState().setBlockedAt(removeCell[0], removeCell[1], false);
+      useEditorStore.getState().setBlockedAt(addCell![0], addCell![1], true);
+      useEditorStore.getState().commitStroke(blockedBefore);
+      const edited = exportStore();
+      expect(edited.entities).toEqual(baseline.entities);
+      expect(edited.ground).toEqual(baseline.ground);
+      expect(edited.gameObjectEdits).toMatchObject({
+        moved: [{ entityId: mover!.id, position: [position.x + dx, position.y + dy] }],
+        removed: [removed.id],
+        added: [{ entityId: cloneId, prototypeId: mover!.id, position: [position.x + cloneDx, position.y + cloneDy] }],
+      });
+      const preview = core.previewEditedProject(cloneValue(edited), options()) as ObjectScene;
+      const candidate = core.exportEditedProject(cloneValue(edited), options());
+      const output = builder.read(candidate.mapPath);
+      const cloneName = "Obj_Editor_" + cloneId;
+      const cloneEntity = output.listEntities().find(entity => entity.name === cloneName)!;
+      expect(cloneEntity).toBeDefined();
+      expect(output.listEntities()).toHaveLength(original.listEntities().length);
+      expect(cloneEntity.id).not.toBe(mover!.id);
+      expect(output.listEntities().filter(entity => entity.id === cloneEntity.id)).toHaveLength(1);
+      expect(output.listEntities().find(entity => entity.id === mover!.id)?.path).toBe(mover!.path);
+      expect(output.listEntities().some(entity => entity.id === removed.id)).toBe(false);
+      assertObjectTranslation(original, output, mover!.path, mover!.path, dx, dy, baselineScene);
+      assertObjectTranslation(original, output, mover!.path, cloneEntity.path, cloneDx, cloneDy, baselineScene);
+      const movedRecord = cloneValue(output.find(mover!.path) as NativeRecord);
+      const originalRecord = original.find(mover!.path) as NativeRecord;
+      // Components are checked above; all outer/native identity and metadata must remain untouched.
+      movedRecord.jsonString["@components"] = cloneValue(originalRecord.jsonString["@components"]);
+      expect(movedRecord).toEqual(originalRecord);
+      const unchanged = original.listEntities().filter(entity => entity.id !== mover!.id && entity.id !== removed.id);
+      for (const entity of unchanged) expect(output.find(entity.path), entity.path).toEqual(original.find(entity.path));
+      expect(preview.objects.find(object => object.entityId === cloneId)?.prototypeId).toBe(mover!.id);
+      expect(preview.objects.some(object => object.entityId === removed.id)).toBe(false);
+      assertPreviewFile(preview, output);
+      expect(candidate.report.exactMapBytes).toBe(false);
+      expect(candidate.report.walkEditingSupported).toBe(true);
+      expect(candidate.report.walkChangedCells).toBe(2);
+
+      const walkRelative = candidate.report.applyFiles?.find(file => file.endsWith("/DT_Walk.csv"));
+      expect(walkRelative, "changed collision cells must be an applicable candidate, not just a reference copy").toBeDefined();
+      const sourceWalk = join(gameRoot!, walkRelative!);
+      const candidateWalk = join(candidate.candidateDir, walkRelative!);
+      const sourceRows = csvLines(sourceWalk), candidateRows = csvLines(candidateWalk);
+      const belongs = (line: string) => line.split(",")[0] === baseline.map;
+      expect(candidateRows.filter(line => !belongs(line))).toEqual(sourceRows.filter(line => !belongs(line)));
+      expect(new Set(candidateRows.filter(belongs).map(line => line.split(",").slice(1).map(Number).join(","))))
+        .toEqual(new Set(edited.blocked.map(cell => cell.join(","))));
+      expect(candidateRows.filter(belongs)).toHaveLength(edited.blocked.length);
+      expect(hash(join(candidate.candidateDir, "reference", walkRelative!))).toBe(hash(sourceWalk));
+
+      for (let step = 0; step < 4; step++) useEditorStore.getState().undo();
+      const undone = exportStore();
+      expect(undone).toEqual(baseline);
+      const undoScene = core.previewEditedProject(undone, options());
+      const undoCandidate = core.exportEditedProject(undone, options());
+      expect(undoScene.sprites).toEqual(baselineScene.sprites);
+      expect(undoCandidate.report.exactMapBytes).toBe(true);
+      expect(hash(undoCandidate.mapPath)).toBe(beforeMap);
+      expect(undoCandidate.report.applyFiles).not.toContain(walkRelative);
+      expect(hash(join(undoCandidate.candidateDir, "reference", walkRelative!))).toBe(hash(sourceWalk));
+      const sourceFilesChecked = assertSourceManifest(synced.baselineDir);
+      const row = {
+        scenario: "object-and-walk", mapName, moved: mover!.name, deleted: removed.name, cloned: cloneName,
+        asset: resourceNames.get(String(original.component(mover!.path, SPRITE)?.SpriteRUID)),
+        hasDepthMeta: !!original.component(mover!.path, depthType),
+        cloneNativeId: cloneEntity.id, preservedEntityRecords: unchanged.length,
+        walkRemoved: removeCell, walkAdded: addCell, walkChangedCells: candidate.report.walkChangedCells,
+        candidateMap: candidate.mapPath, candidateWalk, undoMap: undoCandidate.mapPath,
+        previewExportMatch: true, undoExact: true, sourceFilesChecked,
+      };
+      evidence.push(row);
+      console.log("[object-walk-roundtrip]", JSON.stringify(row));
+    }, 60_000);
+  }
+
+  for (const mapName of ["ferendelmotel", "ironhallmine", "lumiatemple"]) {
+    it(mapName + ": atomic groups move/copy/delete explicit collision cells, survive save/reload, and undo together", () => {
+      const synced = core.createSyncProject({ ...options(), mapName });
+      useEditorStore.getState().loadProject(synced.project, memoryTiles(synced.project));
+      const baseline = exportStore();
+      const baselineScene = core.previewEditedProject(baseline, options()) as ObjectScene;
+      const originalPath = join(gameRoot!, "map", mapName + ".map");
+      const original = builder.read(originalPath), originalHash = hash(originalPath);
+      expect(original.getTileMapMode()).toBe(1);
+      const selectedObjects = baselineScene.objects.filter(object =>
+        object.canMove && object.canDuplicate && object.canDelete &&
+        (mapName === "ferendelmotel" ? /탁자/.test(object.name) : /바닥/.test(object.name))).slice(0, 2);
+      expect(selectedObjects).toHaveLength(2);
+      const ids = selectedObjects.map(object => object.entityId);
+      const nativeObjects = ids.map(id => original.listEntities().find(entity => entity.id === id)!);
+      expect(nativeObjects.every(Boolean)).toBe(true);
+      const baselineBlocked = new Set(baseline.blocked.map(([x, y]) => cellKey(x, y)));
+      // Select two existing cells with genuinely empty left neighbours; no collision ownership is inferred.
+      const cells = baseline.blocked.filter(([x, y]) => x > 0 && !baselineBlocked.has(cellKey(x - 1, y))).slice(0, 2);
+      expect(cells).toHaveLength(2);
+      const keys = cells.map(([x, y]) => cellKey(x, y));
+      const targetKeys = cells.map(([x, y]) => cellKey(x - 1, y));
+      const delta: [number, number] = [-1, 0];
+      const dx = -baselineScene.constants.TILE_W / 2, dy = baselineScene.constants.TILE_H / 2;
+      const select = (selectedCells = keys) => {
+        useEditorStore.getState().selectGameObjects(ids);
+        useEditorStore.getState().selectBlockedCells(selectedCells);
+        expect(useEditorStore.getState().selectedGameObjectIds).toEqual(ids);
+        expect(useEditorStore.getState().selectedBlockedCells).toEqual(selectedCells);
+      };
+      const assertRejected = (scene: ObjectScene, offset: [number, number], reason: string) => {
+        const before = exportStore(), state = useEditorStore.getState();
+        const counters = [state.undoStack.length, state.gameObjectsVer, state.blockedVer, state.dirty];
+        expect(state.transformGameSelection("move", scene, offset)).toBe(false);
+        expect(exportStore()).toEqual(before);
+        const after = useEditorStore.getState();
+        expect([after.undoStack.length, after.gameObjectsVer, after.blockedVer, after.dirty]).toEqual(counters);
+        expect(after.gameSelectionError).toContain(reason);
+      };
+      select();
+      assertRejected(baselineScene, [-baseline.size[0], 0], "경계");
+      const overlap = baseline.blocked.find(([x, y]) => x > 0 && baselineBlocked.has(cellKey(x - 1, y)))!;
+      expect(overlap).toBeDefined();
+      select([cellKey(...overlap)]);
+      assertRejected(baselineScene, delta, "겹칩니다");
+      select();
+      const protectedScene = cloneValue(baselineScene);
+      for (const collection of [protectedScene.objects, protectedScene.objectPrototypes]) {
+        const protectedObject = collection.find(object => object.entityId === ids[1])!;
+        protectedObject.canMove = false;
+        protectedObject.reason = "통합 검증용 보호 대상";
+      }
+      assertRejected(protectedScene, delta, "보호 대상");
+
+      for (const operation of ["move", "duplicate", "delete"] as const) {
+        useEditorStore.getState().loadProject(baseline, memoryTiles(baseline));
+        select();
+        expect(useEditorStore.getState().undoStack).toHaveLength(0);
+        expect(useEditorStore.getState().transformGameSelection(operation, baselineScene, delta)).toBe(true);
+        expect(useEditorStore.getState().undoStack).toHaveLength(1);
+        expect(useEditorStore.getState().gameSelectionError).toBeNull();
+        const edited = exportStore();
+        expect(edited.entities).toEqual(baseline.entities);
+        expect(edited.ground).toEqual(baseline.ground);
+        const expectedBlocked = new Set(baselineBlocked);
+        if (operation !== "duplicate") for (const key of keys) expectedBlocked.delete(key);
+        if (operation !== "delete") for (const key of targetKeys) expectedBlocked.add(key);
+        expect(new Set(edited.blocked.map(([x, y]) => cellKey(x, y)))).toEqual(expectedBlocked);
+        for (const key of baselineBlocked) if (!keys.includes(key)) {
+          expect(expectedBlocked.has(key), "unselected collision cell " + key).toBe(true);
+        }
+        const overlay = edited.gameObjectEdits!;
+        expect(overlay.moved).toHaveLength(operation === "move" ? 2 : 0);
+        expect(overlay.added).toHaveLength(operation === "duplicate" ? 2 : 0);
+        expect(overlay.removed).toHaveLength(operation === "delete" ? 2 : 0);
+        if (operation === "move") assertRejected(baselineScene, delta, "미리보기");
+        const preview = core.previewEditedProject(edited, options()) as ObjectScene;
+        const candidate = core.exportEditedProject(edited, options());
+        const output = builder.read(candidate.mapPath);
+        assertPreviewFile(preview, output);
+        expect(output.listEntities()).toHaveLength(original.listEntities().length + (operation === "duplicate" ? 2 : operation === "delete" ? -2 : 0));
+        for (const entity of nativeObjects) {
+          if (operation === "move") {
+            expect(output.listEntities().find(item => item.path === entity.path)?.id).toBe(entity.id);
+            assertObjectTranslation(original, output, entity.path, entity.path, dx, dy, baselineScene);
+            const movedRecord = cloneValue(output.find(entity.path) as NativeRecord);
+            const beforeRecord = original.find(entity.path) as NativeRecord;
+            movedRecord.jsonString["@components"] = cloneValue(beforeRecord.jsonString["@components"]);
+            expect(movedRecord).toEqual(beforeRecord);
+          } else if (operation === "delete") expect(output.find(entity.path)).toBeNull();
+          else {
+            expect(output.find(entity.path)).toEqual(original.find(entity.path));
+            const added = overlay.added.find(item => item.prototypeId === entity.id)!;
+            const copy = output.listEntities().find(item => item.name === "Obj_Editor_" + added.entityId)!;
+            expect(copy).toBeDefined();
+            expect(original.listEntities().some(item => item.id === copy.id)).toBe(false);
+            assertObjectTranslation(original, output, entity.path, copy.path, dx, dy, baselineScene);
+          }
+        }
+        const untouched = original.listEntities().filter(entity => operation === "duplicate" || !ids.includes(entity.id));
+        for (const entity of untouched) expect(output.find(entity.path), entity.path).toEqual(original.find(entity.path));
+        const walkRelative = (candidate.report.applyFiles ?? []).find(file => file.endsWith("/DT_Walk.csv"))!;
+        expect(walkRelative).toBeDefined();
+        const sourceWalk = join(gameRoot!, walkRelative), candidateWalk = join(candidate.candidateDir, walkRelative);
+        const sourceRows = csvLines(sourceWalk), candidateRows = csvLines(candidateWalk);
+        const belongs = (line: string) => line.split(",")[0] === baseline.map;
+        expect(candidateRows.filter(line => !belongs(line))).toEqual(sourceRows.filter(line => !belongs(line)));
+        expect(new Set(candidateRows.filter(belongs).map(line => line.split(",").slice(1).join(",")))).toEqual(expectedBlocked);
+        expect(candidateRows.filter(belongs)).toHaveLength(expectedBlocked.size);
+        expect(candidate.report.walkChangedCells).toBe(operation === "move" ? 4 : 2);
+        expect(hash(join(candidate.candidateDir, "reference", walkRelative))).toBe(hash(sourceWalk));
+
+        const savedPath = join(runRoot, mapName + "-group-" + operation + ".json");
+        writeFileSync(savedPath, JSON.stringify(edited));
+        useEditorStore.getState().undo(); // One history entry must restore objects AND explicit collision cells.
+        expect(exportStore()).toEqual(baseline);
+        const undone = core.exportEditedProject(exportStore(), options());
+        expect(hash(undone.mapPath)).toBe(originalHash);
+        expect(undone.report.exactMapBytes).toBe(true);
+        expect(undone.report.applyFiles).not.toContain(walkRelative);
+        expect(hash(join(undone.candidateDir, "reference", walkRelative))).toBe(hash(sourceWalk));
+
+        const reopened = JSON.parse(readFileSync(savedPath, "utf8")) as ProjectFileInput;
+        useEditorStore.getState().loadProject(reopened, memoryTiles(reopened));
+        expect(exportStore()).toEqual(edited);
+        expect(useEditorStore.getState().selectedGameObjectIds).toEqual([]);
+        expect(useEditorStore.getState().selectedBlockedCells).toEqual([]);
+        expect(useEditorStore.getState().undoStack).toHaveLength(0);
+        const reloadScene = core.previewEditedProject(exportStore(), options()) as ObjectScene;
+        const reloadCandidate = core.exportEditedProject(exportStore(), options());
+        assertPreviewFile(reloadScene, builder.read(reloadCandidate.mapPath));
+        const rendered = (scene: ObjectScene) => scene.sprites.map(sprite => Object.fromEntries(Object.entries(sprite).filter(([key]) => key !== "id")));
+        expect(rendered(reloadScene)).toEqual(rendered(preview));
+        expect(hash(join(reloadCandidate.candidateDir, walkRelative))).toBe(hash(candidateWalk));
+        const row = {
+          scenario: "atomic-group-and-walk", mapName, operation, selectedObjects: nativeObjects.map(entity => entity.name),
+          selectedCells: cells, targetCells: operation === "delete" ? [] : cells.map(([x, y]) => [x - 1, y]),
+          preservedEntityRecords: untouched.length, walkChangedCells: candidate.report.walkChangedCells,
+          candidateMap: candidate.mapPath, candidateWalk, undoMap: undone.mapPath, savedProject: savedPath,
+          reloadedMap: reloadCandidate.mapPath, previewExportMatch: true, oneUndoExact: true, saveReloadExact: true,
+          sourceFilesChecked: assertSourceManifest(synced.baselineDir),
+        };
+        evidence.push(row);
+        console.log("[atomic-group-roundtrip]", JSON.stringify(row));
+      }
+    }, 90_000);
+  }
+
 });

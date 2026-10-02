@@ -1,9 +1,11 @@
 'use strict';
-// Ground-only candidate compiler. The game checkout is always an input, never a destination.
+// Candidate compiler for explicit floor, native object and blocked-cell edits. The game checkout is always an input, never a destination.
 // No game CLI is executed: current MapBuilder + coordinate constants are read-only dependencies.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const objectEdits = require('./object-edits.cjs');
+const walkEdits = require('./walk-edits.cjs');
 
 const VERSION = 1;
 const TILE_NAME = /^Tile_(\d+)_(\d+)$/;
@@ -175,12 +177,13 @@ function projectDefaults(raw, mapName) {
   p.size = p.size || [1, 1]; p.groundOrigin = p.groundOrigin || [0, 0];
   p.ground = p.ground || []; p.blocked = p.blocked || []; p.entities = p.entities || [];
   p.palette = (p.palette || []).map(t => { const v = { ...t }; delete v.url; delete v.img; return v; });
+  delete p.gameObjectEdits; // The actual native map, not an old editor overlay, is the baseline.
   p.staticLayer = p.staticLayer || emptyLayer(); p.attributeBase = p.attributeBase || emptyLayer();
   return p;
 }
 function protectedState(p) {
   const out = { ...p };
-  for (const k of ['ground', 'palette', 'gameSync']) delete out[k];
+  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked']) delete out[k];
   return out;
 }
 function counts(blocks, groundCells, groundEntities = blocks.length) {
@@ -388,8 +391,19 @@ function inspectSyncProject(project, options) {
   if (stable(protectedState(project)) !== stable(protectedState(baseline))) {
     const a = protectedState(baseline), b = protectedState(project);
     const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => stable(a[k]) !== stable(b[k]));
-    fail('UNSUPPORTED_EDIT', '1차 동기화는 바닥만 지원합니다. 변경된 보호 항목: ' + changed.join(', '));
+    fail('UNSUPPORTED_EDIT', '보호된 원본 항목은 직접 바꿀 수 없습니다. 변경 항목: ' + changed.join(', '));
   }
+  const deps = loadDependencies(root);
+  let original;
+  try { original = deps.MapBuilder.read(safeChild(state.dir, 'snapshot/' + manifest.mapRelative, root)); }
+  catch { /* Opaque native maps still permit exact unchanged output. */ }
+  const objectProfile = original ? objectEdits.analyzeObjects(original, baseline, previewMapSprites(original, manifest.blocks))
+    : { records: new Map(), entities: [] };
+  const objects = objectEdits.inspectObjectEdits(project.gameObjectEdits, objectProfile, manifest.constants);
+  const walkFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
+  const walkRelative = walkFiles.length === 1 ? walkFiles[0] : null;
+  const walkBytes = walkRelative ? fs.readFileSync(safeChild(state.dir, 'snapshot/' + walkRelative, root)) : null;
+  const walk = walkEdits.inspectBlocked(project, walkEdits.analyzeWalk(walkBytes, walkRelative, baseline, manifest.mapName));
   const before = groundMap(baseline), after = groundMap(project);
   const changed = changesBetween(before, after);
   if (changed.length && !manifest.groundEditingSupported) fail('UNSUPPORTED_GROUND', '이 맵의 바닥 편집은 지원하지 않습니다: ' + manifest.unsupportedReasons.join(' / '));
@@ -404,28 +418,37 @@ function inspectSyncProject(project, options) {
   }
   const area = new Map([...after].filter(([k]) => dirty.has(k)));
   const replacements = changed.length ? packCells(area, manifest.catalog) : [];
-  return { ...state, before, after, affected, replacements, dirty,
-    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: changed.length === 0,
+  const mapUnchanged = changed.length === 0 && !objects.changed;
+  const warnings = changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.'] : [...manifest.unsupportedReasons];
+  if (objects.changed) warnings.push('선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.');
+  if (walk.changed) warnings.push('후보 DT_Walk에 현재 맵에서 직접 수정한 이동불가 셀만 반영합니다. 게임 원본에는 적용하지 않습니다.');
+  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk,
+    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed, mapUnchanged,
+      objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
+      objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
+      editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
+      protectedObjects: [...objectProfile.records.values()].filter(r => !r.descriptor.canMove).length,
+      walkEditingSupported: walk.supported, walkEditingReasons: walk.reasons, walkChangedCells: walk.changed,
       changedCells: changed.length, affectedCells: dirty.size, removedGroundEntities: affected.length,
       generatedGroundEntities: replacements.length,
       groundEditingSupported: manifest.groundEditingSupported, strictSourceFilesUnchangedSinceBaseline: true,
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
-      preservedEntities: manifest.totalEntities - affected.length,
-      warnings: changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.']
-        : [...manifest.unsupportedReasons] } };
+      preservedEntities: manifest.totalEntities - affected.length - objects.moved.length - objects.removed.length,
+      warnings } };
 }
 // Shared in-memory map construction keeps preview and export on the same packing path.
 function buildCandidateMap(project, checked) {
-  const { root, dir, manifest, affected, replacements, after, report } = checked;
+  const { root, dir, manifest, affected, replacements, after, report, objects } = checked;
   const deps = loadDependencies(root);
   if (stable(deps.constants) !== stable(manifest.constants)) fail('STALE_SOURCE', '게임 좌표 상수가 변경되었습니다.');
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mb = deps.MapBuilder.read(originalPath);
+  const changedPaths = new Set([...objects.moved, ...objects.removed].map(e => e.record.item.path));
   const removedNames = new Set(affected.map(b => b.name));
-  const preserved = mb.listEntities().filter(e => !removedNames.has(e.name)).map(e => [e.name, stable(mb.find(e.name))]);
-  if (!report.unchanged) {
+  const preserved = mb.listEntities().filter(e => !removedNames.has(e.name) && !changedPaths.has(e.path)).map(e => [e.path, stable(mb.find(e.path))]);
+  if (report.changedCells > 0) {
     for (const b of affected) mb.remove(b.name);
     for (const b of replacements) {
       const name = 'Tile_' + b.gx + '_' + b.gy;
@@ -438,7 +461,9 @@ function buildCandidateMap(project, checked) {
     const parseErrors = parsed.reasons.filter(reason => !(after.size === 0 && reason.startsWith('Tile_*')));
     if (parseErrors.length || stable(sortedKeys(parsed.coverage)) !== stable(sortedKeys(after))) fail('COVERAGE_FAILED', '출력 바닥의 겹침, 빈칸 또는 좌표 검증에 실패했습니다.');
   }
-  return { mb, deps, preserved };
+  const editedObjects = objectEdits.applyObjectEdits(mb, objects, stable);
+  for (const [entityPath, value] of preserved) if (stable(mb.find(entityPath)) !== value) fail('PRESERVATION_FAILED', '보호 엔티티가 변경되었습니다: ' + entityPath);
+  return { mb, deps, preserved, editedObjects };
 }
 function previewMapSprites(mb, blocks) {
   // listEntities() sorts by path; build() preserves the file order needed for render ties.
@@ -510,12 +535,15 @@ function previewEditedProject(project, options) {
   const { root, manifest, affected, replacements, report } = checked;
   const blocks = manifest.blocks.filter(b => !affected.includes(b)).concat(replacements);
   const scene = previewMapSprites(mb, blocks);
+  const nativeObjects = objectEdits.objectScene(mb, checked.objectProfile, checked.objects);
+  const objectIds = new Map(nativeObjects.objects.map(o => [o.spriteId, o.entityId]));
+  for (const sprite of scene.sprites) if (objectIds.has(sprite.id)) sprite.objectEntityId = objectIds.get(sprite.id);
   verifySources(root, manifest);
   return {
     version: VERSION, baselineId: manifest.baselineId, mapName: manifest.mapName,
     constants: { ...manifest.constants, PPU: deps.ppu }, groundOrigin: clone(project.groundOrigin),
     // Native SpriteRendererComponent.d.mlua declares SortingLayer = "Default".
-    defaultSortingLayer: 'Default', sprites: scene.sprites,
+    defaultSortingLayer: 'Default', sprites: scene.sprites, ...nativeObjects,
     groundBrushRuids: [...new Set(manifest.catalog.filter(t => t.n === 1).map(t => t.ruid))],
     warnings: [...report.warnings, ...scene.warnings],
     report: { ...report, spriteCount: scene.spriteCount, visibleSpriteCount: scene.sprites.length,
@@ -529,6 +557,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const checked = inspectSyncProject(project, { gameRoot, baselineRoot });
   const { root, dir, manifest, affected, report } = checked;
   const references = captureDatasetReferences(root, manifest);
+  const walkReference = checked.walk.changed ? references.captured.find(r => r.relative === checked.walk.relative) : null;
+  if (checked.walk.changed && !walkReference?.bytes) fail('STALE_WALK_ROWS', 'DT_Walk 원본이 없어졌습니다. 게임 원본을 다시 가져오세요.');
+  const walkCandidate = checked.walk.changed ? walkEdits.buildWalkCandidate(walkReference.bytes, checked.walk, manifest.mapName) : null;
   const output = outsideGame(outputRoot, root);
   const storage = outsideGame(baselineRoot, root);
   if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
@@ -538,19 +569,20 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const mapPath = safeChild(candidateDir, manifest.mapRelative, root);
   const originalBytes = fs.readFileSync(originalPath);
   let groundComparison;
-  if (report.unchanged) {
+  if (report.mapUnchanged) {
     writeFile(candidateDir, manifest.mapRelative, originalBytes, root);
     groundComparison = { unchangedRuidTransform: true, coverageExact: true, unchangedBlocks: manifest.counts.groundEntities };
   } else {
-    const { mb, deps, preserved } = buildCandidateMap(project, checked);
+    const { mb, deps, preserved, editedObjects } = buildCandidateMap(project, checked);
     fs.mkdirSync(path.dirname(mapPath), { recursive: true });
     if (safeChild(candidateDir, manifest.mapRelative, root) !== mapPath) fail('UNSAFE_OUTPUT', '후보 경로가 변경되었습니다.');
     if (fs.existsSync(mapPath)) fail('CANDIDATE_EXISTS', '후보 파일을 덮어쓰지 않습니다.');
     mb.write(mapPath); // The only structured map write. Destination is verified outside gameRoot.
     const reread = deps.MapBuilder.read(mapPath);
-    for (const [name, value] of preserved) if (stable(reread.find(name)) !== value) fail('PRESERVATION_FAILED', '저장 후 보호 엔티티 검증 실패: ' + name);
+    for (const [name, value] of [...preserved, ...editedObjects]) if (stable(reread.find(name)) !== value) fail('PRESERVATION_FAILED', '저장 후 엔티티 검증 실패: ' + name);
     groundComparison = { unchangedRuidTransform: true, coverageExact: true, unchangedBlocks: manifest.counts.groundEntities - affected.length };
   }
+  if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
   for (const reference of references.captured) {
     writeFile(candidateDir, 'reference/' + reference.relative, reference.bytes, root);
   }
@@ -565,7 +597,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
-    applyFiles: [manifest.mapRelative], datasetReferenceDirectory: 'reference',
+    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : [])], datasetReferenceDirectory: 'reference',
+    walkComparison: walkCandidate ? walkCandidate.comparison : { unchanged: true },
+    objectComparison: { unchangedObjectsExact: true, existingIdsPreserved: true, permittedFieldsOnly: true },
     candidateOnly: true, gameApplied: false, runtimeVerified: false
   });
   const reportPath = writeFile(candidateDir, 'report.json', jsonBytes(report), root);

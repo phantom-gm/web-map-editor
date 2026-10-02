@@ -1,5 +1,8 @@
+import { GameObjectInspector } from "./GameObjectPanel";
+import { previewScreenToWorld, gameObjectHitCandidates, snapObjectPosition, objectCellOffset, sceneWithGameObjectGroupDraft, drawGameObjectSelection, gameObjectsInScreenRect } from "../lib/gameObjectPreview";
+import type { GameObjectDescriptor, GameObjectPosition } from "../lib/gameObjects";
 import { useEffect, useRef, useState } from "react";
-import { useEditorStore, type Snapshot, type VisualFlags } from "../store/editorStore";
+import { useEditorStore, captureEditorSnapshot, type Snapshot, type VisualFlags } from "../store/editorStore";
 import {
   TW,
   TH,
@@ -24,7 +27,7 @@ import { useGamePreview } from "../lib/useGamePreview";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useWorkspaceSession } from "../lib/gameWorkspace";
 
-const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper"]);
+const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper", "block", "object"]);
 interface PreviewFrame { scene: GamePreviewScene | null; images: GamePreviewImages; showOverlays: boolean }
 function linkedGroundReady(baselineId: string): boolean {
   const preview = useGamePreviewStore.getState();
@@ -147,11 +150,7 @@ function drawSortGate(ctx: CanvasRenderingContext2D, e: MapEntity, cx: number, c
 
 // 스트로크/이동 커밋용 언두 스냅샷(ground+blocked+entities). commitStroke 가 소비.
 //   입력은 store 상태(Snapshot 과 구조 동일) — ground/blocked 만 얕은 복사.
-const strokeSnap = (st: Snapshot): Snapshot => ({
-  ground: new Map(st.ground),
-  blocked: new Set(st.blocked),
-  entities: st.entities,
-});
+const strokeSnap = captureEditorSnapshot;
 
 function diamondPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, hw: number, hh: number) {
   ctx.beginPath();
@@ -332,21 +331,6 @@ function draw(
     }
   }
 
-  }
-
-  if (preview?.showOverlays && visual.footprint) {
-    ctx.strokeStyle = "rgba(240,210,90,0.6)";
-    ctx.lineWidth = 1;
-    for (const entity of entities) {
-      if (entity.kind !== "object") continue;
-      for (const [gx, gy] of entityDisplayFootprintCells(entity)) {
-        if (gx < 0 || gy < 0 || gx >= W || gy >= H) continue;
-        const [cx, cy] = cellToScreen(gx, gy, cam);
-        if (!vis(cx, cy)) continue;
-        diamondPath(ctx, cx, cy, hw, hh);
-        ctx.stroke();
-      }
-    }
   }
 
   // 이동불가 셀 오버레이는 엔티티(오브젝트) 위에 그린다 — 오브젝트 깔린 타일에 이동불가를 칠해도
@@ -600,11 +584,23 @@ export function CanvasGrid() {
   const previewBaselineId = useGamePreviewStore(state => state.baselineId);
   const showScene = useGamePreviewStore(state => state.showScene);
   const showOverlays = useGamePreviewStore(state => state.showOverlays);
+  const selectedGameObjectId = useEditorStore(state => state.selectedGameObjectId);
+  const selectedGameObjectIds = useEditorStore(state => state.selectedGameObjectIds);
+  const selectedBlockedCells = useEditorStore(state => state.selectedBlockedCells);
+  const selectionMode = useGamePreviewStore(state => state.selectionMode);
+  const [objectDraft, setObjectDraft] = useState<{ ids: string[]; cells: CellKey[]; delta: [number, number] } | null>(null);
+  const nativeDrag = useRef<{
+    ids: string[]; cells: CellKey[]; pointer: GameObjectPosition; baselineId: string;
+    version: number; blockedVersion: number;
+  } | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ x0: number; y0: number; x1: number; y1: number; kind: "objects" | "blocked" } | null>(null);
+  const selectionStart = useRef<{ x: number; y: number; kind: "objects" | "blocked"; baselineId: string; version: number; blockedVersion: number } | null>(null);
+  const nativeHits = useRef<GameObjectDescriptor[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | null>(null);
+  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "moveGameObject" | "selectGameRegion" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
@@ -635,11 +631,13 @@ export function CanvasGrid() {
   const stand = useEditorStore(selectStandCtx); // 엔티티·이동불가 버전이 바뀔 때만 새 객체
   const setCamera = useEditorStore((s) => s.setCamera);
 
-  useEffect(() => {
-    if (!workspaceLoading) return;
+  useEffect(() => useWorkspaceSession.subscribe((state, previous) => {
+    if (!state.loading || previous.loading) return;
     mode.current = null; drag.current = null; strokeBefore.current = null;
     rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
-  }, [workspaceLoading]);
+    nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+    useGamePreviewStore.getState().setSelectionMode("objects");
+  }), []);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -683,21 +681,66 @@ export function CanvasGrid() {
     return () => window.clearTimeout(timer);
   }, [gameSync, workspaceLoading, previewScene, previewImages, previewBaselineId, dims, size, setCamera]);
 
+  // Selection, project and document changes invalidate a pointer gesture immediately.
+  useEffect(() => useEditorStore.subscribe((state, previous) => {
+    if (state.gameSync === previous.gameSync && state.gameObjectsVer === previous.gameObjectsVer &&
+      state.blockedVer === previous.blockedVer && state.activeTool === previous.activeTool &&
+      state.selectedGameObjectIds === previous.selectedGameObjectIds && state.selectedBlockedCells === previous.selectedBlockedCells) return;
+    nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
+    selectionStart.current = null; setSelectionBox(null);
+    if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+  }), []);
+
+  useEffect(() => {
+    const cancel = () => {
+      nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
+      selectionStart.current = null; setSelectionBox(null);
+      if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+    };
+    const unsubscribe = useGamePreviewStore.subscribe((state, previous) => {
+      if (state.selectionMode !== previous.selectionMode || state.showScene !== previous.showScene ||
+        state.placementPrototypeId !== previous.placementPrototypeId || state.status === "error") cancel();
+    });
+    window.addEventListener("blur", cancel);
+    return () => { unsubscribe(); window.removeEventListener("blur", cancel); };
+  }, []);
+
   // 키보드: Space(팬) + undo/redo
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
       if (useWorkspaceSession.getState().loading) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       if (e.code === "Space") {
         spaceDown.current = true;
         return;
       }
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
       // 단축키는 e.code(물리 키)로 판정 — 한글 IME/레이아웃에서 e.key 가 자모로 바뀌어도 동작.
       const mod = e.metaKey || e.ctrlKey;
-      if (useEditorStore.getState().gameSync &&
+      const current = useEditorStore.getState();
+      // Commands cancel a local drag before mouseup can commit a stale object.
+      if (current.gameSync && (nativeDrag.current || selectionStart.current)) {
+        nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); mode.current = null;
+        selectionStart.current = null; setSelectionBox(null);
+      }
+      if (current.gameSync && e.key === "Escape") {
+        useGamePreviewStore.getState().setSelectionMode("objects");
+        current.setTool("cursor"); current.clearGameSelection(); nativeDrag.current = null; setObjectDraft(null);
+        return;
+      }
+      if (current.gameSync &&
         ((mod && e.code === "KeyD") || ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key))) {
         e.preventDefault();
+        const preview = useGamePreviewStore.getState(), scene = preview.scene;
+        if (preview.status !== "ready" || scene?.baselineId !== current.gameSync.baselineId ||
+          (!current.selectedGameObjectIds.length && !current.selectedBlockedCells.length)) return;
+        if (mod && e.code === "KeyD") current.transformGameSelection("duplicate", scene, [1, 0]);
+        else if (e.key === "Delete" || e.key === "Backspace") current.transformGameSelection("delete", scene);
+        else if (!mod && ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) {
+          const dx = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+          const dy = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+          current.transformGameSelection("move", scene, [dx, dy]);
+        }
         return;
       }
       if (mod && e.code === "KeyZ") {
@@ -732,7 +775,14 @@ export function CanvasGrid() {
         }
       } else if (!mod) {
         const t = CODE_TO_TOOL[e.code];
-        if (t && (!useEditorStore.getState().gameSync || GROUND_TOOLS.has(t))) useEditorStore.getState().setTool(t);
+        if (t && (!useEditorStore.getState().gameSync || GROUND_TOOLS.has(t))) {
+          const view = useGamePreviewStore.getState();
+          if (current.gameSync) {
+            view.setSelectionMode("objects");
+            if (t === "object") { view.setShowObjects(true); view.setShowScene(true); current.setTool("cursor"); return; }
+          }
+          current.setTool(t);
+        }
       }
     };
     const ku = (e: KeyboardEvent) => {
@@ -758,6 +808,8 @@ export function CanvasGrid() {
       e.preventDefault();
       if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
+      nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+      if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
       fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
       useEditorStore.getState().zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, p.x, p.y);
     };
@@ -774,7 +826,8 @@ export function CanvasGrid() {
       }
       if (e.button === 2) {
         // 우클릭: 이동불가 도구일 때만 지우기 스트로크(드래그 지속).
-        if (!st.gameSync && st.activeTool === "block") {
+        if (st.activeTool === "block") {
+          activeGroundBaseline.current = st.gameSync?.baselineId ?? null;
           mode.current = "blockErase";
           strokeBefore.current = strokeSnap(st);
           st.setBlockedAt(gx, gy, false);
@@ -786,11 +839,54 @@ export function CanvasGrid() {
       if (st.gameSync && !GROUND_TOOLS.has(tool)) return;
       const paintsGround = tool === "brush" || tool === "eraser" || tool === "rect";
       if (st.gameSync && paintsGround && !linkedGroundReady(st.gameSync.baselineId)) return;
-      activeGroundBaseline.current = paintsGround ? st.gameSync?.baselineId ?? null : null;
-      if (st.gameSync && tool === "cursor") {
-        st.selectEntity(null);
-        mode.current = "pan";
-        drag.current = p;
+      activeGroundBaseline.current = paintsGround || tool === "block" ? st.gameSync?.baselineId ?? null : null;
+      if (st.gameSync && tool === "block") {
+        const view = useGamePreviewStore.getState(); view.setShowOverlays(true);
+        if (!st.visual.blocked) st.toggleVisual("blocked");
+      }
+      if (st.gameSync && (tool === "cursor" || tool === "object")) {
+        const preview = useGamePreviewStore.getState(), scene = preview.scene;
+        if (preview.status !== "ready" || !preview.showScene || scene?.baselineId !== st.gameSync.baselineId) return;
+        if (tool === "object") {
+          const prototype = scene.objectPrototypes?.find(item => item.prototypeId === preview.placementPrototypeId);
+          if (prototype?.canDuplicate) {
+            st.addGameObject(prototype.prototypeId, snapObjectPosition(
+              previewScreenToWorld(p.x, p.y, scene, st.camera), prototype.sourcePosition, scene));
+            preview.setPlacementPrototype(null);
+          }
+          else { preview.setShowObjects(true); st.setTool("cursor"); }
+          return;
+        }
+        downPoint.current = p;
+        const startRegion = (kind: "objects" | "blocked") => {
+          selectionStart.current = { ...p, kind, baselineId: st.gameSync!.baselineId, version: st.gameObjectsVer, blockedVersion: st.blockedVer };
+          setSelectionBox({ x0: p.x, y0: p.y, x1: p.x, y1: p.y, kind }); mode.current = "selectGameRegion";
+        };
+        if (preview.selectionMode === "blocked") {
+          if (scene.report?.walkEditingSupported === true) startRegion("blocked");
+          return;
+        }
+        const candidates = gameObjectHitCandidates(p.x, p.y, scene, preview.images, st.camera);
+        nativeHits.current = candidates;
+        const hit = candidates[0];
+        const selected = candidates.find(item => st.selectedGameObjectIds.includes(item.entityId));
+        const modifier = e.ctrlKey || e.metaKey || e.shiftKey;
+        if ((modifier || preview.multiSelect) && hit && (modifier || !selected)) {
+          st.selectGameObjects([hit.entityId], "toggle"); return;
+        }
+        const selectedCell = st.selectedBlockedCells.includes(cellKey(gx, gy));
+        if (selected || selectedCell) {
+          nativeDrag.current = { ids: st.selectedGameObjectIds, cells: st.selectedBlockedCells,
+            pointer: previewScreenToWorld(p.x, p.y, scene, st.camera), baselineId: st.gameSync.baselineId,
+            version: st.gameObjectsVer, blockedVersion: st.blockedVer };
+          mode.current = "moveGameObject";
+        } else if (hit) {
+          st.selectGameObjects([hit.entityId]);
+        } else if (modifier || preview.multiSelect) {
+          startRegion("objects");
+        } else {
+          st.clearGameSelection(); mode.current = "pan"; drag.current = p;
+        }
         return;
       }
       if (tool === "cursor") {
@@ -857,12 +953,26 @@ export function CanvasGrid() {
       const [gx, gy] = screenToCell(p.x, p.y, st.camera);
       if (st.gameSync && (mode.current === "paint" || mode.current === "rect") &&
         (activeGroundBaseline.current !== st.gameSync.baselineId || useGamePreviewStore.getState().status === "error")) return;
-      if (mode.current === "pan" && drag.current) {
+      if (mode.current === "selectGameRegion" && selectionStart.current) {
+        const start = selectionStart.current;
+        if (st.gameSync?.baselineId !== start.baselineId || st.gameObjectsVer !== start.version || st.blockedVer !== start.blockedVersion) return;
+        setSelectionBox({ x0: start.x, y0: start.y, x1: p.x, y1: p.y, kind: start.kind });
+      } else if (mode.current === "moveGameObject" && nativeDrag.current) {
+        const move = nativeDrag.current, scene = useGamePreviewStore.getState().scene;
+        const start = downPoint.current;
+        if (scene?.baselineId !== move.baselineId || st.gameSync?.baselineId !== move.baselineId ||
+          st.gameObjectsVer !== move.version || st.blockedVer !== move.blockedVersion ||
+          st.selectedGameObjectIds !== move.ids || st.selectedBlockedCells !== move.cells ||
+          move.ids.some(id => !scene.objects?.find(item => item.entityId === id)?.canMove)) return;
+        if (start && Math.abs(p.x - start.x) <= CLICK_SLOP && Math.abs(p.y - start.y) <= CLICK_SLOP) return;
+        const pointer = previewScreenToWorld(p.x, p.y, scene, st.camera);
+        setObjectDraft({ ids: move.ids, cells: move.cells, delta: objectCellOffset(pointer, move.pointer, scene) });
+      } else if (mode.current === "pan" && drag.current) {
         st.panBy(p.x - drag.current.x, p.y - drag.current.y);
         drag.current = p;
       } else if (mode.current === "paint") {
         if (!st.gameSync || GROUND_TOOLS.has(st.activeTool)) st.applyTool(gx, gy);
-      } else if (mode.current === "blockErase" && !st.gameSync) {
+      } else if (mode.current === "blockErase") {
         st.setBlockedAt(gx, gy, false);
       } else if (mode.current === "rect" && rectStart.current) {
         st.setRectPreview([rectStart.current[0], rectStart.current[1], gx, gy]);
@@ -877,9 +987,42 @@ export function CanvasGrid() {
         (st.gameSync && (mode.current === "paint" || mode.current === "rect") && activeGroundBaseline.current !== st.gameSync.baselineId)) {
         mode.current = null; drag.current = null; strokeBefore.current = null;
         rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
+        nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
         return;
       }
-      if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
+      if (mode.current === "selectGameRegion" && selectionStart.current) {
+        const start = selectionStart.current, p = local(e), preview = useGamePreviewStore.getState();
+        const still = Math.abs(p.x - start.x) <= CLICK_SLOP && Math.abs(p.y - start.y) <= CLICK_SLOP;
+        if (st.gameSync?.baselineId === start.baselineId && st.gameObjectsVer === start.version &&
+          st.blockedVer === start.blockedVersion && preview.status === "ready" && preview.scene?.baselineId === start.baselineId) {
+          if (start.kind === "blocked") {
+            const [x0, y0] = screenToCell(start.x, start.y, st.camera), [x1, y1] = screenToCell(p.x, p.y, st.camera);
+            const cells = still ? [cellKey(x0, y0)] : [...st.blocked].filter(key => {
+              const [x, y] = parseCellKey(key);
+              return x >= Math.min(x0, x1) && x <= Math.max(x0, x1) && y >= Math.min(y0, y1) && y <= Math.max(y0, y1);
+            });
+            st.selectBlockedCells(cells, still ? "toggle" : "add");
+          } else if (!still) {
+            st.selectGameObjects(gameObjectsInScreenRect({ x0: start.x, y0: start.y, x1: p.x, y1: p.y }, preview.scene, preview.images, st.camera), "add");
+          }
+        }
+        selectionStart.current = null; setSelectionBox(null);
+      } else if (mode.current === "moveGameObject" && nativeDrag.current) {
+        const move = nativeDrag.current, preview = useGamePreviewStore.getState(), scene = preview.scene;
+        const start = downPoint.current, p = local(e);
+        const still = start && Math.abs(p.x - start.x) <= CLICK_SLOP && Math.abs(p.y - start.y) <= CLICK_SLOP;
+        if (scene?.baselineId === move.baselineId && st.gameSync?.baselineId === move.baselineId &&
+          st.gameObjectsVer === move.version && st.blockedVer === move.blockedVersion &&
+          st.selectedGameObjectIds === move.ids && st.selectedBlockedCells === move.cells && preview.status === "ready") {
+          if (still && !preview.multiSelect && move.ids.length === 1 && !move.cells.length && nativeHits.current.length > 1) {
+            const index = nativeHits.current.findIndex(item => item.entityId === st.selectedGameObjectId);
+            st.selectGameObject(nativeHits.current[(index + 1) % nativeHits.current.length].entityId);
+          } else if (!still) {
+            st.transformGameSelection("move", scene, objectCellOffset(previewScreenToWorld(p.x, p.y, scene, st.camera), move.pointer, scene));
+          }
+        }
+        nativeDrag.current = null; setObjectDraft(null);
+      } else if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "moveEntity" && strokeBefore.current) {
         // 안 움직인 제자리 클릭 = "겹침 순환" 의도 → 스택의 다음(아래) 엔티티를 선택. 움직였으면 이동 커밋.
@@ -944,11 +1087,43 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const shownScene = previewScene && objectDraft ? sceneWithGameObjectGroupDraft(previewScene, objectDraft.ids, objectDraft.delta) : previewScene;
     const preview = gameSync && showScene ? {
-      scene: previewBaselineId === gameSync.baselineId ? previewScene : null,
+      scene: previewBaselineId === gameSync.baselineId ? shownScene : null,
       images: previewImages, showOverlays,
     } : null;
-    draw(ctx, dims, size, camera, hover, ground, blocked, palette, rectPreview, entities, selectedEntityId, visual, stand, preview);
+    let shownBlocked = blocked;
+    if (objectDraft?.cells.length) {
+      shownBlocked = new Set(blocked);
+      for (const key of objectDraft.cells) shownBlocked.delete(key);
+      for (const key of objectDraft.cells) { const [x, y] = parseCellKey(key); shownBlocked.add(cellKey(x + objectDraft.delta[0], y + objectDraft.delta[1])); }
+    }
+    draw(ctx, dims, size, camera, hover, ground, shownBlocked, palette, rectPreview, entities, selectedEntityId, visual, stand, preview);
+    if (preview?.scene) {
+      for (const id of selectedGameObjectIds) drawGameObjectSelection(ctx, id, preview.scene, previewImages, camera, id === selectedGameObjectId ? "#ffd166" : "#75dce8");
+      const highlight = new Set(selectedBlockedCells.map(key => {
+        const [x, y] = parseCellKey(key);
+        return objectDraft ? cellKey(x + objectDraft.delta[0], y + objectDraft.delta[1]) : key;
+      }));
+      if (selectionBox?.kind === "blocked") {
+        const [x0, y0] = screenToCell(selectionBox.x0, selectionBox.y0, camera);
+        const [x1, y1] = screenToCell(selectionBox.x1, selectionBox.y1, camera);
+        for (const key of blocked) {
+          const [x, y] = parseCellKey(key);
+          if (x >= Math.min(x0, x1) && x <= Math.max(x0, x1) && y >= Math.min(y0, y1) && y <= Math.max(y0, y1)) highlight.add(key);
+        }
+      }
+      ctx.save(); ctx.lineWidth = 2; ctx.strokeStyle = "#75dce8"; ctx.fillStyle = "rgba(79,220,235,.32)";
+      for (const key of highlight) {
+        const [x, y] = parseCellKey(key), [cx, cy] = cellToScreen(x, y, camera);
+        diamondPath(ctx, cx, cy, TW * camera.zoom / 2, TH * camera.zoom / 2); ctx.fill(); ctx.stroke();
+      }
+      if (selectionBox?.kind === "objects") {
+        ctx.setLineDash([5, 3]);
+        ctx.strokeRect(selectionBox.x0, selectionBox.y0, selectionBox.x1 - selectionBox.x0, selectionBox.y1 - selectionBox.y0);
+      }
+      ctx.restore();
+    }
   }, [
     dims,
     size,
@@ -971,12 +1146,17 @@ export function CanvasGrid() {
     previewBaselineId,
     showScene,
     showOverlays,
+    selectedGameObjectId,
+    selectedGameObjectIds,
+    selectedBlockedCells,
+    objectDraft,
+    selectionBox,
   ]);
 
   return (
     <div ref={wrapRef} className="canvas-wrap">
-      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" ? "grab" : "crosshair" }} />
-      <EntityInspector />
+      <canvas ref={canvasRef} style={{ cursor: activeTool === "cursor" && selectionMode !== "blocked" ? "grab" : "crosshair" }} />
+      {gameSync ? <GameObjectInspector /> : <EntityInspector />}
     </div>
   );
 }

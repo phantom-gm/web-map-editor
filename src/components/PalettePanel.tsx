@@ -1,3 +1,4 @@
+import { GameObjectLibrary } from "./GameObjectPanel";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
@@ -24,6 +25,7 @@ function tileTitle(t: PaletteTile): string {
 
 export function PalettePanel() {
   const gameSync = useEditorStore(s => s.gameSync);
+  const showObjects = useGamePreviewStore(s => s.showObjects);
   const groundBrushRuids = useGamePreviewStore(s => s.scene?.baselineId === gameSync?.baselineId ? s.scene?.groundBrushRuids : undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   const dirRef = useRef<HTMLInputElement>(null);
@@ -253,9 +255,11 @@ export function PalettePanel() {
     };
   }, [menu]);
 
+  if (gameSync && showObjects) return <div className="palette"><GameObjectLibrary /></div>;
+
   return (
     <div className="palette">
-      {gameSync && <div className="palette-head"><strong>바닥 소재</strong><small>큰 타일은 자동 배치</small></div>}
+      {gameSync && <div className="palette-head"><strong>바닥 소재</strong><button onClick={() => { useGamePreviewStore.getState().setShowObjects(true); useEditorStore.getState().setTool("cursor"); }}>건물·장식</button><small>큰 타일은 자동 배치</small></div>}
       {!gameSync && <div className="palette-head">
         <span>팔레트 ({palette.length})</span>
         <button onClick={() => fileRef.current?.click()} title="PNG 이미지 파일 추가 (여러 장 선택)">

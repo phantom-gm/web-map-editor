@@ -100,14 +100,19 @@ export function Toolbar() {
             data-label={label}
             aria-label={label}
             aria-pressed={tool === t.id}
-            disabled={!!gameSync && (t.id === "block" || (!canPaint && t.id !== "cursor"))}
-            onClick={() => setTool(t.id)}
+            disabled={!!gameSync && !canPaint && t.id !== "cursor" && t.id !== "block"}
+            onClick={() => {
+              preview.setSelectionMode("objects");
+              if (gameSync && t.id === "block") { preview.setShowOverlays(true); if (!visual.blocked) toggleVisual("blocked"); }
+              setTool(t.id);
+            }}
           >
             {ICONS[t.id]}
           </button>
         );
       })}
       <span className="sep" />
+      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); setTool("cursor"); }}>O</button>}
       {!gameSync && ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
         const label = withShortcut(`${meta.label} 배치`, k);
@@ -128,7 +133,7 @@ export function Toolbar() {
       })}
       <span className="sep" />
       <span className="view-group" aria-label="보기 토글">
-        {VIEW_TOGGLES.map((v) => (
+        {VIEW_TOGGLES.filter(v => !gameSync || v.key !== "footprint").map((v) => (
           <button
             key={v.key}
             className={"view-btn" + (visual[v.key] ? " on" : "")}

@@ -10,6 +10,9 @@ import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcC
 import { exportEntities } from "../lib/entityExport";
 import { exportDrift, type DriftItem } from "../lib/exportDrift";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
+import type { GamePreviewScene } from "../lib/gamePreview";
+import { mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
+import { addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
 import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
 
@@ -128,12 +131,14 @@ export interface Snapshot {
   ground: Ground;
   blocked: Blocked;
   entities: Entities; // 불변 배열(액션마다 새 배열) → 참조 보관으로 스냅샷
+  gameObjectEdits?: GameObjectEdits; // 불변 sparse overlay — 기존 entities와 별개
 }
 
-const snap = (g: Ground, b: Blocked, e: Entities): Snapshot => ({
-  ground: new Map(g),
-  blocked: new Set(b),
-  entities: e,
+export const captureEditorSnapshot = (state: Snapshot): Snapshot => ({
+  ground: new Map(state.ground),
+  blocked: new Set(state.blocked),
+  entities: state.entities,
+  gameObjectEdits: state.gameObjectEdits,
 });
 function groundEqual(a: Ground, b: Ground): boolean {
   if (a.size !== b.size) return false;
@@ -149,6 +154,12 @@ function blockedEqual(a: Blocked, b: Blocked): boolean {
 export interface EditorState {
   mapName: string;
   gameSync: GameSyncMetadata | undefined;
+  gameObjectEdits: GameObjectEdits | undefined;
+  gameObjectsVer: number;
+  selectedGameObjectId: string | null;
+  selectedGameObjectIds: string[];
+  selectedBlockedCells: CellKey[];
+  gameSelectionError: string | null;
   size: [number, number];
   camera: Camera;
   hover: [number, number] | null;
@@ -217,6 +228,14 @@ export interface EditorState {
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
   selectEntity: (id: string | null) => void;
+  selectGameObject: (id: string | null) => void;
+  selectGameObjects: (ids: string[], mode?: GameSelectionMode) => void;
+  selectBlockedCells: (cells: CellKey[], mode?: GameSelectionMode) => void;
+  clearGameSelection: () => void;
+  transformGameSelection: (operation: GameSelectionOperation, scene: GamePreviewScene, delta?: [number, number]) => boolean;
+  moveGameObjectTo: (entityId: string, position: GameObjectPosition, commit?: boolean) => void;
+  addGameObject: (prototypeId: string, position: GameObjectPosition) => string | null;
+  removeGameObject: (entityId: string) => void;
   autoFixSortOffsets: () => SortOffsetResult; // 겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(순환은 경고만)
 
   commitStroke: (before: Snapshot) => void;
@@ -234,6 +253,9 @@ export interface EditorState {
 export const useEditorStore = create<EditorState>((set, get) => ({
   mapName: "newmap",
   gameSync: undefined,
+  gameObjectEdits: undefined,
+  gameObjectsVer: 0,
+  selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
   size: [20, 20],
   camera: { x: 0, y: 0, zoom: 1 },
   hover: null,
@@ -325,7 +347,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         palette,
         ground,
         activeIdx,
-        dirty: true,
+        dirty: true, gameSelectionError: null,
         groundVer: s.groundVer + 1,
         undoStack: [],
         redoStack: [],
@@ -341,7 +363,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         palette: [],
         ground: new Map(),
         activeIdx: 0,
-        dirty: true,
+        dirty: true, gameSelectionError: null,
         groundVer: s.groundVer + 1,
         undoStack: [],
         redoStack: [],
@@ -394,30 +416,28 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
       const key = cellKey(gx, gy);
       if (s.activeTool === "block") {
-        if (s.gameSync) return {};
         if (s.blocked.has(key)) return {};
         s.blocked.add(key);
-        return { blockedVer: s.blockedVer + 1 };
+        return { blockedVer: s.blockedVer + 1, dirty: true, gameSelectionError: null };
       }
       if (s.activeTool === "eraser") {
         const g = s.ground.delete(key);
         const b = s.gameSync ? false : s.blocked.delete(key);
         if (!g && !b) return {};
         const patch: Partial<EditorState> = {};
-        if (g) { patch.groundVer = s.groundVer + 1; patch.dirty = true; }
-        if (b) patch.blockedVer = s.blockedVer + 1;
+        if (g) { patch.groundVer = s.groundVer + 1; patch.dirty = true; patch.gameSelectionError = null; }
+        if (b) { patch.blockedVer = s.blockedVer + 1; patch.selectedBlockedCells = s.selectedBlockedCells.filter(cell => cell !== key); }
         return patch;
       }
       // brush
       if (s.ground.get(key) === s.activeIdx) return {};
       s.ground.set(key, s.activeIdx);
-      return { groundVer: s.groundVer + 1, dirty: true };
+      return { groundVer: s.groundVer + 1, dirty: true, gameSelectionError: null };
     }),
 
   // 이동불가 단일 셀 on/off — block 도구 좌클릭(생성)/우클릭(지우기)에 사용.
   setBlockedAt: (gx, gy, on) =>
     set((s) => {
-      if (s.gameSync) return {};
       const [W, H] = s.size;
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
       const key = cellKey(gx, gy);
@@ -427,13 +447,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       } else if (!s.blocked.delete(key)) {
         return {};
       }
-      return { blockedVer: s.blockedVer + 1 };
+      return { blockedVer: s.blockedVer + 1, dirty: true, gameSelectionError: null,
+        selectedBlockedCells: on ? s.selectedBlockedCells : s.selectedBlockedCells.filter(cell => cell !== key) };
     }),
 
   fillRect: (x0, y0, x1, y1) =>
     set((s) => {
       const [W, H] = s.size;
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       const minX = Math.max(0, Math.min(x0, x1));
       const maxX = Math.min(W - 1, Math.max(x0, x1));
       const minY = Math.max(0, Math.min(y0, y1));
@@ -445,7 +466,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
       if (groundEqual(before.ground, s.ground)) return {};
       return {
-        dirty: true,
+        dirty: true, gameSelectionError: null,
         groundVer: s.groundVer + 1,
         undoStack: [...s.undoStack, before].slice(-UNDO_CAP),
         redoStack: [],
@@ -465,12 +486,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (s.gameSync) {
         if (s.ground.size === 0) return {};
-        const before = snap(s.ground, s.blocked, s.entities);
+        const before = captureEditorSnapshot(s);
         s.ground.clear();
-        return { dirty: true, groundVer: s.groundVer + 1, undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [] };
+        return { dirty: true, gameSelectionError: null, groundVer: s.groundVer + 1, undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [] };
       }
       if (s.ground.size === 0 && s.blocked.size === 0 && s.entities.length === 0) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       s.ground.clear();
       s.blocked.clear();
       return {
@@ -489,7 +510,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const [W, H] = s.size;
       if (gx < 0 || gy < 0 || gx >= W || gy >= H) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       let name: string | undefined;
       let ruid: string | undefined;
       let tilesW: number | undefined;
@@ -568,7 +589,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removeEntity: (id) =>
     set((s) => {
       if (!s.entities.some((e) => e.id === id)) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       return {
         entities: s.entities.filter((e) => e.id !== id),
         entitiesVer: s.entitiesVer + 1,
@@ -581,7 +602,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const cur = s.entities.find((e) => e.id === id);
       if (!cur) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       const next: MapEntity = { ...cur, ...patch };
       // R3 — 오브젝트의 저작값을 RUID 별로 기억한다(저작 키를 건드린 patch 만). undefined 로 지운 값은 기억에서도 빠진다.
       let objectDefaults = s.objectDefaults;
@@ -601,7 +622,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const src = s.entities.find((e) => e.id === id);
       if (!src) return {};
-      const before = snap(s.ground, s.blocked, s.entities);
+      const before = captureEditorSnapshot(s);
       const [W, H] = s.size;
       const [fw, fh] = footprintWH(src);
       // 복사본은 원본과 겹치지 않게 옆으로. 오브젝트는 점유(1×1 고정)가 아니라 "보이는 폭"(renderWH)
@@ -623,7 +644,85 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
       };
     }),
-  selectEntity: (id) => set({ selectedEntityId: id }),
+  selectEntity: (id) => set({ selectedEntityId: id, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null }),
+  selectGameObject: (id) => get().selectGameObjects(id ? [id] : [], "replace"),
+  selectGameObjects: (ids, mode = "replace") =>
+    set((s) => {
+      const selectedGameObjectIds = mergeGameSelection(s.selectedGameObjectIds, ids.filter(id => typeof id === "string" && id.length > 0), mode);
+      return {
+        selectedGameObjectIds, selectedGameObjectId: selectedGameObjectIds[selectedGameObjectIds.length - 1] ?? null,
+        selectedBlockedCells: mode === "replace" ? [] : s.selectedBlockedCells.filter(key => s.blocked.has(key)),
+        selectedEntityId: null, gameSelectionError: null,
+      };
+    }),
+  selectBlockedCells: (cells, mode = "replace") =>
+    set((s) => ({
+      selectedBlockedCells: mergeGameSelection(s.selectedBlockedCells.filter(key => s.blocked.has(key)),
+        cells.filter(key => s.blocked.has(key)), mode),
+      selectedEntityId: null, gameSelectionError: null,
+    })),
+  clearGameSelection: () => set({
+    selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [],
+    selectedEntityId: null, gameSelectionError: null,
+  }),
+  transformGameSelection: (operation, scene, delta = [0, 0]) => {
+    let success = false;
+    set((s) => {
+      try {
+        const plan = planGameSelectionTransform(s, operation, scene, delta, newEntityId);
+        success = true;
+        if (!plan.changed) return { gameSelectionError: null };
+        const before = captureEditorSnapshot(s);
+        return {
+          gameObjectEdits: plan.gameObjectEdits, blocked: plan.blocked,
+          gameObjectsVer: s.gameObjectsVer + (plan.objectsChanged ? 1 : 0),
+          blockedVer: s.blockedVer + (plan.blockedChanged ? 1 : 0),
+          selectedGameObjectIds: plan.selectedGameObjectIds,
+          selectedGameObjectId: plan.selectedGameObjectIds[plan.selectedGameObjectIds.length - 1] ?? null,
+          selectedBlockedCells: plan.selectedBlockedCells, selectedEntityId: null,
+          dirty: true, gameSelectionError: null,
+          undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [],
+        };
+      } catch (error) {
+        return { gameSelectionError: error instanceof Error ? error.message : String(error) };
+      }
+    });
+    return success;
+  },
+  moveGameObjectTo: (entityId, position, commit = true) =>
+    set((s) => {
+      if (!s.gameSync) return {};
+      const gameObjectEdits = moveGameObjectEdit(s.gameObjectEdits, entityId, position);
+      if (gameObjectEdits === s.gameObjectEdits) return { gameSelectionError: null };
+      const before = commit ? captureEditorSnapshot(s) : null;
+      return {
+        gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        ...(before ? { undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [] } : {}),
+      };
+    }),
+  addGameObject: (prototypeId, position) => {
+    if (!get().gameSync) return null;
+    const entityId = newEntityId();
+    set((s) => ({
+      gameObjectEdits: addGameObjectEdit(s.gameObjectEdits, entityId, prototypeId, position),
+      gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+      selectedGameObjectId: entityId, selectedGameObjectIds: [entityId], selectedBlockedCells: [], selectedEntityId: null, activeTool: "cursor",
+      undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [],
+    }));
+    return entityId;
+  },
+  removeGameObject: (entityId) =>
+    set((s) => {
+      if (!s.gameSync) return {};
+      const gameObjectEdits = removeGameObjectEdit(s.gameObjectEdits, entityId);
+      if (gameObjectEdits === s.gameObjectEdits) return { gameSelectionError: null };
+      const selectedGameObjectIds = s.selectedGameObjectIds.filter(id => id !== entityId);
+      return {
+        gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        selectedGameObjectIds, selectedGameObjectId: selectedGameObjectIds[selectedGameObjectIds.length - 1] ?? null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [],
+      };
+    }),
 
   // 겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 을 부여한다(요구서 R1~R4). 이동불가 칸은 제외.
   //   fixes 는 적용하고, cycles(순환 — sortOffset 으로 해결 불가)는 그대로 반환해 UI 가 경고하게 한다.
@@ -647,7 +746,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (
         groundEqual(before.ground, s.ground) &&
         blockedEqual(before.blocked, s.blocked) &&
-        before.entities === s.entities
+        before.entities === s.entities &&
+        before.gameObjectEdits === s.gameObjectEdits
       ) {
         return {};
       }
@@ -659,9 +759,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   undo: () =>
     set((s) => {
-      if (s.undoStack.length === 0) return {};
+      if (s.undoStack.length === 0) return { selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
       const prev = s.undoStack[s.undoStack.length - 1];
-      const cur = snap(s.ground, s.blocked, s.entities);
+      const cur = captureEditorSnapshot(s);
       s.ground.clear();
       for (const [k, v] of prev.ground) s.ground.set(k, v);
       s.blocked.clear();
@@ -669,6 +769,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         dirty: true,
         entities: prev.entities,
+        gameObjectEdits: prev.gameObjectEdits,
+        gameObjectsVer: s.gameObjectsVer + 1,
+        selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         undoStack: s.undoStack.slice(0, -1),
@@ -679,9 +782,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   redo: () =>
     set((s) => {
-      if (s.redoStack.length === 0) return {};
+      if (s.redoStack.length === 0) return { selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
       const next = s.redoStack[s.redoStack.length - 1];
-      const cur = snap(s.ground, s.blocked, s.entities);
+      const cur = captureEditorSnapshot(s);
       s.ground.clear();
       for (const [k, v] of next.ground) s.ground.set(k, v);
       s.blocked.clear();
@@ -689,6 +792,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         dirty: true,
         entities: next.entities,
+        gameObjectEdits: next.gameObjectEdits,
+        gameObjectsVer: s.gameObjectsVer + 1,
+        selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         redoStack: s.redoStack.slice(0, -1),
@@ -713,6 +819,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         mapName: r.mapName,
         gameSync: undefined,
+        gameObjectEdits: undefined,
+        gameObjectsVer: s.gameObjectsVer + 1,
+        selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: r.size,
         groundOrigin: r.groundOrigin,
         staticLayer: r.staticLayer,
@@ -765,6 +874,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       version: PROJECT_VERSION, // 항상 v2(참조만) 로 저장 — v1 을 열었어도 저장 시 승격된다.
       map: s.mapName,
       ...(s.gameSync ? { gameSync: { ...s.gameSync } } : {}),
+      ...(s.gameSync && s.gameObjectEdits ? { gameObjectEdits: parseGameObjectEdits(s.gameObjectEdits) } : {}),
       size: s.size,
       groundOrigin: s.groundOrigin,
       ground,
@@ -782,6 +892,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   loadProject: (p, tiles) =>
     set((s) => {
       const gameSync = parseGameSync(p.gameSync, p.map);
+      const gameObjectEdits = parseGameObjectEdits(p.gameObjectEdits);
+      if (gameObjectEdits && !gameSync) throw new Error("게임 오브젝트 편집 정보에는 게임 원본 연결이 필요합니다.");
       const merged = mergeProjectPalette(s.palette, tiles);
       s.ground.clear();
       for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), idx);
@@ -792,6 +904,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         mapName: p.map,
         gameSync,
+        gameObjectEdits,
+        gameObjectsVer: s.gameObjectsVer + 1,
+        selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: p.size,
         groundOrigin: p.groundOrigin,
         staticLayer: p.staticLayer ?? emptyLayer(),
@@ -823,6 +938,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         mapName: "newmap",
         gameSync: undefined,
+        gameObjectEdits: undefined,
+        gameObjectsVer: s.gameObjectsVer + 1,
+        selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: [20, 20],
         groundOrigin: [0, 0],
         staticLayer: emptyLayer(),
