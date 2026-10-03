@@ -1,6 +1,7 @@
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool, type VisualLayer } from "../store/editorStore";
+import { openNpcPanel } from "./GameNpcPanel";
 import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
 import { TOOL_SHORTCUTS } from "../lib/shortcuts";
 
@@ -102,7 +103,7 @@ export function Toolbar() {
             aria-pressed={tool === t.id}
             disabled={preview.comparisonEnabled || (!!gameSync && !canPaint && t.id !== "cursor" && t.id !== "block")}
             onClick={() => {
-              preview.setSelectionMode("objects");
+              preview.setSelectionMode("objects"); preview.setPlacementNpc(null);
               if (gameSync && t.id === "block") { preview.setShowOverlays(true); if (!visual.blocked) toggleVisual("blocked"); }
               setTool(t.id);
             }}
@@ -112,7 +113,8 @@ export function Toolbar() {
         );
       })}
       <span className="sep" />
-      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); setTool("cursor"); }}>O</button>}
+      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); useEditorStore.getState().selectGameNpc(null); setTool("cursor"); }}>O</button>}
+      {gameSync && <button className={"tool-btn ent-btn" + (preview.showNpcs ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="NPC 목록·편집" data-label="NPC 목록·편집" onClick={openNpcPanel}>N</button>}
       {!gameSync && ENTITY_KINDS.map((k) => {
         const meta = ENTITY_META[k];
         const label = withShortcut(`${meta.label} 배치`, k);

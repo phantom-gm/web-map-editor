@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatCandidateReview, validateCandidateReview, validateCandidateHistory, validateCandidateIdentity, candidateZipFilename, validateCandidateZipHeaders,
+  formatCandidateReview, formatCandidateNpcSummary, validateCandidateReview, validateCandidateHistory, validateCandidateIdentity, candidateZipFilename, validateCandidateZipHeaders,
   type CandidateIdentity, type GameCandidateReview, type GameCandidateHistory,
 } from "../lib/gameCandidate";
 
@@ -274,5 +274,41 @@ describe("ZIP filenames and transport identity", () => {
     expect(review.status).toBe("blocked");
     expect(() => validateCandidateZipHeaders(identity, "application/json", null)).toThrow();
     expect(formatCandidateReview(review)).toContain("검토 결과: 다시 확인 필요");
+  });
+});
+
+
+describe("optional NPC candidate counts", () => {
+  const npcCounts = { npcsMoved: 1, npcsAdded: 2, npcsRemoved: 3, npcsUpdated: 4 };
+  it("preserves legacy review/history without inventing zero NPC counts", () => {
+    const review = freezeDeep(receipt()), history = freezeDeep(historyReceipt());
+    expect(() => validateCandidateReview(review, identity)).not.toThrow();
+    expect(() => validateCandidateHistory(history, identity)).not.toThrow();
+    expect(formatCandidateNpcSummary(review.summary)).toBeNull();
+    expect(formatCandidateReview(review)).not.toContain("NPC ");
+  });
+  it("shows distinct NPC movement, addition, removal and flip/dialog counts in history and saved review text", () => {
+    const review = receipt(), history = historyReceipt();
+    Object.assign(review.summary, npcCounts); Object.assign(history.candidates[0].summary, npcCounts);
+    const before = JSON.stringify({ review, history });
+    expect(() => validateCandidateReview(review, identity)).not.toThrow();
+    expect(() => validateCandidateHistory(history, identity)).not.toThrow();
+    expect(formatCandidateNpcSummary(review.summary)).toBe("이동 1 / 추가 2 / 삭제 3 / 반전·대사 4");
+    expect(formatCandidateReview(review)).toContain("NPC 이동 1 / 추가 2 / 삭제 3 / 반전·대사 4");
+    expect(formatCandidateNpcSummary(history.candidates[0].summary)).toBe(formatCandidateNpcSummary(review.summary));
+    expect(JSON.stringify({ review, history })).toBe(before);
+  });
+  it("keeps a newer all-zero NPC summary distinct from a legacy missing summary", () => {
+    const review = receipt(); Object.assign(review.summary, { npcsMoved: 0, npcsAdded: 0, npcsRemoved: 0, npcsUpdated: 0 });
+    expect(formatCandidateNpcSummary(review.summary)).toBe("이동 0 / 추가 0 / 삭제 0 / 반전·대사 0");
+    expect(() => validateCandidateReview(review, identity)).not.toThrow();
+  });
+  it.each(["npcsMoved", "npcsAdded", "npcsRemoved", "npcsUpdated"] as const)("validates optional %s for both review and history", key => {
+    for (const invalid of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "2", null]) {
+      const review = receipt(), history = historyReceipt();
+      Object.assign(review.summary, { [key]: invalid }); Object.assign(history.candidates[0].summary, { [key]: invalid });
+      expect(() => validateCandidateReview(review, identity)).toThrow("형식");
+      expect(() => validateCandidateHistory(history, identity)).toThrow();
+    }
   });
 });

@@ -45,7 +45,13 @@ export function GameComparisonSidebar() {
   const counts = getComparisonCounts(comparison);
   const currentObjects = new Map(scene.objects?.map(object => [object.entityId, object]));
   const originalObjects = new Map(baseline.scene.objects?.map(object => [object.entityId, object]));
+  const currentNpcs = new Map(scene.npcs?.map(npc => [npc.entityId, npc]));
+  const originalNpcs = new Map(baseline.scene.npcs?.map(npc => [npc.entityId, npc]));
   const rows: ChangeRow[] = [
+    ...(comparison.npcs?.moved ?? []).map(item => ({ key: "npc-move-" + item.entityId, label: "NPC 이동 · " + (currentNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.to, originalPosition: item.from })),
+    ...(comparison.npcs?.added ?? []).map(item => ({ key: "npc-add-" + item.entityId, label: "NPC 추가 · " + (currentNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position })),
+    ...(comparison.npcs?.removed ?? []).map(item => ({ key: "npc-remove-" + item.entityId, label: "NPC 삭제 · " + (originalNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position })),
+    ...(comparison.npcs?.updated ?? []).map(item => ({ key: "npc-update-" + item.entityId, label: "NPC 설정 · " + (currentNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position, originalPosition: originalNpcs.get(item.entityId)?.position })),
     ...comparison.objects.moved.map(item => ({ key: "move-" + item.entityId, label: "이동 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.to, originalPosition: item.from })),
     ...comparison.objects.added.map(item => ({ key: "add-" + item.entityId, label: "추가 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
     ...comparison.objects.removed.map(item => ({ key: "remove-" + item.entityId, label: "삭제 · " + (originalObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
@@ -65,26 +71,28 @@ export function GameComparisonSidebar() {
   };
   return <section className="comparison-sidebar" aria-label="변경 내역">
     <h3>변경 내역</h3>
-    <p className="comparison-basis">이 작업을 시작할 때 가져온 게임 원본과 비교합니다.</p>
+    <p className="comparison-basis">이 작업을 시작할 때 가져온 게임 원본과 비교합니다.{baseline.npcSourceId ? " NPC는 마지막으로 새로 가져온 원본이 기준입니다." : ""}</p>
     <div className="comparison-totals" aria-label="변경 수량">
       <label><input type="checkbox" checked={view.comparisonFilters.ground} onChange={e => view.setComparisonFilter("ground", e.target.checked)} />바닥 수정 {counts.groundChangedCells}칸</label>
       <small>주변 타일 재구성 {counts.groundRepackedCells}칸</small>
       <label><input type="checkbox" checked={view.comparisonFilters.objects} onChange={e => view.setComparisonFilter("objects", e.target.checked)} />오브젝트</label>
       <small>이동 {counts.objectsMoved} · 추가 {counts.objectsAdded} · 삭제 {counts.objectsRemoved}</small>
+      <label><input type="checkbox" checked={view.comparisonFilters.npcs} onChange={e => view.setComparisonFilter("npcs", e.target.checked)} />NPC</label>
+      <small>이동 {counts.npcsMoved} · 추가 {counts.npcsAdded} · 삭제 {counts.npcsRemoved} · 설정 {counts.npcsUpdated}</small>
       <label><input type="checkbox" checked={view.comparisonFilters.blocked} onChange={e => view.setComparisonFilter("blocked", e.target.checked)} />이동불가</label>
       <small>추가 {counts.blockedAdded} · 해제 {counts.blockedRemoved}</small>
     </div>
     <details className="comparison-legend">
       <summary>색상·표시 안내</summary>
       <div className="comparison-legend-items">
-        <span className="compare-blue">파랑 · 직접 바닥 수정</span>
+        <span className="compare-blue">파랑 · 바닥 수정 / NPC 설정</span>
         <span className="compare-amber">주황 · 이동 / 주변 재구성</span>
         <span className="compare-green">초록 · 추가</span>
         <span className="compare-red">빨강 · 삭제 / 해제</span>
         <small>변경 강조에서 잔상·화살표·색 테두리로 표시합니다.</small>
       </div>
     </details>
-    {!rows.length ? <p className="comparison-empty">원본과 배치·이동불가 변경이 없습니다.</p> : <>
+    {!rows.length ? <p className="comparison-empty">원본과 배치·NPC·이동불가 변경이 없습니다.</p> : <>
       <p className="comparison-basis">항목을 누르면 해당 위치로 이동합니다.</p>
       <div className="comparison-change-list">
         {visible.slice(0, limit).map(row => <button key={row.key} onClick={() => focus(row)} title={row.label}>{row.label}</button>)}

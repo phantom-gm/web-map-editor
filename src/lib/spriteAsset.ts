@@ -5,7 +5,8 @@ export interface SpriteMetadata {
   pivot: [number, number];
   pixelsPerUnit: number;
   version: string;
-  pivotSource: "storage" | "mod";
+  pivotSource: "storage" | "mod" | "animation";
+  animationFrame?: { spriteRuid: string; offset: [number, number]; frameIndex: 0; frameCount: number };
 }
 
 export interface SpriteAssetsResponse {

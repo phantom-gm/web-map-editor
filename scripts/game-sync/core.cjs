@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const objectEdits = require('./object-edits.cjs');
 const walkEdits = require('./walk-edits.cjs');
+const npcEdits = require('./npcs.cjs');
 
 const VERSION = 1;
 const TILE_NAME = /^Tile_(\d+)_(\d+)$/;
@@ -177,13 +178,14 @@ function projectDefaults(raw, mapName) {
   p.size = p.size || [1, 1]; p.groundOrigin = p.groundOrigin || [0, 0];
   p.ground = p.ground || []; p.blocked = p.blocked || []; p.entities = p.entities || [];
   p.palette = (p.palette || []).map(t => { const v = { ...t }; delete v.url; delete v.img; return v; });
+  delete p.gameNpcEdits; delete p.gameNpcSync;
   delete p.gameObjectEdits; // The actual native map, not an old editor overlay, is the baseline.
   p.staticLayer = p.staticLayer || emptyLayer(); p.attributeBase = p.attributeBase || emptyLayer();
   return p;
 }
 function protectedState(p) {
   const out = { ...p };
-  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked']) delete out[k];
+  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked', 'gameNpcEdits', 'gameNpcSync']) delete out[k];
   return out;
 }
 function counts(blocks, groundCells, groundEntities = blocks.length) {
@@ -384,6 +386,70 @@ function packCells(cells, catalog) {
   }
   return result.sort((a, b) => a.gy - b.gy || a.gx - b.gx);
 }
+
+function readNpcFiles(root, relatives, read) {
+  const out = {};
+  for (const name of npcEdits.FILES) {
+    const paths = relatives.filter(relative => path.basename(relative) === name);
+    if (paths.length > 1) fail('AMBIGUOUS_NPC_SOURCE', 'NPC CSV 경로가 중복되었습니다: ' + name);
+    if (paths.length) {
+      const relative = paths[0];
+      if (!relative.startsWith('RootDesk/MyDesk/DataSet/')) fail('INVALID_NPC_SOURCE', 'NPC CSV 경로가 올바르지 않습니다.');
+      const bytes = read ? read(relative) : fs.readFileSync(sourceRelative(root, relative));
+      out[name.slice(0, -4)] = { relative, bytes };
+    }
+  }
+  return out;
+}
+function loadNpcProfile(project, state) {
+  const { root, dir, manifest } = state;
+  let files, sourceId = null;
+  if (project.gameNpcSync !== undefined) {
+    const pointer = project.gameNpcSync;
+    if (!pointer || pointer.version !== 1 || !REVIEW_UUID.test(pointer.sourceId || '') || Object.keys(pointer).some(k => !['version', 'sourceId'].includes(k))) fail('INVALID_NPC_SOURCE', 'NPC 원본 기준 정보가 올바르지 않습니다.');
+    sourceId = pointer.sourceId;
+    const sourceDir = candidateChild(path.dirname(dir), 'npc-' + sourceId, root);
+    const saved = readJson(candidateChild(sourceDir, 'manifest.json', root));
+    if (saved.version !== 1 || saved.sourceId !== sourceId || saved.baselineId !== manifest.baselineId || saved.mapName !== manifest.mapName || saved.gameRoot !== root ||
+      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 3 || saved.files.length > 4 ||
+      new Set(saved.files.map(f => f.relative)).size !== saved.files.length) fail('NPC_SOURCE_MISMATCH', 'NPC 기준이 현재 맵·게임·동기화 기준과 다릅니다.');
+    const savedByPath = new Map(saved.files.map(f => [f.relative, f]));
+    files = readNpcFiles(root, saved.files.map(f => f.relative), relative => {
+      const info = savedByPath.get(relative), bytes = fs.readFileSync(candidateChild(sourceDir, 'snapshot/' + relative, root));
+      if (!REVIEW_HASH.test(info.sha256 || '') || hash(bytes) !== info.sha256) fail('NPC_SOURCE_CORRUPT', 'NPC 기준 사본이 변경되었습니다. 다시 가져오세요.');
+      return bytes;
+    });
+    if (Object.keys(files).length !== saved.files.length) fail('INVALID_NPC_SOURCE', 'NPC 기준에 허용되지 않은 파일이 있습니다.');
+  } else files = readNpcFiles(root, manifest.datasetFiles, relative => fs.readFileSync(safeChild(dir, 'snapshot/' + relative, root)));
+  return npcEdits.analyzeNpcs(files, manifest.mapName, sourceId);
+}
+function currentNpcFiles(root, profile) {
+  const out = {};
+  for (const [name, file] of Object.entries(profile.files)) {
+    try { out[name] = { relative: file.relative, bytes: fs.readFileSync(sourceRelative(root, file.relative)) }; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return out;
+}
+function refreshNpcProject(project, options) {
+  const state = loadBaseline(project, options), { root, dir, manifest } = state;
+  const next = clone(project); delete next.gameNpcEdits; delete next.gameNpcSync;
+  // Keep every existing ground, object, blocked and legacy field; refresh only NPC inputs.
+  inspectLoadedProject(next, state);
+  const files = readNpcFiles(root, datasetFiles(root)), profile = npcEdits.analyzeNpcs(files, manifest.mapName);
+  if (!profile.supported) fail('UNSUPPORTED_NPC', profile.reasons.join(' '));
+  const sourceId = crypto.randomUUID(), sourceDir = candidateChild(path.dirname(dir), 'npc-' + sourceId, root);
+  const saved = { version: 1, sourceId, baselineId: manifest.baselineId, mapName: manifest.mapName, gameRoot: root,
+    createdAt: new Date().toISOString(), baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
+    files: Object.values(files).map(file => ({ relative: file.relative, sha256: hash(file.bytes) })) };
+  fs.mkdirSync(sourceDir, { recursive: false });
+  for (const file of Object.values(files)) writeFile(sourceDir, 'snapshot/' + file.relative, file.bytes, root);
+  writeFile(sourceDir, 'manifest.json', jsonBytes(saved), root);
+  for (const file of Object.values(files)) if (hash(fs.readFileSync(sourceRelative(root, file.relative))) !== hash(file.bytes)) fail('NPC_SOURCE_CHANGED', 'NPC 원본을 가져오는 동안 CSV가 변경되었습니다. 다시 시도하세요.');
+  next.gameNpcSync = { version: 1, sourceId };
+  return { project: next, scene: previewEditedProject(next, options) };
+}
+
 function inspectSyncProject(project, options) {
   return inspectLoadedProject(project, loadBaseline(project, options));
 }
@@ -406,6 +472,9 @@ function inspectLoadedProject(project, state) {
   const walkRelative = walkFiles.length === 1 ? walkFiles[0] : null;
   const walkBytes = walkRelative ? fs.readFileSync(safeChild(state.dir, 'snapshot/' + walkRelative, root)) : null;
   const walk = walkEdits.inspectBlocked(project, walkEdits.analyzeWalk(walkBytes, walkRelative, baseline, manifest.mapName));
+  const npcProfile = loadNpcProfile(project, state), npcs = npcEdits.inspectNpcs(project, npcProfile, manifest.constants);
+  const npcChangedFiles = npcProfile.supported ? npcEdits.sourceDrift(npcProfile, currentNpcFiles(root, npcProfile)) : [];
+  const npcSource = { sourceId: npcProfile.sourceId, stale: npcChangedFiles.length > 0, changedFiles: npcChangedFiles, refreshAvailable: true };
   const before = groundMap(baseline), after = groundMap(project);
   const changed = changesBetween(before, after);
   if (changed.length && !manifest.groundEditingSupported) fail('UNSUPPORTED_GROUND', '이 맵의 바닥 편집은 지원하지 않습니다: ' + manifest.unsupportedReasons.join(' / '));
@@ -424,8 +493,13 @@ function inspectLoadedProject(project, state) {
   const warnings = changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.'] : [...manifest.unsupportedReasons];
   if (objects.changed) warnings.push('선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.');
   if (walk.changed) warnings.push('후보 DT_Walk에 현재 맵에서 직접 수정한 이동불가 셀만 반영합니다. 게임 원본에는 적용하지 않습니다.');
-  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk,
-    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed, mapUnchanged,
+  warnings.push(...npcs.warnings);
+  if (npcSource.stale) warnings.push('NPC 원본 CSV가 변경되었습니다. 현재 NPC는 보관된 기준을 표시하며, NPC 변경 출력 전에 NPC 원본을 새로 가져오세요.');
+  if (npcProfile.supported) warnings.push('NPC는 정적 Idle 외형입니다. 건물과의 런타임 깊이 보정·이름표·대화 동작은 별도 게임 검증이 필요합니다.');
+  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk, npcs, npcSource,
+    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed && !npcs.edited, mapUnchanged,
+      ...(npcProfile.supported ? { npcChanges: { moved: npcs.moves.length, added: npcs.added.length, removed: npcs.removed.length, updated: npcs.updates.length }, npcEditingSupported: true } : { npcEditingSupported: false }),
+      npcEditingReasons: npcProfile.reasons,
       objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
@@ -542,12 +616,18 @@ function previewFromChecked(project, checked) {
   const nativeObjects = objectEdits.objectScene(mb, checked.objectProfile, checked.objects);
   const objectIds = new Map(nativeObjects.objects.map(o => [o.spriteId, o.entityId]));
   for (const sprite of scene.sprites) if (objectIds.has(sprite.id)) sprite.objectEntityId = objectIds.get(sprite.id);
+  for (const npc of checked.npcs.descriptors) if (npc.enabled && npc.ruid) scene.sprites.push({
+    id: 'npc:' + npc.entityId, name: npc.name, path: '/maps/' + manifest.mapName + '/NpcPreview_' + npc.entityId,
+    ruid: npc.ruid, kind: 'other', npcEntityId: npc.entityId, position: npc.position, scale: [npc.bodyScale, npc.bodyScale],
+    quaternion: [0, 0, 0, 1], rotationDeg: 0, flipX: npc.flipX, flipY: false, sortingLayer: null, orderInLayer: 0,
+    sourceOrder: scene.sprites.length, color: [1, 1, 1, 1] });
   verifySources(root, manifest);
   return {
     version: VERSION, baselineId: manifest.baselineId, mapName: manifest.mapName,
     constants: { ...manifest.constants, PPU: deps.ppu }, groundOrigin: clone(project.groundOrigin),
     // Native SpriteRendererComponent.d.mlua declares SortingLayer = "Default".
     defaultSortingLayer: 'Default', sprites: scene.sprites, ...nativeObjects,
+    npcs: checked.npcs.descriptors, npcCatalog: checked.npcs.catalog, npcEdits: checked.npcs.requested, npcSource: checked.npcSource,
     groundBrushRuids: [...new Set(manifest.catalog.filter(t => t.n === 1).map(t => t.ruid))],
     warnings: [...report.warnings, ...scene.warnings],
     report: { ...report, spriteCount: scene.spriteCount, visibleSpriteCount: scene.sprites.length,
@@ -556,14 +636,16 @@ function previewFromChecked(project, checked) {
   };
 }
 // Original and current previews share one scene encoder; neither path creates files.
-function previewBaselineProject({ mapName, baselineId } = {}, options) {
+function previewBaselineProject({ mapName, baselineId, npcSourceId } = {}, options) {
   validMapName(mapName);
   const state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, options);
-  const checked = inspectLoadedProject(state.baseline, state);
-  const scene = previewFromChecked(state.baseline, checked);
+  const original = clone(state.baseline);
+  if (npcSourceId !== undefined && npcSourceId !== null) original.gameNpcSync = { version: 1, sourceId: npcSourceId };
+  const checked = inspectLoadedProject(original, state);
+  const scene = previewFromChecked(original, checked);
   return {
     version: VERSION, baselineId: state.manifest.baselineId, mapName: state.manifest.mapName,
-    size: clone(state.baseline.size), groundOrigin: clone(state.baseline.groundOrigin), scene,
+    npcSourceId: npcSourceId ?? null, size: clone(state.baseline.size), groundOrigin: clone(state.baseline.groundOrigin), scene,
     ground: sortedKeys(checked.before).map(k => [...coord(k), checked.before.get(k)]),
     blocked: sortedKeys(checked.walk.before).map(coord)
   };
@@ -579,6 +661,7 @@ function comparisonFromChecked(checked) {
       repackedCells: sortedKeys(new Set([...dirty].filter(k => !changed.has(k)))).map(coord),
       affectedBeforeBlocks: affected.map(block), replacementBlocks: replacements.map(block)
     },
+    npcs: checked.npcs.comparison,
     objects: {
       // Editor IDs are stable across requests; generated native GUIDs intentionally are not.
       moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...e.position] })),
@@ -601,6 +684,11 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const checked = inspectSyncProject(project, { gameRoot, baselineRoot });
   const { root, dir, manifest, affected, report } = checked;
   const references = captureDatasetReferences(root, manifest);
+  if (checked.npcs.edited && checked.npcSource.stale) fail('STALE_NPC_SOURCE', 'NPC 원본이 변경되었습니다. NPC 원본을 새로 가져온 후 다시 편집해 주세요.');
+  if (checked.npcs.edited && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).length) fail('STALE_NPC_SOURCE', 'NPC 원본이 후보 준비 중 변경되었습니다. 다시 가져오세요.');
+  const npcReference = checked.npcs.edited ? references.captured.find(r => r.relative === checked.npcs.profile.spawnRelative) : null;
+  if (checked.npcs.edited && !npcReference?.bytes) fail('STALE_NPC_SOURCE', 'NPC 배치 원본이 없어졌습니다.');
+  const npcCandidate = checked.npcs.edited ? npcEdits.buildNpcCandidate(npcReference.bytes, checked.npcs) : null;
   const walkReference = checked.walk.changed ? references.captured.find(r => r.relative === checked.walk.relative) : null;
   if (checked.walk.changed && !walkReference?.bytes) fail('STALE_WALK_ROWS', 'DT_Walk 원본이 없어졌습니다. 게임 원본을 다시 가져오세요.');
   const walkCandidate = checked.walk.changed ? walkEdits.buildWalkCandidate(walkReference.bytes, checked.walk, manifest.mapName) : null;
@@ -628,6 +716,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     groundComparison = { unchangedRuidTransform: true, coverageExact: true, unchangedBlocks: manifest.counts.groundEntities - affected.length };
   }
   if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
+  if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
   for (const reference of references.captured) {
     writeFile(candidateDir, 'reference/' + reference.relative, reference.bytes, root);
   }
@@ -643,8 +732,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
-    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : [])], datasetReferenceDirectory: 'reference',
+    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : [])], datasetReferenceDirectory: 'reference',
     walkComparison: walkCandidate ? walkCandidate.comparison : { unchanged: true },
+    ...(npcCandidate ? { npcComparison: npcCandidate.comparison, npcSourceFiles: Object.values(checked.npcs.profile.files).filter(f => f.relative !== checked.npcs.profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) })) } : {}),
     objectComparison: { unchangedObjectsExact: true, existingIdsPreserved: true, permittedFieldsOnly: true },
     candidateOnly: true, gameApplied: false, runtimeVerified: false
   });
@@ -654,7 +744,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     version: VERSION, candidateId, mapName: manifest.mapName, baselineId: manifest.baselineId, createdAt,
     baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
     applyFiles: report.applyFiles.map(relative => {
-      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : walkReference.bytes;
+      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : relative === checked.walk.relative ? walkReference.bytes : npcReference.bytes;
       return { path: relative, bytes: candidate.bytes, sourceBytes: source.length, sourceSha256: hash(source), candidateSha256: candidate.sha256 };
     }),
     referenceFiles: references.captured.map(item => descriptor('reference/' + item.relative)),
@@ -671,7 +761,8 @@ function candidateSummary(report) {
     objectsMoved: report.objectChanges?.moved ?? 0, objectsAdded: report.objectChanges?.added ?? 0,
     objectsRemoved: report.objectChanges?.removed ?? 0,
     blockedAdded: report.walkComparison?.addedRows ?? 0, blockedRemoved: report.walkComparison?.removedRows ?? 0,
-    walkChangedCells: report.walkChangedCells ?? 0
+    walkChangedCells: report.walkChangedCells ?? 0,
+    ...(report.npcChanges ? { npcsMoved: report.npcChanges.moved ?? 0, npcsAdded: report.npcChanges.added ?? 0, npcsRemoved: report.npcChanges.removed ?? 0, npcsUpdated: report.npcChanges.updated ?? 0 } : {})
   };
 }
 const REVIEW_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -694,7 +785,7 @@ function validReviewManifest(review, identity) {
   const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
   return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
     typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 2 &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 3 &&
     review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
     Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
     artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
@@ -734,7 +825,9 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
       const summary = candidateSummary(report);
       if (Object.values(summary).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('Invalid candidate summary.');
       const walk = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
-      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : [])];
+      const npcFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
+      const npcChanged = Object.values(report.npcChanges || {}).some(n => n > 0);
+      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : [])];
       if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
       for (const relative of applyFiles) candidateChild(dir, relative, root);
       if (review) {
@@ -785,7 +878,7 @@ function packageCandidate(input, options) {
   catch (error) { if (error.code === 'ENOENT') packageFailure('검토 기록이 없어 ZIP을 받을 수 없습니다. 후보를 다시 구워 주세요.', reviewCandidate(input, options)); throw error; }
   let metadata;
   try { metadata = JSON.parse(metadataBytes); } catch { packageFailure('후보 검토 기록을 읽을 수 없습니다. 후보를 다시 구워 주세요.'); }
-  const applyWalk = state.manifest.datasetFiles.filter(relative => path.basename(relative) === 'DT_Walk.csv' && metadata?.applyFiles?.some?.(item => item.path === relative));
+  const applyWalk = state.manifest.datasetFiles.filter(relative => ['DT_Walk.csv', 'DT_NpcSpawn.csv'].includes(path.basename(relative)) && metadata?.applyFiles?.some?.(item => item.path === relative));
   for (const entry of state.manifest.sourceFiles.filter(f => !state.manifest.datasetFiles.includes(f.relative) || applyWalk.includes(f.relative))) {
     try { if (fs.statSync(sourceRelative(root, entry.relative)).size > MAX_ZIP_BYTES) packageFailure('게임 원본 파일 크기가 다운로드 검토 한도를 넘었습니다.'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -874,10 +967,18 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
     result.summary = summary;
   });
   const walkPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
-  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : [])];
+  const npcPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
+  const npcChanged = Object.values(report?.npcChanges || {}).some(n => n > 0);
+  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : [])];
+  if (npcChanged && project) attempt('NPC 원본 기준', () => {
+    const profile = loadNpcProfile(project, state), drift = npcEdits.sourceDrift(profile, currentNpcFiles(root, profile));
+    if (!profile.supported || drift.length) throw new Error('NPC 원본 기준이 변경되었습니다. NPC 원본을 다시 가져오세요.');
+    const expected = Object.values(profile.files).filter(f => f.relative !== profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) }));
+    if (stable(expected) !== stable(report.npcSourceFiles)) throw new Error('NPC 원본 파일 기록이 일치하지 않습니다.');
+  });
   const filePaths = review.applyFiles.map(item => item.path);
   if (!check('적용 대상 파일 목록', stable(filePaths) === stable(applyPaths) && stable(report?.applyFiles) === stable(applyPaths),
-    '후보 적용 파일은 해당 맵과 변경된 DT_Walk만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+    '후보 적용 파일은 해당 맵과 변경된 DT_Walk·DT_NpcSpawn만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
   for (const item of review.applyFiles) {
     const sourceFile = sourceRelative(root, item.path), candidateBytes = read(item.path);
     let sourceBytes = null;
@@ -890,8 +991,9 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
       currentSourceSha256, currentCandidateSha256, sourceMatches, candidateMatches });
     const isMap = item.path === manifest.mapRelative;
     const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
-    const expectedCandidate = isMap ? report.candidateMapSha256 : report.walkComparison?.candidateSha256;
-    check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : report.walkComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
+    const csvComparison = item.path === npcPaths[0] ? report.npcComparison : report.walkComparison;
+    const expectedCandidate = isMap ? report.candidateMapSha256 : csvComparison?.candidateSha256;
+    check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : csvComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
     check(item.path + ' 현재 게임 원본', sourceMatches, sourceMatches ? undefined : item.path + ': 후보 작성 이후 게임 원본이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
     check(item.path + ' 후보 무결성', candidateMatches, candidateMatches ? undefined : item.path + ': 후보 파일이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
   }
@@ -914,10 +1016,11 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
       if ((bytes ? hash(bytes) : null) !== item.currentSourceSha256) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
     }
     verifySources(root, manifest);
+    if (npcChanged && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).length) throw new Error('검토 도중 NPC 원본이 변경되었습니다. 다시 검토해 주세요.'); }
   });
   result.checkedAt = new Date().toISOString(); result.status = result.issues.length ? 'blocked' : 'ready';
   return result;
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, validateStorageRoot,
+module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

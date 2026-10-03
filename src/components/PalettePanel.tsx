@@ -1,4 +1,5 @@
 import { GameComparisonSidebar } from "./GameComparisonPanel";
+import { GameNpcLibrary, openNpcPanel } from "./GameNpcPanel";
 import { GameObjectLibrary } from "./GameObjectPanel";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +27,7 @@ function tileTitle(t: PaletteTile): string {
 
 export function PalettePanel() {
   const gameSync = useEditorStore(s => s.gameSync);
+  const showNpcs = useGamePreviewStore(s => s.showNpcs);
   const showObjects = useGamePreviewStore(s => s.showObjects);
   const comparisonEnabled = useGamePreviewStore(s => s.comparisonEnabled);
   const groundBrushRuids = useGamePreviewStore(s => s.scene?.baselineId === gameSync?.baselineId ? s.scene?.groundBrushRuids : undefined);
@@ -258,11 +260,12 @@ export function PalettePanel() {
   }, [menu]);
 
   if (gameSync && comparisonEnabled) return <div className="palette"><GameComparisonSidebar /></div>;
+  if (gameSync && showNpcs) return <div className="palette"><GameNpcLibrary key={gameSync.baselineId} /></div>;
   if (gameSync && showObjects) return <div className="palette"><GameObjectLibrary /></div>;
 
   return (
     <div className="palette">
-      {gameSync && <div className="palette-head"><strong>바닥 소재</strong><button onClick={() => { useGamePreviewStore.getState().setShowObjects(true); useEditorStore.getState().setTool("cursor"); }}>건물·장식</button><small>큰 타일은 자동 배치</small></div>}
+      {gameSync && <div className="palette-head"><strong>바닥 소재</strong><button onClick={() => { useGamePreviewStore.getState().setShowObjects(true); useEditorStore.getState().selectGameNpc(null); useEditorStore.getState().setTool("cursor"); }}>건물·장식</button><button onClick={openNpcPanel}>NPC</button><small>큰 타일은 자동 배치</small></div>}
       {!gameSync && <div className="palette-head">
         <span>팔레트 ({palette.length})</span>
         <button onClick={() => fileRef.current?.click()} title="PNG 이미지 파일 추가 (여러 장 선택)">

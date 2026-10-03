@@ -5,7 +5,7 @@
 // 성능: 커넥션은 withMcpClient 로 1개 열어 배치 전체에서 재사용한다(타일마다 새로 열지 않음).
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { extractEmbeddedPng, parseSpriteMod, type SpriteProperty } from "./spriteMetadata";
+import { extractEmbeddedPng, parseSpriteMod, parseAnimationClipMod, type AnimationPreviewFrame, type SpriteProperty } from "./spriteMetadata";
 import type { SpriteMetadata } from "../lib/spriteAsset";
 
 const MCP_URL = process.env.MSW_MCP_URL || "https://msw-mcp.nexon.com/mcp";
@@ -293,4 +293,24 @@ export async function fetchSpriteAsset(resource: SpriteResourceMetadata): Promis
       error: png ? "native-metadata-unsupported" : "embedded-png-not-found",
     };
   }
+}
+
+export async function fetchAnimationPreviewFrame(resource: SpriteResourceMetadata): Promise<AnimationPreviewFrame> {
+  if (resource.resourceType !== "animationclip") throw new Error("Not an animation clip.");
+  return parseAnimationClipMod(await latestSpriteBytes(resource));
+}
+
+/** Frame offsets are pixels in sprite local space; folding them into the pivot preserves scale and mirroring. */
+export async function fetchAnimationFrameAsset(
+  resource: SpriteResourceMetadata, frame: AnimationPreviewFrame, sprite: SpriteResourceMetadata,
+): ReturnType<typeof fetchSpriteAsset> {
+  if (sprite.resourceType !== "sprite" || sprite.ruid.toLowerCase() !== frame.spriteRuid.toLowerCase()) throw new Error("Animation frame sprite is unavailable.");
+  const asset = await fetchSpriteAsset(sprite);
+  if (!asset.metadata) return asset;
+  const metrics = asset.metadata;
+  return { ...asset, metadata: { ...metrics,
+    pivot: [metrics.pivot[0] - frame.offset[0] / metrics.width, metrics.pivot[1] - frame.offset[1] / metrics.height],
+    pivotSource: "animation", version: resource.version + ":" + metrics.version,
+    animationFrame: { ...frame, frameIndex: 0 },
+  } };
 }

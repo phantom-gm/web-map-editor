@@ -4,8 +4,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 import { NextResponse } from "next/server";
-import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset } from "../../../src/server/mswMcp";
+import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset } from "../../../src/server/mswMcp";
 import { runPool } from "../../../src/lib/pool";
+import type { AnimationPreviewFrame } from "../../../src/server/spriteMetadata";
 import type { SpriteAssetsResponse } from "../../../src/lib/spriteAsset";
 
 const IMG_CONCURRENCY = 8;
@@ -25,7 +26,21 @@ export async function POST(req: Request) {
 
   try {
     // Metadata is refreshed on each request; a RUID can keep its identity after a data/pivot update.
-    const resources = await withMcpClient(client => getGroupResourceMetadata(client, ruids));
+    const frames = new Map<string, AnimationPreviewFrame>();
+    const frameErrors = new Map<string, string>();
+    const resources = await withMcpClient(async client => {
+      const all = await getGroupResourceMetadata(client, ruids);
+      const clips = [...all.values()].filter(resource => resource.resourceType === "animationclip" && resource.modPath);
+      await runPool(IMG_CONCURRENCY, clips.length, async i => {
+        const clip = clips[i];
+        try { frames.set(clip.ruid, await fetchAnimationPreviewFrame(clip)); }
+        catch { frameErrors.set(clip.ruid, "animation-frame-unsupported"); }
+      });
+      const spriteRuids = [...new Set([...frames.values()].map(frame => frame.spriteRuid))].filter(ruid => !all.has(ruid));
+      if (spriteRuids.length) for (const [ruid, resource] of await getGroupResourceMetadata(client, spriteRuids)) all.set(ruid, resource);
+      return all;
+    });
+    const byId = new Map([...resources.values()].map(resource => [resource.ruid.toLowerCase(), resource]));
     const result: SpriteAssetsResponse = { images: {}, sprites: {}, errors: {} };
     await runPool(IMG_CONCURRENCY, ruids.length, async i => {
       const ruid = ruids[i], resource = resources.get(ruid);
@@ -34,12 +49,18 @@ export async function POST(req: Request) {
         result.errors[ruid] = "resource-not-found";
         return;
       }
-      if (resource.resourceType !== "sprite" || !resource.modPath) {
+      if (!["sprite", "animationclip"].includes(resource.resourceType) || !resource.modPath) {
         result.errors[ruid] = "unsupported-resource-type";
         return;
       }
       try {
-        const asset = await fetchSpriteAsset(resource);
+        const frame = frames.get(resource.ruid), frameSprite = frame && byId.get(frame.spriteRuid.toLowerCase());
+        if (resource.resourceType === "animationclip" && (!frame || !frameSprite)) {
+          result.errors[ruid] = frameErrors.get(resource.ruid) ?? "animation-frame-sprite-not-found";
+          return;
+        }
+        const asset = resource.resourceType === "animationclip"
+          ? await fetchAnimationFrameAsset(resource, frame!, frameSprite!) : await fetchSpriteAsset(resource);
         result.images[ruid] = asset.imageUrl;
         if (asset.metadata) result.sprites[ruid] = asset.metadata;
         if (asset.error) result.errors[ruid] = asset.error;

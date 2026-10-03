@@ -1040,3 +1040,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .candidate-history-id { color:#a5bacb; font-size:10px; overflow-wrap:anywhere; }
 .candidate-history-bottom { margin-top:3px; color:#b2c4d1; font-size:11px; }
 .candidate-history-bottom strong { color:#c2e4f4; }
+
+/* NPCs use the same native scene, with a separate placement and property editor. */
+.game-npc-library { display: flex; flex-direction: column; min-height: 0; height: 100%; overflow-y: auto; }
+.game-npc-library > :not(.game-npc-list) { flex-shrink: 0; }
+.game-npc-library .game-npc-list { flex: 1 0 auto; min-height: 90px; overflow: visible; }
+.npc-source-actions { padding: 10px; border-top: 1px solid #343943; }
+.npc-source-actions > button { width: 100%; }
+.game-npc-inspector { max-height: calc(100% - 24px); overflow-y: auto; }
+.game-npc-inspector .ei-row input[type=checkbox] { width: 20px; height: 20px; align-self: flex-start; }
+.game-npc-inspector > button { margin-top: 6px; }

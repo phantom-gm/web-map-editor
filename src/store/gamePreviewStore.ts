@@ -23,6 +23,10 @@ export interface GamePreviewState {
   showScene: boolean;
   showOverlays: boolean;
   refreshNonce: number;
+  showNpcs: boolean;
+  placementNpcClassId: number | null;
+  setShowNpcs: (show: boolean) => void;
+  setPlacementNpc: (classId: number | null) => void;
   showObjects: boolean;
   placementPrototypeId: string | null;
   selectionMode: "objects" | "blocked";
@@ -37,17 +41,20 @@ export interface GamePreviewState {
 }
 export const useGamePreviewStore = create<GamePreviewState>((set) => ({
   comparisonEnabled: false, comparisonMode: "changes", comparisonBaseline: null, comparison: null,
-  comparisonFilters: { ground: true, objects: true, blocked: true },
-  setComparisonEnabled: (comparisonEnabled) => set({ comparisonEnabled, showScene: true, placementPrototypeId: null }),
+  comparisonFilters: { ground: true, objects: true, blocked: true, npcs: true },
+  setComparisonEnabled: (comparisonEnabled) => set({ comparisonEnabled, showScene: true, placementPrototypeId: null, placementNpcClassId: null }),
   setComparisonMode: (comparisonMode) => set({ comparisonMode }),
   setComparisonFilter: (key, enabled) => set(state => ({ comparisonFilters: { ...state.comparisonFilters, [key]: enabled } })),
   status: "idle", baselineId: null, scene: null, images: new Map(),
   error: null, warnings: [], missingImages: 0, showScene: true, showOverlays: false, refreshNonce: 0,
+  showNpcs: false, placementNpcClassId: null,
+  setShowNpcs: (showNpcs) => set(state => ({ showNpcs, ...(showNpcs ? { showObjects: false, placementPrototypeId: null, selectionMode: "objects" as const } : { placementNpcClassId: null }), showScene: showNpcs || state.showScene })),
+  setPlacementNpc: (placementNpcClassId) => set({ placementNpcClassId, placementPrototypeId: null }),
   showObjects: false, placementPrototypeId: null, selectionMode: "objects", multiSelect: false,
   setSelectionMode: (selectionMode) => set({ selectionMode, placementPrototypeId: null }),
   setMultiSelect: (multiSelect) => set({ multiSelect }),
-  setShowObjects: (showObjects) => set({ showObjects }),
-  setPlacementPrototype: (placementPrototypeId) => set({ placementPrototypeId }),
+  setShowObjects: (showObjects) => set({ showObjects, ...(showObjects ? { showNpcs: false, placementNpcClassId: null } : {}) }),
+  setPlacementPrototype: (placementPrototypeId) => set({ placementPrototypeId, placementNpcClassId: null }),
   setShowScene: (showScene) => set({ showScene }),
   setShowOverlays: (showOverlays) => set({ showOverlays }),
   refresh: () => set(state => ({ refreshNonce: state.refreshNonce + 1 })),

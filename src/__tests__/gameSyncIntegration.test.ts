@@ -138,7 +138,7 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
   }
   function assertPreviewFile(scene: GamePreviewScene, map: NativeMap) {
     expect(scene.report?.unsupportedSpriteCount).toBe(0);
-    for (const sprite of scene.sprites) {
+    for (const sprite of scene.sprites.filter(item => !item.npcEntityId)) {
       // Preview and export build separately; new entity UUIDs can differ, native render values cannot.
       const renderer = map.component(sprite.path, SPRITE);
       const transform = map.component(sprite.path, TRANSFORM);
@@ -906,6 +906,7 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
       expect(ready.checks.length).toBeGreaterThan(0);
       expect(ready.checks.every(check => check.passed)).toBe(true);
       expect(ready.summary).toEqual({
+        npcsMoved: 0, npcsAdded: 0, npcsRemoved: 0, npcsUpdated: 0,
         groundChangedCells: 1, groundRepackedCells: 15, objectsMoved: 1, objectsAdded: 1, objectsRemoved: 1,
         blockedAdded: 1, blockedRemoved: 1, walkChangedCells: 2,
       });

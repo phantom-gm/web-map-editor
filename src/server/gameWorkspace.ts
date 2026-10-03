@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { parseGameNpcEdits, parseGameNpcSync } from "../lib/gameNpc";
 import { parseGameObjectEdits } from "../lib/gameObjects";
 import { isProjectFile, parseGameSync, type ProjectFile } from "../lib/projectIO";
 
@@ -53,6 +54,8 @@ function validateProject(input: unknown): ProjectFile {
   try {
     if (!parseGameSync(input.gameSync, input.map)) throw new WorkspaceError("게임에 연결된 맵만 작업 저장을 사용할 수 있습니다.");
     parseGameObjectEdits(input.gameObjectEdits);
+    parseGameNpcEdits(input.gameNpcEdits);
+    parseGameNpcSync(input.gameNpcSync);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     throw new WorkspaceError(error instanceof Error ? error.message : "게임 동기화 정보 형식이 올바르지 않습니다.");

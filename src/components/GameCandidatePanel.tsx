@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  formatCandidateReview, validateCandidateReview, validateCandidateZipHeaders,
+  formatCandidateReview, formatCandidateNpcSummary, validateCandidateReview, validateCandidateZipHeaders,
   type CandidateIdentity, type GameCandidateReview,
 } from "../lib/gameCandidate";
 
@@ -135,6 +135,7 @@ export function GameCandidateReviewDialog({ candidateId, mapName, baselineId, on
               <dt>오브젝트</dt><dd>이동 {review.summary.objectsMoved} · 추가 {review.summary.objectsAdded} · 삭제 {review.summary.objectsRemoved}</dd>
               <dt>이동불가</dt><dd>변경 {review.summary.walkChangedCells}칸{review.summary.blockedAdded !== undefined && review.summary.blockedRemoved !== undefined
                 ? " · 추가 " + review.summary.blockedAdded + " · 해제 " + review.summary.blockedRemoved : ""}</dd>
+              {formatCandidateNpcSummary(review.summary) !== null && <><dt>NPC</dt><dd>{formatCandidateNpcSummary(review.summary)}</dd></>}
             </dl>
           </section>
           <section className="candidate-section" aria-label="원본과 후보 파일 상태">

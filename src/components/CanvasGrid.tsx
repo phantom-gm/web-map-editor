@@ -1,6 +1,9 @@
 import { drawGameComparison } from "../lib/gameComparison";
 import { GameObjectInspector } from "./GameObjectPanel";
 import { previewScreenToWorld, gameObjectHitCandidates, snapObjectPosition, objectCellOffset, sceneWithGameObjectGroupDraft, drawGameObjectSelection, gameObjectsInScreenRect } from "../lib/gameObjectPreview";
+import { GameNpcInspector } from "./GameNpcPanel";
+import { gameNpcHitCandidates, sceneWithNpcDraft, drawGameNpcLabels, drawGameNpcSelection } from "../lib/gameNpcPreview";
+import type { GameNpcCell } from "../lib/gameNpc";
 import type { GameObjectDescriptor, GameObjectPosition } from "../lib/gameObjects";
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore, captureEditorSnapshot, type Snapshot, type VisualFlags } from "../store/editorStore";
@@ -28,7 +31,7 @@ import { useGamePreview } from "../lib/useGamePreview";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useWorkspaceSession } from "../lib/gameWorkspace";
 
-const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper", "block", "object"]);
+const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper", "block", "object", "npc"]);
 interface PreviewFrame { scene: GamePreviewScene | null; images: GamePreviewImages; showOverlays: boolean }
 function linkedGroundReady(baselineId: string): boolean {
   const preview = useGamePreviewStore.getState();
@@ -340,7 +343,7 @@ function draw(
   // 엔티티(포탈/몬스터/NPC/오브젝트) — 타일 위에. gy→gx 순(뒤→앞).
   // 선택 오브젝트의 바닥선은 다른 스프라이트에 가리지 않게 루프가 끝난 뒤 그린다(클로저로 미룸).
   let deferredOverlay: (() => void) | null = null;
-  const displayedEntities = preview ? (drawOverlays ? entities.filter(entity => entity.kind !== "object") : []) : entities;
+  const displayedEntities = preview ? (drawOverlays ? entities.filter(entity => entity.kind !== "object" && (entity.kind !== "npc" || !preview.scene?.npcs)) : []) : entities;
   if (displayedEntities.length > 0) {
     // 런타임 스폰 엔티티는 정적 게임 배치가 아니다. 연결 모드에서는 편집 마커로만 보여준다.
     const lookup = makeEntityImageLookup(preview ? [] : palette);
@@ -591,6 +594,9 @@ export function CanvasGrid() {
   const comparison = useGamePreviewStore(state => state.comparison);
   const comparisonFilters = useGamePreviewStore(state => state.comparisonFilters);
   const previewStatus = useGamePreviewStore(state => state.status);
+  const selectedGameNpcId = useEditorStore(state => state.selectedGameNpcId);
+  const [npcDraft, setNpcDraft] = useState<{ id: string; cell: GameNpcCell } | null>(null);
+  const npcDrag = useRef<{ id:string; cell:GameNpcCell; pointer:GameObjectPosition; version:number; baselineId:string } | null>(null);
   const selectedGameObjectId = useEditorStore(state => state.selectedGameObjectId);
   const selectedGameObjectIds = useEditorStore(state => state.selectedGameObjectIds);
   const selectedBlockedCells = useEditorStore(state => state.selectedBlockedCells);
@@ -607,7 +613,7 @@ export function CanvasGrid() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "moveGameObject" | "selectGameRegion" | null>(null);
+  const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "moveGameNpc" | "moveGameObject" | "selectGameRegion" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
   const rectStart = useRef<[number, number] | null>(null);
   const movingId = useRef<string | null>(null);
@@ -642,8 +648,9 @@ export function CanvasGrid() {
     if (!state.loading || previous.loading) return;
     mode.current = null; drag.current = null; strokeBefore.current = null;
     rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
-    nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+    npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
     useGamePreviewStore.getState().setSelectionMode("objects");
+    useGamePreviewStore.getState().setPlacementNpc(null);
   }), []);
 
   useEffect(() => {
@@ -691,22 +698,23 @@ export function CanvasGrid() {
   // Selection, project and document changes invalidate a pointer gesture immediately.
   useEffect(() => useEditorStore.subscribe((state, previous) => {
     if (state.gameSync === previous.gameSync && state.gameObjectsVer === previous.gameObjectsVer &&
+      state.gameNpcsVer === previous.gameNpcsVer && state.selectedGameNpcId === previous.selectedGameNpcId &&
       state.blockedVer === previous.blockedVer && state.activeTool === previous.activeTool &&
       state.selectedGameObjectIds === previous.selectedGameObjectIds && state.selectedBlockedCells === previous.selectedBlockedCells) return;
-    nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
+    npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
     selectionStart.current = null; setSelectionBox(null);
-    if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+    if (mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
   }), []);
 
   useEffect(() => {
     const cancel = () => {
-      nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
+      npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
       selectionStart.current = null; setSelectionBox(null);
-      if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+      if (mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
     };
     const unsubscribe = useGamePreviewStore.subscribe((state, previous) => {
       if (state.selectionMode !== previous.selectionMode || state.showScene !== previous.showScene ||
-        state.placementPrototypeId !== previous.placementPrototypeId || state.comparisonEnabled !== previous.comparisonEnabled || state.status === "error") cancel();
+        state.placementNpcClassId !== previous.placementNpcClassId || state.placementPrototypeId !== previous.placementPrototypeId || state.comparisonEnabled !== previous.comparisonEnabled || state.status === "error") cancel();
     });
     window.addEventListener("blur", cancel);
     return () => { unsubscribe(); window.removeEventListener("blur", cancel); };
@@ -732,13 +740,27 @@ export function CanvasGrid() {
         return;
       }
       // Commands cancel a local drag before mouseup can commit a stale object.
-      if (current.gameSync && (nativeDrag.current || selectionStart.current)) {
-        nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); mode.current = null;
+      if (current.gameSync && (npcDrag.current || nativeDrag.current || selectionStart.current)) {
+        npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); mode.current = null;
         selectionStart.current = null; setSelectionBox(null);
       }
       if (current.gameSync && e.key === "Escape") {
         useGamePreviewStore.getState().setSelectionMode("objects");
-        current.setTool("cursor"); current.clearGameSelection(); nativeDrag.current = null; setObjectDraft(null);
+        useGamePreviewStore.getState().setPlacementNpc(null);
+        current.setTool("cursor"); current.clearGameSelection(); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null);
+        return;
+      }
+      if (current.gameSync && current.selectedGameNpcId &&
+        ((mod && e.code === "KeyD") || ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key))) {
+        e.preventDefault();
+        const view = useGamePreviewStore.getState(), scene = view.scene;
+        const npc = scene?.npcs?.find(item => item.entityId === current.selectedGameNpcId);
+        if (!scene || view.status !== "ready" || !npc || mod) return;
+        if (e.key === "Delete" || e.key === "Backspace") current.removeGameNpc(npc.entityId,scene);
+        else current.updateGameNpc(npc.entityId,{cell:[
+          npc.cell[0]+(e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
+          npc.cell[1]+(e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
+        ]},scene);
         return;
       }
       if (current.gameSync &&
@@ -821,8 +843,8 @@ export function CanvasGrid() {
       e.preventDefault();
       if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
-      nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
-      if (mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+      npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+      if (mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
       fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
       useEditorStore.getState().zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, p.x, p.y);
     };
@@ -860,6 +882,31 @@ export function CanvasGrid() {
       if (st.gameSync && tool === "block") {
         const view = useGamePreviewStore.getState(); view.setShowOverlays(true);
         if (!st.visual.blocked) st.toggleVisual("blocked");
+      }
+      if (st.gameSync && (tool === "npc" || tool === "cursor")) {
+        const view = useGamePreviewStore.getState(), scene = view.scene;
+        if (view.status !== "ready" || !view.showScene || scene?.baselineId !== st.gameSync.baselineId) return;
+        if (tool === "npc") {
+          if (view.placementNpcClassId !== null) {
+            const id = st.addGameNpc(view.placementNpcClassId, [gx, gy], scene);
+            if (id) { view.setPlacementNpc(null); st.setTool("cursor"); }
+          } else view.setShowNpcs(true);
+          return;
+        }
+        if (view.selectionMode !== "blocked") {
+          const npc = gameNpcHitCandidates(p.x, p.y, scene, view.images, st.camera)[0];
+          if (npc) {
+            view.setShowNpcs(true);
+            if (st.selectedGameNpcId !== npc.entityId) st.selectGameNpc(npc.entityId);
+            else if (npc.canEdit && !scene.npcSource?.stale) {
+              downPoint.current = p;
+              npcDrag.current = { id: npc.entityId, cell: [...npc.cell], pointer: previewScreenToWorld(p.x, p.y, scene, st.camera),
+                version: st.gameNpcsVer, baselineId: st.gameSync.baselineId };
+              mode.current = "moveGameNpc";
+            }
+            return;
+          }
+        }
       }
       if (st.gameSync && (tool === "cursor" || tool === "object")) {
         const preview = useGamePreviewStore.getState(), scene = preview.scene;
@@ -971,7 +1018,15 @@ export function CanvasGrid() {
       if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled && mode.current !== "pan") return;
       if (st.gameSync && (mode.current === "paint" || mode.current === "rect") &&
         (activeGroundBaseline.current !== st.gameSync.baselineId || useGamePreviewStore.getState().status === "error")) return;
-      if (mode.current === "selectGameRegion" && selectionStart.current) {
+      if (mode.current === "moveGameNpc" && npcDrag.current) {
+        const move = npcDrag.current, view = useGamePreviewStore.getState(), scene = view.scene;
+        const start = downPoint.current;
+        if (view.status !== "ready" || scene?.baselineId !== move.baselineId || st.gameSync?.baselineId !== move.baselineId ||
+          st.gameNpcsVer !== move.version || st.selectedGameNpcId !== move.id) return;
+        if (start && Math.abs(p.x-start.x) <= CLICK_SLOP && Math.abs(p.y-start.y) <= CLICK_SLOP) return;
+        const delta = objectCellOffset(previewScreenToWorld(p.x,p.y,scene,st.camera), move.pointer, scene);
+        setNpcDraft({ id: move.id, cell: [move.cell[0]+delta[0],move.cell[1]+delta[1]] });
+      } else if (mode.current === "selectGameRegion" && selectionStart.current) {
         const start = selectionStart.current;
         if (st.gameSync?.baselineId !== start.baselineId || st.gameObjectsVer !== start.version || st.blockedVer !== start.blockedVersion) return;
         setSelectionBox({ x0: start.x, y0: start.y, x1: p.x, y1: p.y, kind: start.kind });
@@ -1003,17 +1058,26 @@ export function CanvasGrid() {
       const st = useEditorStore.getState();
       if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
         mode.current = null; drag.current = null; strokeBefore.current = null;
-        nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+        npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
         return;
       }
       if (useWorkspaceSession.getState().loading ||
         (st.gameSync && (mode.current === "paint" || mode.current === "rect") && activeGroundBaseline.current !== st.gameSync.baselineId)) {
         mode.current = null; drag.current = null; strokeBefore.current = null;
         rectStart.current = null; movingId.current = null; activeGroundBaseline.current = null;
-        nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+        npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
         return;
       }
-      if (mode.current === "selectGameRegion" && selectionStart.current) {
+      if (mode.current === "moveGameNpc" && npcDrag.current) {
+        const move = npcDrag.current, view = useGamePreviewStore.getState(), scene = view.scene, p = local(e), start = downPoint.current;
+        if (view.status === "ready" && scene?.baselineId === move.baselineId && st.gameSync?.baselineId === move.baselineId &&
+          st.gameNpcsVer === move.version && st.selectedGameNpcId === move.id && start &&
+          (Math.abs(p.x-start.x) > CLICK_SLOP || Math.abs(p.y-start.y) > CLICK_SLOP)) {
+          const delta = objectCellOffset(previewScreenToWorld(p.x,p.y,scene,st.camera),move.pointer,scene);
+          st.updateGameNpc(move.id,{cell:[move.cell[0]+delta[0],move.cell[1]+delta[1]]},scene);
+        }
+        npcDrag.current = null; setNpcDraft(null);
+      } else if (mode.current === "selectGameRegion" && selectionStart.current) {
         const start = selectionStart.current, p = local(e), preview = useGamePreviewStore.getState();
         const still = Math.abs(p.x - start.x) <= CLICK_SLOP && Math.abs(p.y - start.y) <= CLICK_SLOP;
         if (st.gameSync?.baselineId === start.baselineId && st.gameObjectsVer === start.version &&
@@ -1044,7 +1108,7 @@ export function CanvasGrid() {
             st.transformGameSelection("move", scene, objectCellOffset(previewScreenToWorld(p.x, p.y, scene, st.camera), move.pointer, scene));
           }
         }
-        nativeDrag.current = null; setObjectDraft(null);
+        npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null);
       } else if ((mode.current === "paint" || mode.current === "blockErase") && strokeBefore.current) {
         st.commitStroke(strokeBefore.current);
       } else if (mode.current === "moveEntity" && strokeBefore.current) {
@@ -1110,7 +1174,8 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const shownScene = previewScene && objectDraft ? sceneWithGameObjectGroupDraft(previewScene, objectDraft.ids, objectDraft.delta) : previewScene;
+    const objectScene = previewScene && objectDraft ? sceneWithGameObjectGroupDraft(previewScene, objectDraft.ids, objectDraft.delta) : previewScene;
+    const shownScene = objectScene && npcDraft ? sceneWithNpcDraft(objectScene, npcDraft.id, npcDraft.cell) : objectScene;
     const comparisonReady = previewStatus === "ready" && comparisonBaseline?.baselineId === gameSync?.baselineId &&
       comparison?.baselineId === gameSync?.baselineId && !!comparisonBaseline && !!comparison;
     const comparisonScene = comparisonReady ? comparisonMode === "original" ? comparisonBaseline.scene : previewScene : null;
@@ -1126,10 +1191,12 @@ export function CanvasGrid() {
       for (const key of objectDraft.cells) { const [x, y] = parseCellKey(key); shownBlocked.add(cellKey(x + objectDraft.delta[0], y + objectDraft.delta[1])); }
     }
     draw(ctx, dims, size, camera, comparisonEnabled ? null : hover, ground, shownBlocked, palette, comparisonEnabled ? null : rectPreview, entities, selectedEntityId, visual, stand, preview);
+    if (preview?.scene) drawGameNpcLabels(ctx, preview.scene, camera);
     if (comparisonEnabled && comparisonReady && comparisonMode === "changes" && previewScene) {
       drawGameComparison(ctx, comparisonBaseline, previewScene, comparison, previewImages, camera, comparisonFilters);
     }
     if (preview?.scene && !comparisonEnabled) {
+      if (selectedGameNpcId) drawGameNpcSelection(ctx, selectedGameNpcId, preview.scene, previewImages, camera);
       for (const id of selectedGameObjectIds) drawGameObjectSelection(ctx, id, preview.scene, previewImages, camera, id === selectedGameObjectId ? "#ffd166" : "#75dce8");
       const highlight = new Set(selectedBlockedCells.map(key => {
         const [x, y] = parseCellKey(key);
@@ -1185,7 +1252,7 @@ export function CanvasGrid() {
     selectedGameObjectId,
     selectedGameObjectIds,
     selectedBlockedCells,
-    objectDraft,
+    objectDraft, npcDraft, selectedGameNpcId,
     selectionBox,
   ]);
 
@@ -1195,7 +1262,7 @@ export function CanvasGrid() {
       {gameSync && comparisonEnabled && <div className="comparison-view-badge" role="status">
         {previewStatus !== "ready" ? "비교 준비 중" : comparisonMode === "original" ? "가져온 원본" : comparisonMode === "edited" ? "현재 수정본" : "현재 수정본 + 변경 강조"} · 보기 전용
       </div>}
-      {gameSync ? !comparisonEnabled && <GameObjectInspector /> : <EntityInspector />}
+      {gameSync ? !comparisonEnabled && (selectedGameNpcId ? <GameNpcInspector /> : <GameObjectInspector />) : <EntityInspector />}
     </div>
   );
 }

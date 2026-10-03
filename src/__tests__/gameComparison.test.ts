@@ -11,8 +11,8 @@ import {
 const constants = { TILE_W: 2.56, TILE_H: 1.28, ORIGIN_X: 15, ORIGIN_Y: 15, PPU: 100, DEPTH_SCALE: 0.21875, GROUND_ORDER: -1000 };
 const camera = { x: 500, y: 500, zoom: 0.8 };
 const asset: GamePreviewAsset = { width: 120, height: 240, pivot: [0.3, 0.12], pixelsPerUnit: 100 };
-const all: GameComparisonFilters = { ground: true, objects: true, blocked: true };
-const onlyObjects: GameComparisonFilters = { ground: false, objects: true, blocked: false };
+const all: GameComparisonFilters = { ground: true, objects: true, blocked: true, npcs: true };
+const onlyObjects: GameComparisonFilters = { ground: false, objects: true, blocked: false, npcs: false };
 function sprite(id: string, extra: Partial<GamePreviewSprite> = {}): GamePreviewSprite {
   return {
     id: "native-" + id, objectEntityId: id, path: "/maps/compare/" + id, name: id, ruid: "ruid-" + id,
@@ -139,9 +139,10 @@ describe("comparison response contract", () => {
     expect(getComparisonCounts(f.comparison)).toEqual({
       groundChangedCells: 1, groundRepackedCells: 3, objectsMoved: 1, objectsAdded: 1,
       objectsRemoved: 1, blockedAdded: 2, blockedRemoved: 1,
+      npcsMoved: 0, npcsAdded: 0, npcsRemoved: 0, npcsUpdated: 0,
     });
     expect(f.comparison).toEqual(before);
-    expect(Object.values(getComparisonCounts(emptyComparison()))).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(Object.values(getComparisonCounts(emptyComparison()))).toEqual(Array(11).fill(0));
   });
 });
 
@@ -203,7 +204,7 @@ describe("logical ground and blocked comparison overlays", () => {
   it("places direct cell diamonds at editor cell centers without applying the native ground origin twice", () => {
     const f = fixture(), r = recordingContext();
     f.comparison.ground.changedCells = [{ gx: 3, gy: 4, beforeRuid: "grass", afterRuid: null }];
-    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: true, objects: false, blocked: false });
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: true, objects: false, blocked: false, npcs: false });
     const outline = r.strokes.find(stroke => stroke.color === GAME_COMPARISON_COLORS.groundChanged)!;
     // TW=64, TH=32: center=(500 - 32*.8, 500 + 7*16*.8), half-height=16*.8.
     near(outline.path[0].values, [474.4, 576.8]);
@@ -220,7 +221,7 @@ describe("logical ground and blocked comparison overlays", () => {
       affectedBeforeBlocks: [{ name: "Tile_2_3", gx: 2, gy: 3, size: 4, ruid: "grass-4x4" }],
       replacementBlocks: [{ name: "Tile_2_3", gx: 2, gy: 3, size: 1, ruid: "grass-1x1" }],
     };
-    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: true, objects: false, blocked: false });
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: true, objects: false, blocked: false, npcs: false });
     expect(r.fills.filter(fill => fill.color === GAME_COMPARISON_COLORS.groundRepacked + "12")).toHaveLength(3);
     expect(r.fills.filter(fill => fill.color === GAME_COMPARISON_COLORS.groundChanged + "32")).toHaveLength(1);
     const block = r.strokes.find(stroke => stroke.dash.join(",") === "6,4")!;
@@ -232,7 +233,7 @@ describe("logical ground and blocked comparison overlays", () => {
   it("hatches only added/removed blocked cells in separate colors and clips every hatch to its diamond", () => {
     const f = fixture(), r = recordingContext();
     f.comparison.blocked = { added: [[4, 5]], removed: [[2, 2]] };
-    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: false, objects: false, blocked: true });
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: false, objects: false, blocked: true, npcs: false });
     expect(r.clips).toHaveLength(2);
     expect(r.strokes.map(stroke => stroke.color)).toEqual([
       GAME_COMPARISON_COLORS.removed, GAME_COMPARISON_COLORS.removed,
@@ -244,9 +245,107 @@ describe("logical ground and blocked comparison overlays", () => {
   });
   it("filters overlays independently and draws nothing for an unchanged comparison", () => {
     const f = fixture(), r = recordingContext();
-    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: false, objects: false, blocked: false });
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ground: false, objects: false, blocked: false, npcs: false });
     expect(r.images).toEqual([]); expect(r.strokes).toEqual([]); expect(r.fills).toEqual([]);
     drawGameComparison(r.ctx, f.baseline, f.baseline.scene, emptyComparison(), f.images, camera, all);
     expect(r.images).toEqual([]); expect(r.strokes).toEqual([]); expect(r.fills).toEqual([]);
+  });
+});
+
+function npcFixture() {
+  const f = fixture();
+  const npcSprite = (id: string, index: number) => sprite(id, { objectEntityId: undefined, npcEntityId: id, kind: "other", sourceOrder: index,
+    scale: [-1.2, 1.2], flipX: false, position: [index * 0.5, -9, -9 * 0.21875] });
+  const moved = npcSprite("npc-moved", 0), removed = npcSprite("npc-removed", 1), updated = npcSprite("npc-updated", 2), untouched = npcSprite("npc-untouched", 3);
+  const movedCurrent = { ...moved, position: [moved.position[0] + 1.28, moved.position[1] - 0.64, moved.position[2] - 0.14] as [number, number, number], scale: [1.2, 1.2] as [number, number] };
+  const updatedCurrent = { ...updated, scale: [1.2, 1.2] as [number, number] };
+  const added = npcSprite("npc-added", 4);
+  const descriptor = (item: GamePreviewSprite, previous?: GamePreviewSprite) => ({
+    entityId: item.npcEntityId!, spawnId: item.npcEntityId!, npcClassId: 101, name: "NPC " + item.npcEntityId,
+    cell: [1, 1] as [number, number], sourceCell: previous ? [1, 1] as [number, number] : null,
+    position: item.position, ruid: item.ruid, bodyScale: 1.2, flipX: item.scale[0] < 0, dialogId: "10100", enabled: true,
+    sourceFlipX: previous ? previous.scale[0] < 0 : null, sourceDialogId: previous ? "10100" : null, canEdit: true,
+  });
+  const sourceId = "52e1af49-baae-433e-b886-aad8421bcf82";
+  f.baseline.npcSourceId = sourceId;
+  f.baseline.scene = { ...f.baseline.scene, sprites: [moved, removed, updated, untouched],
+    npcs: [moved, removed, updated, untouched].map(item => descriptor(item, item)),
+    npcSource: { sourceId, stale: false, changedFiles: [], refreshAvailable: true } };
+  f.current = { ...f.current, sprites: [movedCurrent, updatedCurrent, untouched, added],
+    npcs: [descriptor(movedCurrent, moved), descriptor(updatedCurrent, updated), descriptor(untouched, untouched), descriptor(added)],
+    npcSource: { sourceId, stale: false, changedFiles: [], refreshAvailable: true } };
+  f.comparison.objects = { moved: [], added: [], removed: [] };
+  f.comparison.npcs = {
+    moved: [{ entityId: moved.npcEntityId!, from: moved.position, to: movedCurrent.position }],
+    added: [{ entityId: added.npcEntityId!, position: added.position }],
+    removed: [{ entityId: removed.npcEntityId!, position: removed.position }],
+    updated: [{ entityId: moved.npcEntityId!, position: movedCurrent.position }, { entityId: updated.npcEntityId!, position: updatedCurrent.position }],
+  };
+  f.images = new Map([moved, removed, updated, untouched, added].map(item => [item.ruid, {
+    asset: { ...asset }, image: { id: item.ruid, naturalWidth: asset.width, naturalHeight: asset.height } as unknown as HTMLImageElement,
+  }]));
+  return { ...f, npcMoved: moved, npcMovedCurrent: movedCurrent, npcRemoved: removed, npcUpdated: updated, npcAdded: added };
+}
+const onlyNpcs: GameComparisonFilters = { ground: false, objects: false, blocked: false, npcs: true };
+
+describe("NPC comparison source and overlays", () => {
+  it("counts move plus settings on the same NPC and accepts legacy responses without NPC diagnostics", () => {
+    const f = npcFixture();
+    expect(validateComparisonPair(f.baseline, f.current, f.comparison)).toBe(true);
+    expect(getComparisonCounts(f.comparison)).toMatchObject({ npcsMoved: 1, npcsAdded: 1, npcsRemoved: 1, npcsUpdated: 2 });
+    const legacy = fixture();
+    expect(validateComparisonPair(legacy.baseline, legacy.current, legacy.comparison)).toBe(true);
+    expect(getComparisonCounts(legacy.comparison)).toMatchObject({ npcsMoved: 0, npcsAdded: 0, npcsRemoved: 0, npcsUpdated: 0 });
+  });
+  it.each(["wrapper", "original", "current", "missing"])("rejects a different %s NPC source before drawing", kind => {
+    const f = npcFixture(), r = recordingContext();
+    if (kind === "wrapper") f.baseline.npcSourceId = "another-source";
+    if (kind === "original") f.baseline.scene.npcSource!.sourceId = "another-source";
+    if (kind === "current") f.current.npcSource!.sourceId = "another-source";
+    if (kind === "missing") delete f.current.npcSource;
+    expect(() => drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, onlyNpcs)).toThrow("비교 데이터");
+    expect(r.images).toEqual([]); expect(r.strokes).toEqual([]); expect(r.fills).toEqual([]);
+  });
+  it.each(["duplicate", "wrong position", "unknown ID", "added already existed", "removed still exists", "unchanged settings"])("rejects invalid NPC %s diagnostics", kind => {
+    const f = npcFixture(), diff = f.comparison.npcs!;
+    if (kind === "duplicate") diff.moved.push(diff.moved[0]);
+    if (kind === "wrong position") diff.moved[0] = { ...diff.moved[0], to: [0, 0, 0] };
+    if (kind === "unknown ID") diff.updated[0].entityId = "missing";
+    if (kind === "added already existed") diff.added[0] = { entityId: f.npcMoved.npcEntityId!, position: f.npcMovedCurrent.position };
+    if (kind === "removed still exists") diff.removed[0] = { entityId: f.npcMoved.npcEntityId!, position: f.npcMoved.position };
+    if (kind === "unchanged settings") f.current.npcs!.find(n => n.entityId === f.npcUpdated.npcEntityId)!.flipX = true;
+    expect(() => validateComparisonPair(f.baseline, f.current, f.comparison)).toThrow("비교 데이터");
+  });
+  it("draws original moved/deleted/settings NPC ghosts once each, with color outlines and a world anchor connector", () => {
+    const f = npcFixture(), r = recordingContext();
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, onlyNpcs);
+    expect(r.images).toHaveLength(3); // A moved+updated NPC has only one ghost.
+    expect(new Set(r.images.map(item => item.image))).toEqual(new Set([f.npcMoved, f.npcRemoved, f.npcUpdated].map(item => f.images.get(item.ruid)!.image)));
+    for (const image of r.images) expect(image.alpha).toBeCloseTo(0.75 * 0.24);
+    const added = r.strokes.find(stroke => stroke.color === GAME_COMPARISON_COLORS.added)!;
+    const [a, b, c, d, tx, ty] = previewSpriteGeometry(f.npcAdded, asset, f.current, camera).matrix;
+    near(added.path[0].values, [tx, ty]); near(added.path[2].values, [a * asset.width + c * asset.height + tx, b * asset.width + d * asset.height + ty]);
+    expect(r.strokes.filter(stroke => stroke.color === GAME_COMPARISON_COLORS.removed)).toHaveLength(1);
+    expect(r.strokes.filter(stroke => stroke.color === GAME_COMPARISON_COLORS.npcUpdated)).toHaveLength(2);
+    const connector = r.strokes.find(stroke => stroke.dash.join(",") === "4,3")!;
+    near(connector.path[0].values, previewWorldToScreen(f.npcMoved.position, f.baseline.scene, camera));
+    near(connector.path[1].values, previewWorldToScreen(f.npcMovedCurrent.position, f.current, camera));
+    expect(r.ctx.globalAlpha).toBe(0.75); expect(r.ctx.strokeStyle).toBe("initial-stroke"); expect(r.stack).toEqual([]);
+  });
+  it("filters NPC overlays independently without changing scenes or selectable entities", () => {
+    const f = npcFixture(), r = recordingContext(), before = JSON.stringify(f);
+    freezeDeep(f.baseline); freezeDeep(f.current); freezeDeep(f.comparison);
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, { ...onlyNpcs, npcs: false });
+    expect(r.images).toEqual([]); expect(r.strokes).toEqual([]); expect(r.fills).toEqual([]);
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, onlyNpcs);
+    expect(f.current.sprites.some(item => item.npcEntityId === f.npcRemoved.npcEntityId)).toBe(false);
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it("keeps real foot anchors and counts when metadata is unresolved without inventing image bounds", () => {
+    const f = npcFixture(), r = recordingContext(); f.images.clear();
+    drawGameComparison(r.ctx, f.baseline, f.current, f.comparison, f.images, camera, onlyNpcs);
+    expect(r.images).toEqual([]); expect(r.transforms).toEqual([]); expect(r.strokes).toHaveLength(2);
+    expect(r.fills.every(fill => fill.path[0].operation === "arc")).toBe(true);
+    expect(getComparisonCounts(f.comparison).npcsRemoved).toBe(1);
   });
 });

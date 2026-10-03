@@ -26,20 +26,22 @@ function take(bytes: Buffer, cursor: Cursor, size: number): Buffer {
   return value;
 }
 
-function message(bytes: Buffer): Map<number, Field> {
-  const fields = new Map<number, Field>();
+function entries(bytes: Buffer): Array<[number, Field]> {
+  const fields: Array<[number, Field]> = [];
   const cursor = { offset: 0 };
   while (cursor.offset < bytes.length) {
     const tag = uint(bytes, cursor), field = Math.floor(tag / 8), wire = tag % 8;
     if (!field) throw new Error("Invalid sprite metadata field.");
-    if (wire === 0) fields.set(field, uint(bytes, cursor));
-    else if (wire === 2) fields.set(field, take(bytes, cursor, uint(bytes, cursor)));
-    else if (wire === 5) fields.set(field, take(bytes, cursor, 4).readFloatLE(0));
-    else if (wire === 1) take(bytes, cursor, 8);
+    if (wire === 0) fields.push([field, uint(bytes, cursor)]);
+    else if (wire === 2) fields.push([field, take(bytes, cursor, uint(bytes, cursor))]);
+    else if (wire === 5) fields.push([field, take(bytes, cursor, 4).readFloatLE(0)]);
+    else if (wire === 1) fields.push([field, take(bytes, cursor, 8)]);
     else throw new Error("Unsupported sprite metadata wire format.");
   }
   return fields;
 }
+
+function message(bytes: Buffer): Map<number, Field> { return new Map(entries(bytes)); }
 
 function nested(value: Field | undefined): Map<number, Field> {
   if (!Buffer.isBuffer(value)) throw new Error("Missing native sprite metadata.");
@@ -106,4 +108,34 @@ export function parseSpriteMod(
     pivotSource = "storage";
   }
   return { png, metadata: { width, height, pivot, pixelsPerUnit, version, pivotSource } };
+}
+
+export interface AnimationPreviewFrame { spriteRuid: string; offset: [number, number]; frameCount: number }
+/** Native UGC clip first frame. Single-layer frames only: unsupported composition is never silently dropped. */
+export function parseAnimationClipMod(mod: Buffer): AnimationPreviewFrame {
+  if (mod.length > 1024 * 1024) throw new Error("Animation metadata exceeds size limit.");
+  const cursor = { offset: 0 };
+  const header = message(take(mod, cursor, uint(mod, cursor)));
+  if (header.get(2) !== 6) throw new Error("Not native animation metadata.");
+  const payload = entries(take(mod, cursor, uint(mod, cursor)));
+  if (cursor.offset !== mod.length || payload.some(([key]) => key !== 1)) throw new Error("Unsupported animation payload.");
+  const frames = payload.map(([, value]) => value);
+  if (!frames.length || frames.length > 10000 || !Buffer.isBuffer(frames[0])) throw new Error("Animation has no valid frame.");
+  const frame = entries(frames[0]);
+  if (frame.some(([key]) => ![1, 2, 3, 10].includes(key))) throw new Error("Unsupported animation frame.");
+  const layers = frame.filter(([key]) => key === 10).map(([, value]) => value);
+  if (layers.length !== 1 || !Buffer.isBuffer(layers[0])) throw new Error("Multi-layer animation preview is unsupported.");
+  const parts = entries(layers[0]);
+  if (new Set(parts.map(([key]) => key)).size !== parts.length || parts.some(([key]) => ![1, 2, 4].includes(key))) throw new Error("Unsupported animation layer transform.");
+  const layer = new Map(parts), guid = layer.get(1);
+  if (!Buffer.isBuffer(guid) || guid.length !== 16) throw new Error("Invalid animation sprite reference.");
+  // .NET Guid bytes have little-endian first three components, unlike RUID hex strings.
+  const ordered = Buffer.from([guid[3], guid[2], guid[1], guid[0], guid[5], guid[4], guid[7], guid[6], ...guid.subarray(8)]);
+  const spriteRuid = ordered.toString("hex");
+  if (/^0+$/.test(spriteRuid)) throw new Error("Empty animation sprite reference.");
+  if (layer.has(4) && !Buffer.isBuffer(layer.get(4))) throw new Error("Invalid animation frame offset.");
+  const offsetFields = layer.has(4) ? entries(layer.get(4) as Buffer) : [];
+  if (offsetFields.some(([key]) => key !== 1 && key !== 2) || new Set(offsetFields.map(([key]) => key)).size !== offsetFields.length) throw new Error("Invalid animation frame offset.");
+  const offsets = new Map(offsetFields);
+  return { spriteRuid, offset: [finite(offsets.get(1) ?? 0), finite(offsets.get(2) ?? 0)], frameCount: frames.length };
 }

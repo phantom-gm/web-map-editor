@@ -18,10 +18,14 @@ export interface GameCandidateReview extends CandidateIdentity {
     groundChangedCells: number; groundRepackedCells: number;
     objectsMoved: number; objectsAdded: number; objectsRemoved: number;
     walkChangedCells: number; blockedAdded?: number; blockedRemoved?: number;
+    npcsMoved?: number; npcsAdded?: number; npcsRemoved?: number; npcsUpdated?: number;
   };
   gameApplied: false;
   runtimeVerified: false;
 }
+
+const npcSummaryCounts = ["npcsMoved", "npcsAdded", "npcsRemoved", "npcsUpdated"] as const;
+const optionalSummaryCounts = ["blockedAdded", "blockedRemoved", ...npcSummaryCounts] as const;
 
 /** Do not show another map's or an internally contradictory receipt as a successful check. */
 export function validateCandidateReview(review: GameCandidateReview, expected: CandidateIdentity): void {
@@ -39,7 +43,7 @@ export function validateCandidateReview(review: GameCandidateReview, expected: C
   if (typeof review.candidateDir !== "string" || !count(review.referenceFiles) ||
     review.issues.some(issue => typeof issue !== "string") ||
     requiredCounts.some(key => !count(review.summary[key])) ||
-    [review.summary.blockedAdded, review.summary.blockedRemoved].some(value => value !== undefined && !count(value)) ||
+    optionalSummaryCounts.some(key => review.summary[key] !== undefined && !count(review.summary[key])) ||
     review.checks.some(check => !check || typeof check.label !== "string" || typeof check.passed !== "boolean" ||
       (check.detail !== undefined && typeof check.detail !== "string")) ||
     review.files.some(file => !file || typeof file.path !== "string" || !file.path ||
@@ -61,8 +65,15 @@ export function validateCandidateReview(review: GameCandidateReview, expected: C
   }
 }
 
+/** Missing fields identify a legacy receipt; do not relabel it as zero NPC edits. */
+export function formatCandidateNpcSummary(summary: GameCandidateSummary): string | null {
+  if (!npcSummaryCounts.some(key => summary[key] !== undefined)) return null;
+  return "이동 " + (summary.npcsMoved ?? 0) + " / 추가 " + (summary.npcsAdded ?? 0) +
+    " / 삭제 " + (summary.npcsRemoved ?? 0) + " / 반전·대사 " + (summary.npcsUpdated ?? 0);
+}
+
 export function formatCandidateReview(review: GameCandidateReview): string {
-  const s = review.summary;
+  const s = review.summary, npcSummary = formatCandidateNpcSummary(s);
   const lines = [
     "맵 후보 출력물 검토", "맵: " + review.mapName, "후보 ID: " + review.candidateId,
     "만든 시각: " + (review.createdAt || "확인 불가"), "확인 시각: " + review.checkedAt,
@@ -70,7 +81,7 @@ export function formatCandidateReview(review: GameCandidateReview): string {
     "게임 적용: 안 함 / Maker 실행 검증: 안 함", "후보 폴더: " + review.candidateDir, "",
     "변경 요약", "바닥 직접 수정 " + s.groundChangedCells + "칸 / 주변 재구성 " + s.groundRepackedCells + "칸",
     "오브젝트 이동 " + s.objectsMoved + " / 추가 " + s.objectsAdded + " / 삭제 " + s.objectsRemoved,
-    "이동불가 변경 " + s.walkChangedCells + "칸", "", "적용 대상 파일 (참고 사본 제외)",
+    "이동불가 변경 " + s.walkChangedCells + "칸", ...(npcSummary === null ? [] : ["NPC " + npcSummary]), "", "적용 대상 파일 (참고 사본 제외)",
   ];
   for (const file of review.files) lines.push(
     file.path + " (" + file.bytes + " bytes)",
@@ -128,7 +139,7 @@ export function validateCandidateHistory(history: GameCandidateHistory, expected
       item.sameBaseline !== (item.baselineId === expected.baselineId) || typeof item.reviewAvailable !== "boolean" ||
       !safeCount(item.applyFileCount) || !safeCount(item.referenceFiles) || !item.summary ||
       summaryCounts.some(key => !safeCount(item.summary[key])) ||
-      [item.summary.blockedAdded, item.summary.blockedRemoved].some(value => value !== undefined && !safeCount(value))) invalid();
+      optionalSummaryCounts.some(key => item.summary[key] !== undefined && !safeCount(item.summary[key]))) invalid();
     ids.add(item.candidateId); previousTime = time;
   }
 }

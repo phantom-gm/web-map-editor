@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, validateStorageRoot, _test } = require('./core.cjs');
+const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -962,4 +962,126 @@ test('applied DT_Walk source size is checked before review allocates its bytes',
   };
   try { assert.throws(() => packageCandidate(reviewInput(output, project), f.options), error => error.code === 'CANDIDATE_BLOCKED' && error.status === 409); }
   finally { fs.readFileSync = read; }
+});
+
+
+function npcFixture(t) {
+  const f = objectFixture(t), npcDir = 'RootDesk/MyDesk/DataSet/npc/';
+  const csv = {
+    [npcDir + 'DT_NpcSpawn.csv']: '\ufeffNpcSpawnID,MapName,NpcClassID,CellX,CellY,Enabled,Scale,FlipX,DialogID,#Note\r\nfixture_N1,fixture,101,1,1,True,0.875,True,100,"keep, quoted"\r\nfixture_N2,fixture,102,2,1,True,1,,200,\nother_N1,other,103,1,1,True,1,False,,last',
+    [npcDir + 'DT_NpcClass.csv']: 'NpcClassID,#DevName,NpcName,NpcAppearanceID,BodyScale\r\n101,First,NAME1,9101,1.2\r\n102,Second,NAME2,9102,1\r\n103,Third,NAME3,9103,1.4\r\n',
+    [npcDir + 'DT_NpcAppearance.csv']: 'NpcAppearanceID,Action,BaseDir,Ruid,FootPx\r\n9101,Idle,NE,,\r\n9101,Idle,SE,11111111111111111111111111111111,\r\n9102,Idle,SE,22222222222222222222222222222222,\r\n9103,Idle,SE,33333333333333333333333333333333,\r\n',
+    'RootDesk/MyDesk/DataSet/locale/ST_NpcName.csv': 'Key,Source,Note,ko\r\nNAME1,First,,첫 NPC\r\nNAME2,Second,,둘째\r\nNAME3,Third,,셋째\r\n'
+  };
+  for (const [relative, text] of Object.entries(csv)) { const file = path.join(f.root, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); }
+  return { ...f, npcSpawnRelative: npcDir + 'DT_NpcSpawn.csv', npcSpawn: path.join(f.root, npcDir + 'DT_NpcSpawn.csv'), npcClass: path.join(f.root, npcDir + 'DT_NpcClass.csv'), npcAppearance: path.join(f.root, npcDir + 'DT_NpcAppearance.csv') };
+}
+const npcPatch = (updated = [], removed = [], added = []) => ({ version: 1, updated, removed, added });
+test('NPC snapshot preview resolves name/Idle/body scale/flip at game coordinates without writing native entities', fixtureOptions, t => {
+  const f = npcFixture(t), source = fileTreeHashes(f.root), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const scene = readWithoutWrites(() => previewEditedProject(project, f.options));
+  assert.equal(scene.npcs.length, 2); assert.equal(scene.npcCatalog.length, 3); assert.equal(scene.npcEdits, null); assert.equal(scene.npcSource.stale, false);
+  const npc = scene.npcs.find(n => n.entityId === 'fixture_N1'), sprite = scene.sprites.find(s => s.npcEntityId === npc.entityId);
+  assert.equal(npc.name, '첫 NPC'); assert.equal(npc.ruid, '1'.repeat(32)); assert.equal(npc.bodyScale, 1.2); assert.equal(npc.flipX, true);
+  assert.deepEqual(npc.cell, [1, 1]); assert.deepEqual(npc.position, [0, 17.92, 17.92 * 0.21875]); assert.deepEqual(sprite.scale, [1.2, 1.2]);
+  const output = exportEditedProject(project, f.options); assert.equal(output.report.exactMapBytes, true); assert.deepEqual(output.report.applyFiles, ['map/fixture.map']);
+  assert.deepEqual(output.report.npcChanges, { moved: 0, added: 0, removed: 0, updated: 0 });
+  assert.equal(f.MapBuilder.read(output.mapPath).listEntities().some(e => e.name.startsWith('NpcPreview')), false);
+  assert.deepEqual(fileTreeHashes(f.root), source);
+});
+test('NPC move/add/delete/flip/dialog emit only current-map CSV changes and exact original map; review and ZIP include NPC CSV', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' }), original = structuredClone(project), id = crypto.randomUUID();
+  project.gameNpcEdits = npcPatch([{ entityId: 'fixture_N1', cell: [3, 1], flipX: false, dialogId: '30100' }], ['fixture_N2'], [{ entityId: id, npcClassId: 103, cell: [2, 1], flipX: true, dialogId: '' }]);
+  project.blocked.push([0, 0]);
+  const before = fileTreeHashes(f.root), compared = compareEditedProject(project, f.options), out = exportEditedProject(project, f.options);
+  assert.deepEqual(compared.comparison.npcs.moved.map(n => n.entityId), ['fixture_N1']); assert.equal(compared.comparison.npcs.updated.length, 1);
+  assert.deepEqual(out.report.npcChanges, { moved: 1, added: 1, removed: 1, updated: 1 }); assert.equal(out.report.exactMapBytes, true);
+  assert.deepEqual(out.report.applyFiles, ['map/fixture.map', f.walkRelative, f.npcSpawnRelative]);
+  const parse = require('./npcs.cjs').spawnRows, sourceRows = parse(fs.readFileSync(f.npcSpawn)), rows = parse(fs.readFileSync(path.join(out.candidateDir, f.npcSpawnRelative)));
+  assert.equal(rows.rows.find(r => r.spawnId === 'other_N1').raw, sourceRows.rows.find(r => r.spawnId === 'other_N1').raw);
+  const changed = rows.rows.find(r => r.spawnId === 'fixture_N1'); assert.equal(changed.data.Scale, '0.875'); assert.equal(changed.data['#Note'], 'keep, quoted'); assert.equal(changed.data.DialogID, '30100');
+  assert.ok(rows.rows.some(r => r.spawnId === 'fixture_Editor_' + id));
+  const review = reviewCandidate(reviewInput(out, project), f.options); assert.equal(review.status, 'ready'); assert.equal(review.summary.npcsMoved, 1); assert.equal(review.summary.npcsUpdated, 1);
+  assert.deepEqual([...unzipStored(packageCandidate(reviewInput(out, project), f.options).bytes).keys()], [...out.report.applyFiles, 'REVIEW.txt']);
+  const undo = exportEditedProject(original, f.options); assert.equal(undo.report.unchanged, true); assert.equal(undo.report.exactMapBytes, true); assert.deepEqual(fileTreeHashes(f.root), before);
+});
+test('NPC no-op patches echo requested edits but retain original map and all CSV bytes', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.gameNpcEdits = npcPatch([{ entityId: 'fixture_N1', cell: [1, 1], flipX: true, dialogId: '100' }]);
+  const scene = previewEditedProject(project, f.options); assert.deepEqual(scene.npcEdits, project.gameNpcEdits);
+  const out = exportEditedProject(project, f.options); assert.equal(out.report.unchanged, true); assert.equal(out.report.exactMapBytes, true); assert.equal(out.report.applyFiles.length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(out.candidateDir, 'reference', f.npcSpawnRelative)), fs.readFileSync(f.npcSpawn));
+});
+test('NPC changed current-map rows/class/appearance are stale; other-map latest rows merge and whole applied CSV is reviewed', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' }); project.gameNpcEdits = npcPatch([{ entityId: 'fixture_N1', cell: [3, 1] }]);
+  const spawn = fs.readFileSync(f.npcSpawn, 'utf8'); fs.writeFileSync(f.npcSpawn, spawn.replace('other_N1,other,103,1,1', 'other_N1,other,103,4,4'));
+  assert.equal(previewEditedProject(project, f.options).npcSource.stale, false);
+  const out = exportEditedProject(project, f.options); assert.match(fs.readFileSync(path.join(out.candidateDir, f.npcSpawnRelative), 'utf8'), /other_N1,other,103,4,4/);
+  fs.appendFileSync(f.npcSpawn, '\r\nother_N2,other,102,5,5,True,1,,,'); assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'blocked'); fs.writeFileSync(f.npcSpawn, spawn);
+  for (const file of [f.npcSpawn, f.npcClass, f.npcAppearance]) {
+    const bytes = fs.readFileSync(file); fs.writeFileSync(file, file === f.npcSpawn ? spawn.replace('fixture_N1,fixture,101,1,1', 'fixture_N1,fixture,101,4,1') : bytes.toString().replace(file === f.npcClass ? ',1.2' : '11111111111111111111111111111111', file === f.npcClass ? ',1.3' : '44444444444444444444444444444444'));
+    assert.equal(previewEditedProject(project, f.options).npcSource.stale, true); assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_NPC_SOURCE'); fs.writeFileSync(file, bytes);
+  }
+});
+test('NPC-only refresh preserves existing ground/object/blocked drafts and original baseline while binding a new immutable NPC source', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.ground[0][2] = project.palette.findIndex(p => p.ruid === tile('물').ruid); project.blocked.push([0, 0]);
+  const object = previewEditedProject(project, f.options).objects.find(o => o.canMove); project.gameObjectEdits = objectPatch([{ entityId: object.entityId, position: [object.position[0] + 1.28, object.position[1] - 0.64] }]);
+  project.gameNpcEdits = npcPatch([{ entityId: 'fixture_N1', cell: [3, 1] }]); const before = structuredClone(project), baselineBefore = fileTreeHashes(path.join(f.options.baselineRoot, project.gameSync.baselineId));
+  fs.writeFileSync(f.npcClass, fs.readFileSync(f.npcClass, 'utf8').replace(',1.2', ',1.3'));
+  const fresh = refreshNpcProject(project, f.options); assert.deepEqual(project, before); assert.equal(fresh.project.gameNpcEdits, undefined); assert.match(fresh.project.gameNpcSync.sourceId, /^[a-f0-9-]{36}$/);
+  for (const field of ['ground', 'gameObjectEdits', 'blocked', 'entities', 'gameSync']) assert.deepEqual(fresh.project[field], project[field]);
+  assert.equal(fresh.scene.npcs[0].bodyScale, 1.3); assert.equal(fresh.scene.npcSource.stale, false);
+  const baseline = previewBaselineProject({ ...compareIdentity(project), npcSourceId: fresh.project.gameNpcSync.sourceId }, f.options); assert.equal(baseline.scene.npcs[0].bodyScale, 1.3);
+  assert.deepEqual(fileTreeHashes(path.join(f.options.baselineRoot, project.gameSync.baselineId)), baselineBefore);
+  const foreign = createSyncProject({ ...f.options, mapName: 'fixture' }).project; foreign.gameNpcSync = fresh.project.gameNpcSync;
+  assert.throws(() => previewEditedProject(foreign, f.options), e => e.code === 'NPC_SOURCE_MISMATCH');
+  const sourceDir = path.join(f.options.baselineRoot, 'npc-' + fresh.project.gameNpcSync.sourceId); fs.appendFileSync(path.join(sourceDir, 'snapshot', 'RootDesk/MyDesk/DataSet/npc/DT_NpcClass.csv'), '\n');
+  assert.throws(() => previewEditedProject(fresh.project, f.options), e => e.code === 'NPC_SOURCE_CORRUPT');
+});
+test('NPC edits reject new occupancy conflicts, duplicate IDs, unknown classes and bounds; blocked placement is warned per runtime contract', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  for (const edit of [npcPatch([{ entityId: 'fixture_N1', cell: [2, 1] }]), npcPatch([{ entityId: 'fixture_N1', cell: [-1, 1] }]), npcPatch([{ entityId: 'fixture_N1', cell: [8, 1] }]), npcPatch([{ entityId: 'fixture_N1', cell: [1.5, 1] }]), npcPatch([{ entityId: 'fixture_N1', flipX: true }], ['fixture_N1']), npcPatch([], [], [{ entityId: crypto.randomUUID(), npcClassId: 999, cell: [3, 1], flipX: false, dialogId: '' }])]) {
+    assert.throws(() => previewEditedProject({ ...project, gameNpcEdits: edit }, f.options), e => ['INVALID_NPC_EDIT', 'NPC_OCCUPIED'].includes(e.code));
+  }
+  const scene = previewEditedProject({ ...project, gameNpcEdits: npcPatch([{ entityId: 'fixture_N1', cell: [2, 2] }]) }, f.options); assert.ok(scene.warnings.some(w => w.includes('이동불가')));
+});
+
+test('NPC source refresh rejects linked storage and tampered pointers without overwriting any original snapshot', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const sourceBefore = fileTreeHashes(f.root), fresh = refreshNpcProject(project, f.options);
+  assert.throws(() => previewEditedProject({ ...project, gameNpcSync: { version: 1, sourceId: '../escape' } }, f.options), e => e.code === 'INVALID_NPC_SOURCE');
+  const id = crypto.randomUUID(); fs.symlinkSync(f.root, path.join(f.options.baselineRoot, 'npc-' + id), 'junction');
+  assert.throws(() => previewEditedProject({ ...project, gameNpcSync: { version: 1, sourceId: id } }, f.options), e => e.code === 'UNSAFE_CANDIDATE');
+  const manifestPath = path.join(f.options.baselineRoot, 'npc-' + fresh.project.gameNpcSync.sourceId, 'manifest.json'), data = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  data.mapName = 'another'; fs.writeFileSync(manifestPath, JSON.stringify(data));
+  assert.throws(() => previewEditedProject(fresh.project, f.options), e => e.code === 'NPC_SOURCE_MISMATCH');
+  assert.deepEqual(fileTreeHashes(f.root), sourceBefore);
+});
+test('NPC output review blocks appearance drift even during the final inspection; legacy candidates still review', fixtureOptions, t => {
+  const f = npcFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const legacy = exportEditedProject(project, f.options);
+  project.gameNpcEdits = npcPatch([{ entityId: 'fixture_N1', flipX: false }]); const out = exportEditedProject(project, f.options), input = reviewInput(out, project);
+  const bytes = fs.readFileSync(f.npcAppearance), changed = Buffer.from(bytes.toString().replace('1'.repeat(32), '4'.repeat(32)));
+  fs.writeFileSync(f.npcAppearance, changed); assert.equal(reviewCandidate(input, f.options).status, 'blocked');
+  assert.equal(reviewCandidate(reviewInput(legacy, project), f.options).status, 'ready'); fs.writeFileSync(f.npcAppearance, bytes);
+  const read = fs.readFileSync; let switched = false;
+  fs.readFileSync = function(file, ...args) {
+    const value = read.call(this, file, ...args);
+    if (!switched && path.resolve(String(file)) === path.resolve(path.join(out.candidateDir, 'reference', 'RootDesk/MyDesk/DataSet/npc/DT_NpcAppearance.csv'))) { switched = true; fs.writeFileSync(f.npcAppearance, changed); }
+    return value;
+  };
+  try { assert.equal(reviewCandidate(input, f.options).status, 'blocked'); assert.equal(switched, true); }
+  finally { fs.readFileSync = read; fs.writeFileSync(f.npcAppearance, bytes); }
+});
+test('NPC candidate parser preserves reordered columns, BOM, quotes, unchanged same-map records and other-map line endings', () => {
+  const npc = require('./npcs.cjs'), spawn = Buffer.from('\ufeffMapName,NpcSpawnID,CellY,NpcClassID,CellX,Enabled,Scale,DialogID,FlipX,#Note\r\nother,other_id,1,101,1,True,1,,False,"A,B"\nfixture,keep,1,101,1,True,0.875,100,True,keep\r\nfixture,edit,1,101,2,True,1,,False,last');
+  const files = { DT_NpcSpawn: { relative: 'RootDesk/MyDesk/DataSet/npc/DT_NpcSpawn.csv', bytes: spawn },
+    DT_NpcClass: { bytes: Buffer.from('NpcClassID,NpcName,NpcAppearanceID,BodyScale\n101,A,9101,1.2\n') },
+    DT_NpcAppearance: { bytes: Buffer.from('NpcAppearanceID,Action,BaseDir,Ruid\n9101,Idle,SE,' + '1'.repeat(32) + '\n') } };
+  const profile = npc.analyzeNpcs(files, 'fixture'), project = { size: [8,8], blocked: [], ground: [], gameNpcEdits: npcPatch([{ entityId: 'edit', cell: [3,1] }], [], [{ entityId: crypto.randomUUID(), npcClassId: 101, cell:[4,1], flipX:false, dialogId:'' }]) };
+  const edits = npc.inspectNpcs(project, profile, { ORIGIN_X:15,ORIGIN_Y:15,TILE_W:2.56,TILE_H:1.28,DEPTH_SCALE:0.21875 });
+  const result = npc.buildNpcCandidate(spawn, edits), before = npc.spawnRows(spawn), after = npc.spawnRows(result.bytes);
+  for (const id of ['keep','other_id']) assert.equal(after.rows.find(r=>r.spawnId===id).raw, before.rows.find(r=>r.spawnId===id).raw);
+  assert.equal(result.bytes.toString().charCodeAt(0), 0xfeff); assert.equal(after.rows.find(r=>r.spawnId==='edit').cell[0],3);
 });

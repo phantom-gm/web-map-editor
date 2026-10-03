@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { fetchSpriteAsset, type SpriteResourceMetadata } from "../server/mswMcp";
-import { parseSpriteMod, extractEmbeddedPng } from "../server/spriteMetadata";
+import { fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset, type SpriteResourceMetadata } from "../server/mswMcp";
+import { parseSpriteMod, extractEmbeddedPng, parseAnimationClipMod } from "../server/spriteMetadata";
 
 const uint = (n: number) => { const a: number[] = []; do { const b = n % 128; n = Math.floor(n / 128); a.push(b | (n ? 128 : 0)); } while (n); return Buffer.from(a); };
 const bytes = (field: number, body: Buffer) => Buffer.concat([uint(field * 8 + 2), uint(body.length), body]);
@@ -73,5 +73,52 @@ describe("versioned native sprite bytes", () => {
     expect(result.imageUrl).toMatch(/^data:image\/png;base64,/);
     expect(result.metadata).toBeNull();
     expect(result.error).toBe("native-metadata-unsupported");
+  });
+});
+
+// A native one-frame NPC Idle clip captured from read-only Resource Storage metadata.
+const npcClip = Buffer.from("220a100a4d403aa4620742a2abec2bc51a2db410062a0c08d2b1b5d50610b8c8df9202360a3415cdcccc3d522d0a1066a94580ca31b5468938ad5516d1e1a1120d5f64656661756c744c61796572220a0d000000c1150000c841", "hex");
+const frameRuid = "8045a96631ca46b58938ad5516d1e1a1";
+const layer = (offset = Buffer.concat([float(1, -8), float(2, 25)])) => Buffer.concat([
+  bytes(1, Buffer.from("66a94580ca31b5468938ad5516d1e1a1", "hex")), bytes(2, Buffer.from("_defaultLayer")), bytes(4, offset),
+]);
+const clip = (layers: Buffer[], count = 1) => {
+  const header = integer(2, 6), frame = Buffer.concat([float(2, .1), ...layers.map(l => bytes(10, l))]);
+  const payload = Buffer.concat(Array.from({ length: count }, () => bytes(1, frame)));
+  return Buffer.concat([uint(header.length), header, uint(payload.length), payload]);
+};
+describe("native animation preview", () => {
+  it("decodes a real NPC first frame, .NET GUID endianness and pixel offset", () => {
+    expect(parseAnimationClipMod(npcClip)).toEqual({ spriteRuid: frameRuid, offset: [-8, 25], frameCount: 1 });
+    expect(parseAnimationClipMod(clip([layer()], 3)).frameCount).toBe(3);
+    expect(parseAnimationClipMod(clip([layer(float(2, 25))])).offset).toEqual([0, 25]);
+  });
+  it("rejects truncated, empty, multilayer, unknown transforms and nonfinite offsets instead of guessing", () => {
+    for (const input of [npcClip.subarray(0, -1), clip([], 0), clip([layer(), layer()]), clip([layer(float(1, NaN))]),
+      clip([Buffer.concat([layer(), float(5, 1)])]), clip([Buffer.concat([layer(), bytes(4, Buffer.alloc(0))])])]) {
+      expect(() => parseAnimationClipMod(input)).toThrow();
+    }
+    expect(() => parseAnimationClipMod(fixture())).toThrow();
+  });
+  it("uses the frame sprite's latest storage pivot and PPU, preserving its image and folding pixel offset into the pivot", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(fixture(256, 256)))));
+    const source = { ...resource("clip-metrics", "idle-v1"), resourceType: "animationclip" };
+    const frame = parseAnimationClipMod(npcClip);
+    const sprite = resource(frameRuid, "frame-v1", [{ key: "pivot_x", value: ".5" }, { key: "pivot_y", value: "0" }]);
+    const result = await fetchAnimationFrameAsset(source, frame, sprite);
+    expect(result.imageUrl).toMatch(/^data:image\/png;base64,/);
+    expect(result.metadata).toMatchObject({ width: 256, height: 256, pixelsPerUnit: 100, pivot: [.53125, -.09765625],
+      version: "idle-v1:frame-v1", pivotSource: "animation", animationFrame: { spriteRuid: frameRuid, offset: [-8, 25], frameIndex: 0, frameCount: 1 } });
+    // A changed storage pivot must take effect even when clip and sprite bytes are cached.
+    sprite.properties = [{ key: "pivot_x", value: ".25" }, { key: "pivot_y", value: "0" }];
+    expect((await fetchAnimationFrameAsset(source, frame, sprite)).metadata?.pivot[0]).toBe(.28125);
+    await expect(fetchAnimationFrameAsset(source, frame, resource("wrong"))).rejects.toThrow(/unavailable/);
+  });
+  it("refreshes a clip frame reference when its content version changes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(new Uint8Array(npcClip)))
+      .mockResolvedValueOnce(new Response(new Uint8Array(clip([layer(float(1, 12))])))));
+    const source = { ...resource("clip-version", "v1"), resourceType: "animationclip" };
+    expect((await fetchAnimationPreviewFrame(source)).offset).toEqual([-8, 25]);
+    expect((await fetchAnimationPreviewFrame({ ...source, version: "v2", modPath: "clip-v2.mod" })).offset).toEqual([12, 0]);
   });
 });

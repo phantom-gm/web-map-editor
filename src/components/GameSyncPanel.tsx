@@ -36,8 +36,9 @@ export function GameSyncPanel() {
   const dirty = useEditorStore(s => s.dirty);
   const groundVer = useEditorStore(s => s.groundVer);
   const blockedVer = useEditorStore(s => s.blockedVer);
+  const gameNpcsVer = useEditorStore(s => s.gameNpcsVer);
   const gameObjectsVer = useEditorStore(s => s.gameObjectsVer);
-  const contentVersion = [groundVer, blockedVer, gameObjectsVer].join(":");
+  const contentVersion = [groundVer, blockedVer, gameObjectsVer, gameNpcsVer].join(":");
   const session = useWorkspaceSession();
   const preview = useGamePreviewStore();
   const linked = !!gameSync;
@@ -143,7 +144,7 @@ export function GameSyncPanel() {
         <label><input type="checkbox" checked={preview.showOverlays} onChange={e => preview.setShowOverlays(e.target.checked)} />편집 표시</label>
         <button onClick={preview.refresh} disabled={preview.status === "loading" || locked}>이미지 다시 읽기</button>
         <span>{currentPreview && preview.status === "loading" ? "게임 배치·이미지 읽는 중…" :
-          currentPreview && preview.status === "ready" ? "바닥·건물·장식 실제 배치" : "미리보기 준비 중"}</span>
+          currentPreview && preview.status === "ready" ? "바닥·건물·장식·NPC 배치" : "미리보기 준비 중"}</span>
         {currentPreview && preview.missingImages > 0 && <strong className="game-sync-error">이미지 미해석 {preview.missingImages}종</strong>}
       </div>}
       {linked && <GameComparisonPanel />}
@@ -162,7 +163,7 @@ export function GameSyncPanel() {
         <summary>원본 연결·미리보기 안내</summary>
         <p>타일 바닥은 큰 묶음을 유지하며 수정합니다. 건물·장식·오브젝트 바닥은 목록이나 맵에서 선택해 이동·복제·삭제할 수 있습니다. 원본 모양과 배율은 유지합니다.</p>
         <p>Ctrl·Shift+클릭으로 여러 오브젝트를 선택할 수 있습니다. 함께 옮길 이동불가 칸을 직접 선택하면 이동·복제·삭제와 실행취소가 한 번에 적용됩니다. 선택하지 않은 칸은 그대로 유지됩니다. 변경한 맵과 이동불가 데이터는 후보 폴더에만 출력합니다.</p>
-        <p>NPC·몬스터·포탈은 편집 표시의 위치 마커로 확인합니다. 움직임·애니메이션·게임 중 효과는 이 미리보기에 포함되지 않습니다.</p>
+        <p>NPC는 원본 스폰 데이터와 Idle 이미지로 표시하며 NPC 목록에서 편집합니다. 몬스터·포탈은 편집 표시의 위치 마커로 확인합니다. 움직임·애니메이션·게임 중 효과는 이 미리보기에 포함되지 않습니다.</p>
         <p>작업과 기준 배치는 에디터가 이 PC에서 관리합니다. 백업할 때는 에디터의 .game-sync 폴더를 통째로 보관하세요. PC나 게임 경로를 바꾸면 원본 연결을 다시 확인해야 합니다.</p>
         <button onClick={() => setConfirmation("fresh")} disabled={locked || !managed || selected !== gameSync.mapName}>게임 원본 다시 가져오기</button>
         {currentPreview && preview.warnings.map((warning, i) => <p key={i}>{warning}</p>)}

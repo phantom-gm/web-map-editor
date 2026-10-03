@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  validateCandidateHistory, type CandidateIdentity, type GameCandidateHistory as CandidateHistory,
+  validateCandidateHistory, formatCandidateNpcSummary, type CandidateIdentity, type GameCandidateHistory as CandidateHistory,
 } from "../lib/gameCandidate";
 import { GameCandidateReviewDialog } from "./GameCandidatePanel";
 
@@ -92,6 +92,7 @@ export function GameCandidateHistory({ mapName, baselineId, disabled = false }:
                 <code className="candidate-history-id">{item.candidateId}</code>
                 <span>바닥 수정 {item.summary.groundChangedCells}칸 · 주변 재구성 {item.summary.groundRepackedCells}칸</span>
                 <span>오브젝트 이동 {item.summary.objectsMoved} · 추가 {item.summary.objectsAdded} · 삭제 {item.summary.objectsRemoved} / 이동불가 변경 {item.summary.walkChangedCells}칸</span>
+                {formatCandidateNpcSummary(item.summary) !== null && <span>NPC {formatCandidateNpcSummary(item.summary)}</span>}
                 <span className="candidate-history-bottom">대상 파일 {item.applyFileCount}개 · 참고 사본 {item.referenceFiles}개
                   <strong>{item.reviewAvailable ? "검토 열기 →" : "검토 자료 없음 · 다시 굽기 필요"}</strong></span>
               </button>

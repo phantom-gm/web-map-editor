@@ -1,3 +1,4 @@
+import type { GameNpcDescriptor, GameNpcClass, GameNpcEdits, GameNpcSource } from "./gameNpc";
 import type { GameSyncReport } from "./gameSync";
 import type { GameObjectDescriptor } from "./gameObjects";
 import { TH, TW, type Camera, type Dims } from "./grid";
@@ -14,6 +15,7 @@ export interface GamePreviewConstants {
 export interface GamePreviewSprite {
   id: string;
   objectEntityId?: string;
+  npcEntityId?: string;
   path: string;
   name: string;
   ruid: string;
@@ -38,6 +40,10 @@ export interface GamePreviewScene {
   groundOrigin: [number, number];
   groundBrushRuids?: string[];
   objects?: GameObjectDescriptor[];
+  npcs?: GameNpcDescriptor[];
+  npcCatalog?: GameNpcClass[];
+  npcEdits?: GameNpcEdits | null;
+  npcSource?: GameNpcSource;
   objectPrototypes?: GameObjectDescriptor[];
   defaultSortingLayer: string;
   sprites: GamePreviewSprite[];
