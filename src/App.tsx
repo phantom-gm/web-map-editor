@@ -34,7 +34,7 @@ export default function App() {
           s.groundVer !== prev.groundVer ||
           s.blockedVer !== prev.blockedVer ||
           s.entitiesVer !== prev.entitiesVer ||
-          s.gameObjectsVer !== prev.gameObjectsVer || s.gameNpcsVer !== prev.gameNpcsVer ||
+          s.gameObjectsVer !== prev.gameObjectsVer || s.gameNpcsVer !== prev.gameNpcsVer || s.gameRuntimeVer !== prev.gameRuntimeVer ||
           s.palette !== prev.palette ||
           s.mapName !== prev.mapName ||
           s.size !== prev.size;

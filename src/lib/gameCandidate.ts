@@ -19,13 +19,17 @@ export interface GameCandidateReview extends CandidateIdentity {
     objectsMoved: number; objectsAdded: number; objectsRemoved: number;
     walkChangedCells: number; blockedAdded?: number; blockedRemoved?: number;
     npcsMoved?: number; npcsAdded?: number; npcsRemoved?: number; npcsUpdated?: number;
+    monstersMoved?: number; monstersAdded?: number; monstersRemoved?: number; monstersUpdated?: number;
+    portalsMoved?: number; portalsAdded?: number; portalsRemoved?: number; portalsUpdated?: number;
+    spawnChanged?: number;
   };
   gameApplied: false;
   runtimeVerified: false;
 }
 
 const npcSummaryCounts = ["npcsMoved", "npcsAdded", "npcsRemoved", "npcsUpdated"] as const;
-const optionalSummaryCounts = ["blockedAdded", "blockedRemoved", ...npcSummaryCounts] as const;
+const runtimeSummaryCounts = ["monstersMoved", "monstersAdded", "monstersRemoved", "monstersUpdated", "portalsMoved", "portalsAdded", "portalsRemoved", "portalsUpdated", "spawnChanged"] as const;
+const optionalSummaryCounts = ["blockedAdded", "blockedRemoved", ...npcSummaryCounts, ...runtimeSummaryCounts] as const;
 
 /** Do not show another map's or an internally contradictory receipt as a successful check. */
 export function validateCandidateReview(review: GameCandidateReview, expected: CandidateIdentity): void {
@@ -44,6 +48,7 @@ export function validateCandidateReview(review: GameCandidateReview, expected: C
     review.issues.some(issue => typeof issue !== "string") ||
     requiredCounts.some(key => !count(review.summary[key])) ||
     optionalSummaryCounts.some(key => review.summary[key] !== undefined && !count(review.summary[key])) ||
+    (review.summary.spawnChanged !== undefined && review.summary.spawnChanged > 1) ||
     review.checks.some(check => !check || typeof check.label !== "string" || typeof check.passed !== "boolean" ||
       (check.detail !== undefined && typeof check.detail !== "string")) ||
     review.files.some(file => !file || typeof file.path !== "string" || !file.path ||
@@ -72,6 +77,19 @@ export function formatCandidateNpcSummary(summary: GameCandidateSummary): string
     " / 삭제 " + (summary.npcsRemoved ?? 0) + " / 반전·대사 " + (summary.npcsUpdated ?? 0);
 }
 
+export function formatCandidateRuntimeSummary(summary: GameCandidateSummary): Array<{label: string; text: string}> {
+  const rows: Array<{label: string; text: string}> = [];
+  for (const [key, label] of [["monsters","몬스터 출현"],["portals","포털"]] as const) {
+    if (!runtimeSummaryCounts.some(field => field.startsWith(key) && summary[field] !== undefined)) continue;
+    rows.push({label, text: "이동 " + (summary[key + "Moved" as keyof GameCandidateSummary] ?? 0) +
+      " / 추가 " + (summary[key + "Added" as keyof GameCandidateSummary] ?? 0) +
+      " / 삭제 " + (summary[key + "Removed" as keyof GameCandidateSummary] ?? 0) +
+      " / 설정 " + (summary[key + "Updated" as keyof GameCandidateSummary] ?? 0)});
+  }
+  if (summary.spawnChanged !== undefined) rows.push({label:"시작 위치",text:summary.spawnChanged ? "이동 1" : "변경 없음"});
+  return rows;
+}
+
 export function formatCandidateReview(review: GameCandidateReview): string {
   const s = review.summary, npcSummary = formatCandidateNpcSummary(s);
   const lines = [
@@ -81,7 +99,7 @@ export function formatCandidateReview(review: GameCandidateReview): string {
     "게임 적용: 안 함 / Maker 실행 검증: 안 함", "후보 폴더: " + review.candidateDir, "",
     "변경 요약", "바닥 직접 수정 " + s.groundChangedCells + "칸 / 주변 재구성 " + s.groundRepackedCells + "칸",
     "오브젝트 이동 " + s.objectsMoved + " / 추가 " + s.objectsAdded + " / 삭제 " + s.objectsRemoved,
-    "이동불가 변경 " + s.walkChangedCells + "칸", ...(npcSummary === null ? [] : ["NPC " + npcSummary]), "", "적용 대상 파일 (참고 사본 제외)",
+    "이동불가 변경 " + s.walkChangedCells + "칸", ...(npcSummary === null ? [] : ["NPC " + npcSummary]), ...formatCandidateRuntimeSummary(s).map(row => row.label + " " + row.text), "", "적용 대상 파일 (참고 사본 제외)",
   ];
   for (const file of review.files) lines.push(
     file.path + " (" + file.bytes + " bytes)",
@@ -139,7 +157,8 @@ export function validateCandidateHistory(history: GameCandidateHistory, expected
       item.sameBaseline !== (item.baselineId === expected.baselineId) || typeof item.reviewAvailable !== "boolean" ||
       !safeCount(item.applyFileCount) || !safeCount(item.referenceFiles) || !item.summary ||
       summaryCounts.some(key => !safeCount(item.summary[key])) ||
-      optionalSummaryCounts.some(key => item.summary[key] !== undefined && !safeCount(item.summary[key]))) invalid();
+      optionalSummaryCounts.some(key => item.summary[key] !== undefined && !safeCount(item.summary[key])) ||
+      (item.summary.spawnChanged !== undefined && item.summary.spawnChanged > 1)) invalid();
     ids.add(item.candidateId); previousTime = time;
   }
 }

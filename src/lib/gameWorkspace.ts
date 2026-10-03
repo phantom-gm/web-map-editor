@@ -1,3 +1,4 @@
+import { parseRuntimeProject } from "./gameRuntime";
 import { create } from "zustand";
 import { useEditorStore } from "../store/editorStore";
 import { tilesFromStored } from "./palette";
@@ -38,6 +39,7 @@ export async function loadEditorProject(project: ProjectFileInput, token: number
   const link = parseGameSync(project.gameSync, project.map);
   if (parseGameObjectEdits(project.gameObjectEdits) && !link) throw new Error("게임 오브젝트 편집 정보에는 게임 원본 연결이 필요합니다.");
   if ((parseGameNpcEdits(project.gameNpcEdits) || parseGameNpcSync(project.gameNpcSync)) && !link) throw new Error("NPC 편집 정보에는 게임 원본 연결이 필요합니다.");
+  if (Object.values(parseRuntimeProject(project)).some(Boolean) && !link) throw new Error("런타임 배치 편집에는 게임 원본 연결이 필요합니다.");
   const tiles = await tilesFromStored(project.palette ?? []);
   if (!isCurrentProjectLoad(token)) return false;
   resetFileHandle();

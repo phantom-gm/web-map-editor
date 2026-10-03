@@ -1,3 +1,4 @@
+import type { RuntimeKind, PortalFields } from "../lib/gameRuntime";
 import { create } from "zustand";
 import type { GamePreviewImages, GamePreviewScene } from "../lib/gamePreview";
 
@@ -23,6 +24,10 @@ export interface GamePreviewState {
   showScene: boolean;
   showOverlays: boolean;
   refreshNonce: number;
+  runtimePanel: RuntimeKind | null;
+  runtimePlacement: {kind:"monster";monsterClassId:number} | {kind:"portal";fields:Omit<PortalFields,"cell">} | {kind:"spawn"} | null;
+  setRuntimePanel: (kind: RuntimeKind | null) => void;
+  setRuntimePlacement: (placement: GamePreviewState["runtimePlacement"]) => void;
   showNpcs: boolean;
   placementNpcClassId: number | null;
   setShowNpcs: (show: boolean) => void;
@@ -41,20 +46,23 @@ export interface GamePreviewState {
 }
 export const useGamePreviewStore = create<GamePreviewState>((set) => ({
   comparisonEnabled: false, comparisonMode: "changes", comparisonBaseline: null, comparison: null,
-  comparisonFilters: { ground: true, objects: true, blocked: true, npcs: true },
-  setComparisonEnabled: (comparisonEnabled) => set({ comparisonEnabled, showScene: true, placementPrototypeId: null, placementNpcClassId: null }),
+  comparisonFilters: { ground: true, objects: true, blocked: true, npcs: true, monsters: true, portals: true, spawn: true },
+  setComparisonEnabled: (comparisonEnabled) => set({ comparisonEnabled, runtimePlacement: null, showScene: true, placementPrototypeId: null, placementNpcClassId: null }),
   setComparisonMode: (comparisonMode) => set({ comparisonMode }),
   setComparisonFilter: (key, enabled) => set(state => ({ comparisonFilters: { ...state.comparisonFilters, [key]: enabled } })),
   status: "idle", baselineId: null, scene: null, images: new Map(),
   error: null, warnings: [], missingImages: 0, showScene: true, showOverlays: false, refreshNonce: 0,
+  runtimePanel: null, runtimePlacement: null,
+  setRuntimePanel: (runtimePanel) => set({runtimePanel,runtimePlacement:null,showNpcs:false,showObjects:false,placementNpcClassId:null,placementPrototypeId:null,showScene:true,selectionMode:"objects"}),
+  setRuntimePlacement: (runtimePlacement) => set({runtimePlacement,placementNpcClassId:null,placementPrototypeId:null}),
   showNpcs: false, placementNpcClassId: null,
-  setShowNpcs: (showNpcs) => set(state => ({ showNpcs, ...(showNpcs ? { showObjects: false, placementPrototypeId: null, selectionMode: "objects" as const } : { placementNpcClassId: null }), showScene: showNpcs || state.showScene })),
-  setPlacementNpc: (placementNpcClassId) => set({ placementNpcClassId, placementPrototypeId: null }),
+  setShowNpcs: (showNpcs) => set(state => ({ showNpcs, ...(showNpcs ? { runtimePanel: null, runtimePlacement: null, showObjects: false, placementPrototypeId: null, selectionMode: "objects" as const } : { placementNpcClassId: null }), showScene: showNpcs || state.showScene })),
+  setPlacementNpc: (placementNpcClassId) => set({ placementNpcClassId, runtimePlacement: null, placementPrototypeId: null }),
   showObjects: false, placementPrototypeId: null, selectionMode: "objects", multiSelect: false,
   setSelectionMode: (selectionMode) => set({ selectionMode, placementPrototypeId: null }),
   setMultiSelect: (multiSelect) => set({ multiSelect }),
-  setShowObjects: (showObjects) => set({ showObjects, ...(showObjects ? { showNpcs: false, placementNpcClassId: null } : {}) }),
-  setPlacementPrototype: (placementPrototypeId) => set({ placementPrototypeId, placementNpcClassId: null }),
+  setShowObjects: (showObjects) => set({ showObjects, ...(showObjects ? { runtimePanel: null, runtimePlacement: null, showNpcs: false, placementNpcClassId: null } : {}) }),
+  setPlacementPrototype: (placementPrototypeId) => set({ placementPrototypeId, runtimePlacement: null, placementNpcClassId: null }),
   setShowScene: (showScene) => set({ showScene }),
   setShowOverlays: (showOverlays) => set({ showOverlays }),
   refresh: () => set(state => ({ refreshNonce: state.refreshNonce + 1 })),

@@ -14,6 +14,7 @@ export interface GameBaselinePreview {
   scene: GamePreviewScene;
   /** NPCs may have a newer immutable source than the native map baseline. */
   npcSourceId?: string | null;
+  runtimeSourceId?: string | null;
   /** Logical 1x1 material RUIDs, independent of palette indices and native block size. */
   ground: [number, number, string][];
   blocked: [number, number][];
@@ -24,6 +25,12 @@ export interface GameComparisonGroundBlock {
   gy: number;
   size: number;
   ruid: string;
+}
+export interface RuntimePlacementChanges {
+  moved: { entityId: string; from: [number, number, number]; to: [number, number, number] }[];
+  added: { entityId: string; position: [number, number, number] }[];
+  removed: { entityId: string; position: [number, number, number] }[];
+  updated: { entityId: string; position: [number, number, number] }[];
 }
 export interface GameComparison {
   version: 1;
@@ -42,6 +49,9 @@ export interface GameComparison {
     removed: { entityId: string; position: [number, number, number] }[];
   };
   blocked: { added: [number, number][]; removed: [number, number][] };
+  monsters?: RuntimePlacementChanges;
+  portals?: RuntimePlacementChanges;
+  spawn?: { from: [number, number, number]; to: [number, number, number] } | null;
   npcs?: {
     moved: { entityId: string; from: [number, number, number]; to: [number, number, number] }[];
     added: { entityId: string; position: [number, number, number] }[];
@@ -49,7 +59,7 @@ export interface GameComparison {
     updated: { entityId: string; position: [number, number, number] }[];
   };
 }
-export interface GameComparisonFilters { ground: boolean; objects: boolean; blocked: boolean; npcs: boolean }
+export interface GameComparisonFilters { ground: boolean; objects: boolean; blocked: boolean; npcs: boolean; monsters?: boolean; portals?: boolean; spawn?: boolean }
 export interface GameComparisonCounts {
   groundChangedCells: number;
   groundRepackedCells: number;
@@ -59,6 +69,9 @@ export interface GameComparisonCounts {
   blockedAdded: number;
   blockedRemoved: number;
   npcsMoved: number; npcsAdded: number; npcsRemoved: number; npcsUpdated: number;
+  monstersMoved: number; monstersAdded: number; monstersRemoved: number; monstersUpdated: number;
+  portalsMoved: number; portalsAdded: number; portalsRemoved: number; portalsUpdated: number;
+  spawnChanged: number;
 }
 /** Shared legend: blue direct ground edits, amber repack/move, green additions, red removals. */
 export const GAME_COMPARISON_COLORS = {
@@ -81,6 +94,11 @@ export function getComparisonCounts(comparison: GameComparison): GameComparisonC
     blockedRemoved: comparison.blocked.removed.length,
     npcsMoved: comparison.npcs?.moved.length ?? 0, npcsAdded: comparison.npcs?.added.length ?? 0,
     npcsRemoved: comparison.npcs?.removed.length ?? 0, npcsUpdated: comparison.npcs?.updated.length ?? 0,
+    monstersMoved: comparison.monsters?.moved.length ?? 0, monstersAdded: comparison.monsters?.added.length ?? 0,
+    monstersRemoved: comparison.monsters?.removed.length ?? 0, monstersUpdated: comparison.monsters?.updated.length ?? 0,
+    portalsMoved: comparison.portals?.moved.length ?? 0, portalsAdded: comparison.portals?.added.length ?? 0,
+    portalsRemoved: comparison.portals?.removed.length ?? 0, portalsUpdated: comparison.portals?.updated.length ?? 0,
+    spawnChanged: comparison.spawn ? 1 : 0,
   };
 }
 const finiteVector = (value: unknown, length: number): value is number[] =>
@@ -96,6 +114,9 @@ export function validateComparisonPair(
   baseline: GameBaselinePreview, current: GamePreviewScene, comparison: GameComparison,
 ): true {
   const scenes = [baseline.scene, current];
+  const runtimeSourceId = baseline.runtimeSourceId ?? null;
+  if (runtimeSourceId !== null && (typeof runtimeSourceId !== "string" || !runtimeSourceId)) invalidComparison();
+  if (scenes.some(scene => (scene.runtimeSource?.sourceId ?? null) !== runtimeSourceId)) invalidComparison();
   const npcSourceId = baseline.npcSourceId ?? null;
   if (npcSourceId !== null && (typeof npcSourceId !== "string" || !npcSourceId)) invalidComparison();
   if (scenes.some(scene => (scene.npcSource?.sourceId ?? null) !== npcSourceId)) invalidComparison();
@@ -180,6 +201,32 @@ export function validateComparisonPair(
         (previous.flipX === next.flipX && previous.dialogId === next.dialogId)) invalidComparison();
     }
   }
+  for (const kind of ["monsters", "portals"] as const) {
+    const diff = comparison[kind];
+    if (!diff) continue;
+    const before = new Map((baseline.scene[kind] ?? []).map(item => [item.entityId, item]));
+    const after = new Map((current[kind] ?? []).map(item => [item.entityId, item]));
+    if (before.size !== (baseline.scene[kind] ?? []).length || after.size !== (current[kind] ?? []).length) invalidComparison();
+    const matches = (position: unknown, expected?: readonly number[]) => finiteVector(position, 3) && !!expected && equalNumbers(position, expected);
+    for (const key of ["moved", "added", "removed", "updated"] as const) {
+      if (!Array.isArray(diff[key]) || new Set(diff[key].map(item => item.entityId)).size !== diff[key].length) invalidComparison();
+    }
+    for (const item of diff.moved) {
+      if (!matches(item.from, before.get(item.entityId)?.position) || !matches(item.to, after.get(item.entityId)?.position) || equalNumbers(item.from, item.to)) invalidComparison();
+    }
+    for (const item of diff.added) if (before.has(item.entityId) || !matches(item.position, after.get(item.entityId)?.position)) invalidComparison();
+    for (const item of diff.removed) if (after.has(item.entityId) || !matches(item.position, before.get(item.entityId)?.position)) invalidComparison();
+    for (const item of diff.updated) {
+      const previous = before.get(item.entityId), next = after.get(item.entityId);
+      if (!previous || !next || !matches(item.position, next.position)) invalidComparison();
+      const settings = kind === "monsters" ? ["monsterClassId","count","spread","respawnMinSec","respawnMaxSec","firstSpawnSec","enabled"]
+        : ["destMap","destCell","destFacing","enabled"];
+      if (settings.every(key => JSON.stringify(Reflect.get(previous, key)) === JSON.stringify(Reflect.get(next, key)))) invalidComparison();
+    }
+  }
+  if (comparison.spawn && (!finiteVector(comparison.spawn.from, 3) || !finiteVector(comparison.spawn.to, 3) ||
+    !baseline.scene.spawn || !current.spawn || !equalNumbers(comparison.spawn.from, baseline.scene.spawn.position) ||
+    !equalNumbers(comparison.spawn.to, current.spawn.position) || equalNumbers(comparison.spawn.from, comparison.spawn.to))) invalidComparison();
   return true;
 }
 
@@ -223,10 +270,11 @@ function outlineObject(
 }
 function outlineNpc(
   ctx: CanvasRenderingContext2D, id: string, scene: GamePreviewScene, images: GamePreviewImages, camera: Camera, color: string,
+  kind: "npcs" | "monsters" | "portals" = "npcs",
 ) {
-  const npc = scene.npcs?.find(item => item.entityId === id);
+  const npc = scene[kind]?.find(item => item.entityId === id);
   if (!npc) return;
-  const sprite = scene.sprites.find(item => item.npcEntityId === id), asset = sprite && images.get(sprite.ruid)?.asset;
+  const sprite = scene.sprites.find(item => (kind === "npcs" ? item.npcEntityId : kind === "monsters" ? item.monsterEntityId : item.portalEntityId) === id), asset = sprite && images.get(sprite.ruid)?.asset;
   ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
   if (sprite && asset && validPreviewAsset(asset)) {
     const [a, b, c, d, tx, ty] = previewSpriteGeometry(sprite, asset, scene, camera).matrix;
@@ -283,23 +331,35 @@ export function drawGameComparison(
     }
     for (const item of comparison.objects.added) outlineObject(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.added);
   }
-  if (filters.npcs && comparison.npcs) {
-    const changed = comparison.npcs;
+  for (const kind of ["npcs", "monsters", "portals"] as const) {
+    const changed = comparison[kind];
+    if (!filters[kind] || !changed) continue;
     const oldIds = new Set([...changed.moved, ...changed.removed, ...changed.updated].map(item => item.entityId));
-    const ghosts = baseline.scene.sprites.filter(sprite => sprite.npcEntityId && oldIds.has(sprite.npcEntityId));
+    const ghosts = baseline.scene.sprites.filter(sprite => {
+      const id = kind === "npcs" ? sprite.npcEntityId : kind === "monsters" ? sprite.monsterEntityId : sprite.portalEntityId;
+      return !!id && oldIds.has(id);
+    });
     if (ghosts.length) {
       ctx.save(); ctx.globalAlpha *= 0.24;
       drawGamePreview(ctx, { ...baseline.scene, sprites: ghosts }, images, camera, { w: ctx.canvas.width, h: ctx.canvas.height });
       ctx.restore();
     }
-    for (const item of changed.removed) outlineNpc(ctx, item.entityId, baseline.scene, images, camera, GAME_COMPARISON_COLORS.removed);
+    for (const item of changed.removed) outlineNpc(ctx, item.entityId, baseline.scene, images, camera, GAME_COMPARISON_COLORS.removed, kind);
     for (const item of changed.moved) {
-      outlineNpc(ctx, item.entityId, baseline.scene, images, camera, GAME_COMPARISON_COLORS.objectMoved);
-      outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.objectMoved);
+      outlineNpc(ctx, item.entityId, baseline.scene, images, camera, GAME_COMPARISON_COLORS.objectMoved, kind);
+      outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.objectMoved, kind);
       drawConnector(ctx, previewWorldToScreen(item.from, baseline.scene, camera), previewWorldToScreen(item.to, currentScene, camera));
     }
-    for (const item of changed.added) outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.added);
-    for (const item of changed.updated) outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.npcUpdated);
+    for (const item of changed.added) outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.added, kind);
+    for (const item of changed.updated) outlineNpc(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.npcUpdated, kind);
+  }
+  if (filters.spawn && comparison.spawn) {
+    const from = previewWorldToScreen(comparison.spawn.from, baseline.scene, camera);
+    const to = previewWorldToScreen(comparison.spawn.to, currentScene, camera);
+    drawConnector(ctx, from, to);
+    ctx.save(); ctx.strokeStyle = GAME_COMPARISON_COLORS.objectMoved; ctx.lineWidth = 2;
+    for (const point of [from, to]) { ctx.beginPath(); ctx.arc(...point, 9, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.restore();
   }
   if (filters.blocked) {
     for (const cell of comparison.blocked.removed) drawCell(ctx, cell, camera, GAME_COMPARISON_COLORS.removed, true);

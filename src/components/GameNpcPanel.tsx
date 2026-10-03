@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useWorkspaceSession } from "../lib/gameWorkspace";
@@ -109,6 +109,9 @@ export function GameNpcInspector() {
 }
 function NpcProperties({ npc, scene }: { npc: GameNpcDescriptor; scene: GamePreviewScene }) {
   const [dialogId, setDialogId] = useState(npc.dialogId);
+  const dialogListId = useId();
+  const dialogGroups = scene.npcDialogGroups ?? [];
+  const dialogValid = dialogId === npc.dialogId || dialogId === "" || (scene.npcDialogGroupsAvailable === true && dialogGroups.includes(dialogId));
   const error = useEditorStore(s => s.gameNpcError);
   const onBlockedCell = useEditorStore(s => s.blocked.has(cellKey(...npc.cell)));
   const view = useGamePreviewStore(), loading = useWorkspaceSession(s => s.loading);
@@ -131,8 +134,11 @@ function NpcProperties({ npc, scene }: { npc: GameNpcDescriptor; scene: GamePrev
       <button disabled={!!locked} aria-label="NPC 남동으로 한 칸" onClick={() => move(1,0)}>↘</button>
     </div>
     <label className="ei-row"><span>좌우 반전</span><input type="checkbox" checked={npc.flipX} disabled={!!locked} onChange={e => update({flipX:e.target.checked})} /></label>
-    <label className="ei-row"><span>대사 ID</span><input value={dialogId} disabled={!!locked} onChange={e => setDialogId(e.target.value)} placeholder="기본 대사 사용 시 비워두세요" /></label>
-    <button disabled={!!locked || dialogId === npc.dialogId} onClick={() => update({dialogId})}>대사 ID 적용</button>
+    <label className="ei-row"><span>대사 ID</span><input value={dialogId} list={dialogListId} aria-invalid={!dialogValid} disabled={!!locked} onChange={e => setDialogId(e.target.value)} placeholder="그룹 ID 선택 또는 빈값" title="실제 대사 그룹 ID입니다. 대사 실행은 게임에서 별도로 확인합니다." /></label>
+    <datalist id={dialogListId}>{dialogGroups.map(id => <option key={id} value={id} />)}</datalist>
+    <p className="object-help">{scene.npcDialogGroupsAvailable ? "대사 그룹 " + dialogGroups.length + "개 중 선택하세요. 빈값은 게임의 기존 기본 정책을 따릅니다." : "대사 그룹 목록을 읽을 수 없습니다. 기존 값은 유지되며 새 대사는 NPC 원본을 다시 불러온 뒤 지정하세요."}</p>
+    {!dialogValid && <p className="selection-error" role="alert">목록에 있는 대사 그룹 ID를 입력하거나 비워두세요.</p>}
+    <button disabled={!!locked || !dialogValid || dialogId === npc.dialogId} onClick={() => update({dialogId})}>대사 ID 적용</button>
     <button className="ei-fit" onClick={() => focusNpc(npc)}>선택 위치 보기</button>
     {onBlockedCell && <p className="object-help">이동불가 칸에 배치되어 있습니다. NPC 배치는 허용하며 이동불가 영역은 그대로 유지합니다.</p>}
     <button className="ei-delete" disabled={!!locked} onClick={() => useEditorStore.getState().removeGameNpc(npc.entityId, scene)}>NPC 삭제 (Del)</button>

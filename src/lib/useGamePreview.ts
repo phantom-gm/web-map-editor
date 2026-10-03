@@ -24,6 +24,7 @@ async function loadSceneImages(scenes: GamePreviewScene[], cache: GamePreviewIma
     ...scene.sprites.map(sprite => sprite.ruid),
     ...(scene.objectPrototypes ?? []).map(object => object.ruid),
     ...(scene.npcCatalog ?? []).map(npc => npc.ruid).filter(Boolean),
+    ...(scene.monsterCatalog ?? []).map(m => m.ruid).filter(Boolean),
   ]))];
   const missing = ruids.filter(ruid => !cache.has(ruid));
   const failures: string[] = [];
@@ -67,6 +68,8 @@ export function useGamePreview(): void {
   const groundVer = useEditorStore(state => state.groundVer);
   const blockedVer = useEditorStore(state => state.blockedVer);
   const entitiesVer = useEditorStore(state => state.entitiesVer);
+  const gameRuntimeSync = useEditorStore(state => state.gameRuntimeSync);
+  const gameRuntimeVer = useEditorStore(state => state.gameRuntimeVer);
   const gameNpcSync = useEditorStore(state => state.gameNpcSync);
   const gameNpcsVer = useEditorStore(state => state.gameNpcsVer);
   const gameObjectsVer = useEditorStore(state => state.gameObjectsVer);
@@ -76,7 +79,7 @@ export function useGamePreview(): void {
   const refreshNonce = useGamePreviewStore(state => state.refreshNonce);
   const comparisonEnabled = useGamePreviewStore(state => state.comparisonEnabled);
   const cacheRef = useRef<{
-    baselineId: string; refreshNonce: number; npcSourceId: string | null; images: GamePreviewImages; baseline?: GameBaselinePreview;
+    baselineId: string; refreshNonce: number; npcSourceId: string | null; runtimeSourceId: string | null; images: GamePreviewImages; baseline?: GameBaselinePreview;
   } | null>(null);
 
   useEffect(() => {
@@ -89,10 +92,11 @@ export function useGamePreview(): void {
     }
     const baselineId = gameSync.baselineId;
     if (cacheRef.current?.baselineId !== baselineId || cacheRef.current.refreshNonce !== refreshNonce) {
-      cacheRef.current = { baselineId, refreshNonce, npcSourceId: gameNpcSync?.sourceId ?? null, images: new Map() };
+      cacheRef.current = { baselineId, refreshNonce, npcSourceId: gameNpcSync?.sourceId ?? null, runtimeSourceId: gameRuntimeSync?.sourceId ?? null, images: new Map() };
     }
     const cache = cacheRef.current;
     if (cache.npcSourceId !== (gameNpcSync?.sourceId ?? null)) { cache.npcSourceId = gameNpcSync?.sourceId ?? null; cache.baseline = undefined; }
+    if (cache.runtimeSourceId !== (gameRuntimeSync?.sourceId ?? null)) { cache.runtimeSourceId = gameRuntimeSync?.sourceId ?? null; cache.baseline = undefined; }
     const controller = new AbortController();
     let active = true;
     const previous = preview.getState();
@@ -101,7 +105,7 @@ export function useGamePreview(): void {
     const comparing = comparisonEnabled && !changedBaseline;
     preview.setState({
       status: "loading", baselineId, error: null, comparison: null,
-      ...(changedBaseline ? { scene: null, images: new Map(), warnings: [], missingImages: 0, placementNpcClassId: null,
+      ...(changedBaseline ? { scene: null, images: new Map(), warnings: [], missingImages: 0, placementNpcClassId: null, runtimePanel: null, runtimePlacement: null,
         comparisonEnabled: false, comparisonBaseline: null, comparisonMode: "changes" as const } : {}),
     });
     const timer = window.setTimeout(() => {
@@ -111,7 +115,7 @@ export function useGamePreview(): void {
           if (project.gameSync?.baselineId !== baselineId) return;
           const baselineRequest = comparing
             ? cache.baseline ? Promise.resolve(cache.baseline) : requestPreview<{ baseline: GameBaselinePreview }>({
-              action: "baseline-preview", mapName: gameSync.mapName, baselineId, npcSourceId: gameNpcSync?.sourceId,
+              action: "baseline-preview", mapName: gameSync.mapName, baselineId, npcSourceId: gameNpcSync?.sourceId, runtimeSourceId: gameRuntimeSync?.sourceId,
             }, controller.signal).then(result => result.baseline)
             : Promise.resolve(null);
           const [result, baseline] = await Promise.all([
@@ -143,5 +147,5 @@ export function useGamePreview(): void {
       })();
     }, 250);
     return () => { active = false; window.clearTimeout(timer); controller.abort(); };
-  }, [gameSync, groundVer, blockedVer, entitiesVer, gameObjectsVer, gameNpcsVer, gameNpcSync, palette, size, mapName, refreshNonce, comparisonEnabled]);
+  }, [gameSync, groundVer, blockedVer, entitiesVer, gameObjectsVer, gameNpcsVer, gameNpcSync, gameRuntimeVer, gameRuntimeSync, palette, size, mapName, refreshNonce, comparisonEnabled]);
 }

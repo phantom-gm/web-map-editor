@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatCandidateReview, formatCandidateNpcSummary, validateCandidateReview, validateCandidateHistory, validateCandidateIdentity, candidateZipFilename, validateCandidateZipHeaders,
+  formatCandidateReview, formatCandidateNpcSummary, formatCandidateRuntimeSummary, validateCandidateReview, validateCandidateHistory, validateCandidateIdentity, candidateZipFilename, validateCandidateZipHeaders,
   type CandidateIdentity, type GameCandidateReview, type GameCandidateHistory,
 } from "../lib/gameCandidate";
 
@@ -310,5 +310,23 @@ describe("optional NPC candidate counts", () => {
       expect(() => validateCandidateReview(review, identity)).toThrow("형식");
       expect(() => validateCandidateHistory(history, identity)).toThrow();
     }
+  });
+});
+
+describe("optional runtime candidate counts", () => {
+  it("retains older receipts without inventing counts and includes new edits in text", () => {
+    const old=receipt();
+    expect(formatCandidateRuntimeSummary(old.summary)).toEqual([]);
+    const review=receipt();Object.assign(review.summary,{monstersMoved:1,monstersUpdated:2,portalsAdded:3,spawnChanged:1});
+    expect(()=>validateCandidateReview(review,identity)).not.toThrow();
+    const text=formatCandidateReview(review);
+    expect(text).toContain("몬스터 출현 이동 1 / 추가 0 / 삭제 0 / 설정 2");
+    expect(text).toContain("포털 이동 0 / 추가 3 / 삭제 0 / 설정 0");
+    expect(text).toContain("시작 위치 이동 1");
+  });
+  it("rejects impossible singleton counts in both review and history", () => {
+    const review=receipt(),history=historyReceipt();review.summary.spawnChanged=2;history.candidates[0].summary.spawnChanged=2;
+    expect(()=>validateCandidateReview(review,identity)).toThrow();
+    expect(()=>validateCandidateHistory(history,identity)).toThrow();
   });
 });

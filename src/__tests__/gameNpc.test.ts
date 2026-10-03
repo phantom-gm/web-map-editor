@@ -85,6 +85,24 @@ describe("NPC overlay validation",()=>{
     expect(parseGameNpcPatch({dialogId:"quest_intro-101"})).toEqual({dialogId:"quest_intro-101"});
     expect(parseGameNpcPatch({dialogId:""})).toEqual({dialogId:""});
   });
+  it("allows only listed dialogue IDs for changes, while preserving an unchanged original ID",()=>{
+    const current=scene();current.npcDialogGroups=["intro_101"];current.npcDialogGroupsAvailable=true;
+    const before=saved();
+    expect(state().updateGameNpc("fixture_Npc_1",{dialogId:"not_in_table"},current)).toBe(false);
+    expect(state().updateGameNpc("fixture_Npc_1",{dialogId:"base"},current)).toBe(true);
+    expect(saved()).toEqual(before);expect(state().undoStack).toHaveLength(0);
+    expect(state().updateGameNpc("fixture_Npc_1",{dialogId:"intro_101"},current)).toBe(true);
+    const unavailable=scene();unavailable.npcDialogGroupsAvailable=false;
+    expect(state().updateGameNpc("fixture_Npc_1",{dialogId:"another"},unavailable)).toBe(false);
+    expect(state().updateGameNpc("fixture_Npc_1",{dialogId:""},unavailable)).toBe(true);
+  });
+  it("does not place an NPC on an explicitly edited startpoint",()=>{
+    useEditorStore.setState({gameSpawnEdits:{version:1,cell:[5,5]}});
+    const before=saved();
+    expect(state().addGameNpc(101,[5,5],scene())).toBeNull();
+    expect(state().updateGameNpc("fixture_Npc_1",{cell:[5,5]},scene())).toBe(false);
+    expect(saved()).toEqual(before);expect(state().undoStack).toHaveLength(0);
+  });
   it("validates source snapshot pointers",()=>{
     expect(parseGameNpcSync({version:1,sourceId})).toEqual({version:1,sourceId});
     for(const value of [null,{version:2,sourceId},{version:1,sourceId:"../source"}])expect(()=>parseGameNpcSync(value)).toThrow();

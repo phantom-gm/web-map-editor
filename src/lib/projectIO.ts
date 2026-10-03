@@ -1,3 +1,4 @@
+import type { RuntimeProjectFields } from "./gameRuntime";
 // 에디터 프로젝트 파일(.json) — 맵 + 팔레트(참조·카테고리·RUID)까지 한 파일에.
 // 게임용 blueprint(Export)와 별개. 다시 열면 작업 상태가 그대로 복원된다(다른 PC 포함).
 //
@@ -43,7 +44,7 @@ export function parseGameSync(value: unknown, mapName?: string): GameSyncMetadat
   return { version: 1, baselineId: link.baselineId, mapName: link.mapName };
 }
 
-export interface ProjectFile {
+export interface ProjectFile extends RuntimeProjectFields {
   type: typeof PROJECT_TYPE;
   version: number; // 쓰기는 항상 PROJECT_VERSION(2). 읽기는 1도 허용.
   map: string;

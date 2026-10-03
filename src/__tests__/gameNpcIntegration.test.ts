@@ -13,6 +13,15 @@ import type { GamePreviewScene } from "../lib/gamePreview";
 import { validateComparisonPair, type GameBaselinePreview, type GameComparison } from "../lib/gameComparison";
 import { npcEditsKey, type GameNpcDescriptor } from "../lib/gameNpc";
 
+
+interface NativeDepthMap { getTileMapMode(): number; listEntities(): { path: string }[]; find(path: string): unknown }
+interface DepthMirror {
+  collectMetas(records: unknown[]): unknown[];
+  depthZ(y: number): number;
+  solvePlayerZ(metas: unknown[], gx: number, gy: number, z: number, foot: { x: number; y: number }): { z: number };
+  portalZ(metas: unknown[], gx: number, gy: number): { z: number };
+}
+
 type Paths = { gameRoot: string; baselineRoot: string; outputRoot: string };
 type NpcScene = GamePreviewScene & { npcs: GameNpcDescriptor[] };
 type Report = { exactMapBytes: boolean; applyFiles: string[]; npcChanges?: Record<string, number>; walkChangedCells: number };
@@ -108,16 +117,40 @@ function zipEntries(bytes: Buffer): Map<string, Buffer> {
 describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate (opt in)", () => {
   let runRoot: string, tempParent: string, before: Record<string, string>, scriptsBefore: Record<string, string>;
   const evidence: Record<string, unknown>[] = [];
+  let mapBuilder: { read(path: string): NativeDepthMap }, depthMirror: DepthMirror;
+
+  function expectActorDepth(scene: GamePreviewScene, mapPath: string) {
+    const native = mapBuilder.read(mapPath); expect(native.getTileMapMode()).toBe(1);
+    const metas = depthMirror.collectMetas(native.listEntities().map(e => native.find(e.path)));
+    const actors = [
+      ...(scene.npcs ?? []).map(row => ({ row, kind: "npc" })),
+      ...(scene.monsters ?? []).map(row => ({ row, kind: "monster" })),
+      ...(scene.portals ?? []).map(row => ({ row, kind: "portal" })),
+    ];
+    for (const { row, kind } of actors.filter(a => a.row.enabled)) {
+      const sprite = scene.sprites.find(s => (kind === "npc" ? s.npcEntityId : kind === "monster" ? s.monsterEntityId : s.portalEntityId) === row.entityId);
+      expect(sprite, row.entityId + " rendered sprite").toBeDefined();
+      const [x, y] = row.position, [gx, gy] = row.cell;
+      const expected = kind === "portal" ? depthMirror.portalZ(metas, gx, gy).z : depthMirror.solvePlayerZ(metas, gx, gy, depthMirror.depthZ(y), {x,y}).z;
+      expect(sprite!.position.slice(0, 2)).toEqual(row.position.slice(0, 2));
+      expect(sprite!.position[2], row.entityId + " runtime depth").toBeCloseTo(expected, 9);
+      expect(row.position[2], row.entityId + " logical edit depth").toBeCloseTo(depthMirror.depthZ(y), 9);
+    }
+  }
+
   const sourceNames = () => execFileSync("git", ["-c", "safe.directory=" + gameRoot!, "-C", gameRoot!, "ls-files", "-z", "--",
     "map", "RootDesk/MyDesk/DataSet", "scripts/storage-inventory.lock.json", "scripts/build_map.cjs"], { encoding: "utf8" })
     .split("\0").filter(p => /\.(map|json|csv|cjs)$/.test(p) && existsSync(join(gameRoot!, p))).sort();
-  const scriptNames = () => execFileSync("git", ["-c", "safe.directory=" + gameRoot!, "-C", gameRoot!, "ls-files", "-z", "--", "RootDesk/MyDesk/src", "RootDesk/MyDesk/Models"], { encoding: "utf8" })
-    .split("\0").filter(p => /(?:IsoProjectLogic|IsoPlayerDepthLogic|GroundShadowLogic|ActorVisualLogic|SpriteBoundsCatalogLogic|MonsterAppearanceCatalogLogic|MonsterSpawnCatalogLogic|NpcCatalogLogic|DataSetRepoLogic|NpcMapMarkerServiceLogic|NpcComponent|MonsterSpawnerLogic|HpBarLogic|HpBarStyleLogic|LocaleLogic|OccupancyGridStoreLogic|MapBoundsLogic)\.(?:mlua|codeblock)$|\/Npc\.model$/.test(p)).sort();
+  const scriptNames = () => execFileSync("git", ["-c", "safe.directory=" + gameRoot!, "-C", gameRoot!, "ls-files", "-z", "--", "RootDesk/MyDesk/src", "RootDesk/MyDesk/Models", "scripts"], { encoding: "utf8" })
+    .split("\0").filter(p => /(?:IsoProjectLogic|IsoPlayerDepthLogic|OccluderCoverLogic|GroundShadowLogic|ActorVisualLogic|SpriteBoundsCatalogLogic|MonsterAppearanceCatalogLogic|MonsterSpawnCatalogLogic|NpcCatalogLogic|DataSetRepoLogic|NpcMapMarkerServiceLogic|NpcComponent|MonsterSpawnerLogic|HpBarLogic|HpBarStyleLogic|LocaleLogic|OccupancyGridStoreLogic|MapBoundsLogic)\.(?:mlua|codeblock)$|\/Npc\.model$|scripts\/(?:depth_check|cover_mask_gen|message-table-checks|dataset-path)\.cjs$/.test(p)).sort();
   const sourceHashes = (files: string[]) => Object.fromEntries(files.map(p => [p, hash(join(gameRoot!, p))]));
   const paths = (): Paths => ({ gameRoot: gameRoot!, baselineRoot: join(runRoot, "baselines"), outputRoot: join(runRoot, "candidates") });
   beforeAll(() => {
     tempParent = realpathSync(tmpdir()); runRoot = mkdtempSync(join(tempParent, "web-map-editor-npc-sync-"));
     before = sourceHashes(sourceNames()); scriptsBefore = sourceHashes(scriptNames());
+    const builderPath = [".agents", ".claude", ".codex"].map(p => join(gameRoot!, p, "skills/msw-general/scripts/map/msw_map_builder.cjs")).find(existsSync)!;
+    mapBuilder = (requireCjs(builderPath) as { MapBuilder: { read(path: string): NativeDepthMap } }).MapBuilder;
+    depthMirror = requireCjs(join(gameRoot!, "scripts/depth_check.cjs")) as DepthMirror;
   });
   afterAll(() => {
     if (!runRoot) return;
@@ -142,8 +175,10 @@ describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate
       const synced = core.createSyncProject({ ...paths(), mapName });
       const baselineBefore = directoryHashes(synced.baselineDir);
       const scene = core.previewEditedProject(synced.project, paths());
+      expectActorDepth(scene, join(gameRoot!, "map", mapName + ".map"));
       const expected = spawn.filter(r => r.data.MapName === mapName && r.data.Enabled.toLowerCase() === "true");
       expect(scene.npcs, mapName).toHaveLength(expected.length);
+      expect(scene.npcDialogGroupsAvailable).toBe(true); expect(scene.npcDialogGroups).toHaveLength(56);
       for (const row of expected) {
         const npc = scene.npcs.find(n => n.entityId === row.data.NpcSpawnID)!;
         const type = classes.find(r => r.data.NpcClassID === row.data.NpcClassID)!.data;
@@ -180,7 +215,7 @@ describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate
     const safe = original.blocked.filter(cell => !occupied.has(cell.join(",")) && cell.every((n, i) => n >= 0 && n < original.size[i]));
     // Blocked tiles intentionally remain valid NPC cells (bartender / altar runtime rule).
     expect(safe.length).toBeGreaterThan(2);
-    const dialogId = "review_test";
+    const dialogId = "30020";
     expect(useEditorStore.getState().updateGameNpc(npc.entityId, { cell: safe[0], flipX: !npc.flipX, dialogId }, beforeScene)).toBe(true);
     let scene = core.previewEditedProject(exportStore(), paths());
     const added = useEditorStore.getState().addGameNpc(101, safe[1], scene);
@@ -195,6 +230,7 @@ describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate
     const originalPreview = noWrites(() => core.previewBaselineProject({ mapName, baselineId: edited.gameSync!.baselineId }, paths()));
     expect(validateComparisonPair(originalPreview, comparison.scene, comparison.comparison)).toBe(true);
     const candidate = core.exportEditedProject(edited, paths());
+    expectActorDepth(comparison.scene, candidate.mapPath);
     expect(candidate.report.exactMapBytes).toBe(true); expect(hash(candidate.mapPath)).toBe(hash(join(gameRoot!, "map", mapName + ".map")));
     expect(candidate.report.applyFiles).toEqual(["map/" + mapName + ".map", npcPath]);
     const output = table(join(candidate.candidateDir, npcPath)), source = table(join(gameRoot!, npcPath));
@@ -254,7 +290,7 @@ describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate
     expect(backgroundCandidate.report.applyFiles).toContain(walkPath);
     useEditorStore.getState().loadProject(background, tiles(background));
     const backgroundScene = core.previewEditedProject(exportStore(), paths());
-    expect(useEditorStore.getState().updateGameNpc(backgroundScene.npcs[0].entityId, { dialogId: "pending_dialog" }, backgroundScene)).toBe(true);
+    expect(useEditorStore.getState().updateGameNpc(backgroundScene.npcs[0].entityId, { dialogId: "30020" }, backgroundScene)).toBe(true);
     const edited = exportStore(), refreshed = core.refreshNpcProject(edited, paths());
     expect(refreshed.project.gameNpcSync?.sourceId).toMatch(/^[a-f0-9-]{36}$/i);
     const nonNpc = (project: ProjectFileInput) => {
@@ -294,7 +330,7 @@ describe.skipIf(!enabled)("actual game NPC CSV → editor → reviewed candidate
     const synced = core.createSyncProject({ ...copyPaths, mapName: "ferendel" }), project = deep(synced.project);
     const baselineBefore = directoryHashes(synced.baselineDir);
     const npc = core.previewEditedProject(project, copyPaths).npcs[0];
-    project.gameNpcEdits = { version: 1, updated: [{ entityId: npc.entityId, dialogId: "review-test" }], added: [], removed: [] };
+    project.gameNpcEdits = { version: 1, updated: [{ entityId: npc.entityId, dialogId: "30020" }], added: [], removed: [] };
     const spawnFile = join(copiedGame, npcPath), originalSpawn = readFileSync(spawnFile, "utf8");
     const other = table(spawnFile).find(r => r.data.MapName === "ferendelmotel")!;
     const modifiedOther = other.raw.replace(",10100", ",10101");

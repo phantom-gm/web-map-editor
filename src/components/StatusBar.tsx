@@ -3,6 +3,7 @@ import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { selectSouthCounts } from "../store/southSelectors";
 
 const TOOL_LABEL: Record<Tool, string> = {
+  spawn: "시작점",
   cursor: "커서",
   brush: "브러시",
   rect: "사각",

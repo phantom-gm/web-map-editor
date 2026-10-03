@@ -1,3 +1,4 @@
+import { GameRuntimeLibrary } from "./GameRuntimePanel";
 import { GameComparisonSidebar } from "./GameComparisonPanel";
 import { GameNpcLibrary, openNpcPanel } from "./GameNpcPanel";
 import { GameObjectLibrary } from "./GameObjectPanel";
@@ -27,6 +28,7 @@ function tileTitle(t: PaletteTile): string {
 
 export function PalettePanel() {
   const gameSync = useEditorStore(s => s.gameSync);
+  const runtimePanel = useGamePreviewStore(s => s.runtimePanel);
   const showNpcs = useGamePreviewStore(s => s.showNpcs);
   const showObjects = useGamePreviewStore(s => s.showObjects);
   const comparisonEnabled = useGamePreviewStore(s => s.comparisonEnabled);
@@ -260,6 +262,7 @@ export function PalettePanel() {
   }, [menu]);
 
   if (gameSync && comparisonEnabled) return <div className="palette"><GameComparisonSidebar /></div>;
+  if (gameSync && runtimePanel) return <div className="palette"><GameRuntimeLibrary key={gameSync.baselineId+runtimePanel} kind={runtimePanel}/></div>;
   if (gameSync && showNpcs) return <div className="palette"><GameNpcLibrary key={gameSync.baselineId} /></div>;
   if (gameSync && showObjects) return <div className="palette"><GameObjectLibrary /></div>;
 

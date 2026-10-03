@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, validateStorageRoot, _test } = require('./core.cjs');
+const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -968,6 +968,7 @@ test('applied DT_Walk source size is checked before review allocates its bytes',
 function npcFixture(t) {
   const f = objectFixture(t), npcDir = 'RootDesk/MyDesk/DataSet/npc/';
   const csv = {
+    'RootDesk/MyDesk/DataSet/quest/DT_QuestSequence.csv': 'SequenceGroupID,SequenceOrder\r\n100,1\r\n200,1\r\n30100,1\r\n300,1\r\n',
     [npcDir + 'DT_NpcSpawn.csv']: '\ufeffNpcSpawnID,MapName,NpcClassID,CellX,CellY,Enabled,Scale,FlipX,DialogID,#Note\r\nfixture_N1,fixture,101,1,1,True,0.875,True,100,"keep, quoted"\r\nfixture_N2,fixture,102,2,1,True,1,,200,\nother_N1,other,103,1,1,True,1,False,,last',
     [npcDir + 'DT_NpcClass.csv']: 'NpcClassID,#DevName,NpcName,NpcAppearanceID,BodyScale\r\n101,First,NAME1,9101,1.2\r\n102,Second,NAME2,9102,1\r\n103,Third,NAME3,9103,1.4\r\n',
     [npcDir + 'DT_NpcAppearance.csv']: 'NpcAppearanceID,Action,BaseDir,Ruid,FootPx\r\n9101,Idle,NE,,\r\n9101,Idle,SE,11111111111111111111111111111111,\r\n9102,Idle,SE,22222222222222222222222222222222,\r\n9103,Idle,SE,33333333333333333333333333333333,\r\n',
@@ -1084,4 +1085,89 @@ test('NPC candidate parser preserves reordered columns, BOM, quotes, unchanged s
   const result = npc.buildNpcCandidate(spawn, edits), before = npc.spawnRows(spawn), after = npc.spawnRows(result.bytes);
   for (const id of ['keep','other_id']) assert.equal(after.rows.find(r=>r.spawnId===id).raw, before.rows.find(r=>r.spawnId===id).raw);
   assert.equal(result.bytes.toString().charCodeAt(0), 0xfeff); assert.equal(after.rows.find(r=>r.spawnId==='edit').cell[0],3);
+});
+
+function runtimeFixture(t) {
+  const f=npcFixture(t), files={
+    'actor/DT_MonsterSpawn.csv':'\ufeffMonsterSpawnID,MapName,MonsterClassID,CellX,CellY,Count,Spread,RespawnMinSec,RespawnMaxSec,FirstSpawnSec,Enabled,Scale,FlipX,#Note\r\nM1,fixture,201,3,3,2,1,3,0,0,True,0.3,True,"keep, original"\r\nM2,fixture,201,4,4,1,2,0,0,1,False,,,\nM_other,other,201,2,2,1,0,1,2,0,True,,,last',
+    'actor/DT_MonsterClass.csv':'MonsterClassID,#DevName,MonsterName,MonsterAppearanceID,ModelID,BodyScale,BodyTint\r\n201,Monster,MONSTER1,9201,monster01,1.5,\r\n',
+    'actor/DT_MonsterAppearance.csv':'MonsterAppearanceID,Action,BaseDir,Ruid\r\n9201,Idle,SE,44444444444444444444444444444444\r\n',
+    'locale/ST_MonsterName.csv':'Key,Source,ko\r\nMONSTER1,Monster,몬스터\r\n',
+    'world/DT_Portal.csv':'\ufeffPortalID,SrcMap,SrcX,SrcY,DestMap,DestX,DestY,DestFacing,Enabled,#Note\r\nP1,fixture,5,5,other,2,3,SE,True,"keep, portal"\r\nP2,fixture,6,5,other,3,3,NW,False,\nP_other,other,1,2,fixture,3,3,SE,True,last',
+    'world/DT_Bounds.csv':'MapName,MinX,MaxX,MinY,MaxY,CenterX,CenterY,SpawnX,SpawnY\r\nfixture,0,7,0,7,4,4,3,6\r\nother,0,7,0,7,4,4,2,2\r\n',
+    'config/DT_GameConfig.csv':'ConfigKey,ConfigValue,#Desc\r\nPortalSpriteRuid,55555555555555555555555555555555,portal\r\n'
+  };
+  for(const [relative,raw] of Object.entries(files)){const file=path.join(f.root,'RootDesk/MyDesk/DataSet',relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,raw.replaceAll('\\r','\r').replaceAll('\\n','\n').replaceAll('\\ufeff','\ufeff'));}
+  return {...f,runtimeFile:name=>path.join(f.root,'RootDesk/MyDesk/DataSet',Object.keys(files).find(k=>k.endsWith('/'+name+'.csv')))};
+}
+const runtimePatch=(updated=[],removed=[],added=[])=>({version:1,updated,removed,added});
+function mixedRuntime(project){
+  project.gameMonsterEdits=runtimePatch([{entityId:'M1',cell:[4,3],count:3,respawnMinSec:5}],['M2'],[{entityId:crypto.randomUUID(),monsterClassId:201,cell:[4,4],count:1,spread:0,respawnMinSec:0,respawnMaxSec:0,firstSpawnSec:0,enabled:true}]);
+  project.gamePortalEdits=runtimePatch([{entityId:'P1',cell:[5,6],destFacing:'NE'}],['P2'],[{entityId:crypto.randomUUID(),cell:[6,6],destMap:'other',destCell:[2,3],destFacing:'SW',enabled:true}]);
+  project.gameSpawnEdits={version:1,cell:[3,7]};
+  return project;
+}
+test('runtime no-op resolves authoritative visuals and startpoint without native map spawns',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'}),before=fileTreeHashes(f.root),scene=previewEditedProject(project,f.options);
+ assert.equal(scene.monsters.length,2);assert.equal(scene.monsters[0].name,'몬스터');assert.equal(scene.monsters[0].bodyScale,1.5);assert.equal(scene.sprites.find(s=>s.monsterEntityId==='M1').flipX,false);
+ assert.equal(scene.portals.length,2);assert.deepEqual(scene.spawn.cell,[3,6]);assert.equal(scene.runtimeSource.stale,false);
+ project.gameMonsterEdits=runtimePatch([{entityId:'M1',cell:[3,3],count:2}]);project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'SE'}]);project.gameSpawnEdits={version:1,cell:[3,6]};
+ const c=exportEditedProject(project,f.options);assert.equal(c.report.unchanged,true);assert.equal(c.report.exactMapBytes,true);assert.deepEqual(c.report.applyFiles,['map/fixture.map']);assert.deepEqual(fileTreeHashes(f.root),before);
+});
+test('runtime mixed edits surgically preserve raw rows and unused columns, review and ZIP include all five CSV types',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'}),before=fileTreeHashes(f.root);mixedRuntime(project);project.gameNpcEdits=npcPatch([{entityId:'fixture_N1',dialogId:'300'}]);project.blocked.push([0,0]);
+ const compared=compareEditedProject(project,f.options);assert.equal(compared.comparison.monsters.moved.length,1);assert.equal(compared.comparison.portals.added.length,1);assert.ok(compared.comparison.spawn);
+ const c=exportEditedProject(project,f.options);assert.equal(c.report.applyFiles.length,6);assert.equal(c.report.exactMapBytes,true);assert.equal(c.report.monsterChanges.updated,1);assert.equal(c.report.portalChanges.updated,1);
+ const monster=fs.readFileSync(path.join(c.candidateDir,'RootDesk/MyDesk/DataSet/actor/DT_MonsterSpawn.csv'),'utf8');assert.ok(monster.startsWith('\ufeff'));assert.ok(monster.includes('5,0,0,True,0.3,True,"keep, original"'));assert.ok(monster.endsWith('M_other,other,201,2,2,1,0,1,2,0,True,,,last'));
+ const identity={candidateId:c.candidateId,mapName:'fixture',baselineId:project.gameSync.baselineId};const review=reviewCandidate(identity,f.options);assert.equal(review.status,'ready',review.issues.join('\n'));assert.equal(review.summary.spawnChanged,1);assert.equal(review.summary.monstersMoved,1);assert.equal(packageCandidate(identity,f.options).bytes.readUInt32LE(0),0x04034b50);assert.equal(listCandidates(identity,f.options).candidates[0].applyFileCount,6);assert.deepEqual(fileTreeHashes(f.root),before);
+});
+test('runtime target drift blocks while newer other-map rows merge, and applied CSV is wholly guarded at review',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});mixedRuntime(project);
+ for(const [name,a,b] of [['DT_MonsterSpawn','M_other,other,201,2,2,1,','M_other,other,201,2,2,4,'],['DT_Portal','P_other,other,1,2,fixture,3,3,','P_other,other,1,2,fixture,4,3,'],['DT_Bounds','other,0,7,0,7,4,4,2,2','other,0,7,0,7,4,4,3,2']]){const file=f.runtimeFile(name);fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(a,b));}
+ const c=exportEditedProject(project,f.options),identity={candidateId:c.candidateId,mapName:'fixture',baselineId:project.gameSync.baselineId};assert.equal(reviewCandidate(identity,f.options).status,'ready');fs.appendFileSync(f.runtimeFile('DT_Portal'),'\r\n');assert.equal(reviewCandidate(identity,f.options).status,'blocked');
+ fs.writeFileSync(f.runtimeFile('DT_MonsterSpawn'),fs.readFileSync(f.runtimeFile('DT_MonsterSpawn'),'utf8').replace('M1,fixture,201,3,3,2,','M1,fixture,201,3,3,4,'));assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='STALE_RUNTIME_SOURCE');
+});
+test('runtime refresh resets only its overlays and binds immutable sources to the same baseline',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});mixedRuntime(project);project.gameNpcEdits=npcPatch([{entityId:'fixture_N1',dialogId:'300'}]);project.blocked.push([0,0]);project.ground[0][2]=project.palette.findIndex(p=>p.ruid===tile('물').ruid);const before=structuredClone(project),snapshot=fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId));
+ fs.writeFileSync(f.runtimeFile('DT_MonsterClass'),fs.readFileSync(f.runtimeFile('DT_MonsterClass'),'utf8').replace('1.5','1.6'));const fresh=refreshRuntimeProject(project,f.options);assert.deepEqual(project,before);for(const k of ['gameMonsterEdits','gamePortalEdits','gameSpawnEdits'])assert.equal(fresh.project[k],undefined);for(const k of ['gameNpcEdits','ground','blocked','entities','gameSync'])assert.deepEqual(fresh.project[k],before[k]);assert.equal(fresh.scene.monsters[0].bodyScale,1.6);assert.equal(fresh.scene.runtimeSource.stale,false);
+ assert.equal(previewBaselineProject({...compareIdentity(project),runtimeSourceId:fresh.project.gameRuntimeSync.sourceId},f.options).scene.monsters[0].bodyScale,1.6);assert.deepEqual(fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId)),snapshot);
+ const foreign=createSyncProject({...f.options,mapName:'fixture'}).project;foreign.gameRuntimeSync=fresh.project.gameRuntimeSync;assert.throws(()=>previewEditedProject(foreign,f.options),e=>e.code==='RUNTIME_SOURCE_MISMATCH');
+ const snapshotFile=path.join(f.options.baselineRoot,'runtime-'+fresh.project.gameRuntimeSync.sourceId,'snapshot/RootDesk/MyDesk/DataSet/actor/DT_MonsterClass.csv');fs.appendFileSync(snapshotFile,'\n');assert.throws(()=>previewEditedProject(fresh.project,f.options),e=>e.code==='RUNTIME_SOURCE_CORRUPT');
+});
+test('runtime new placements enforce occupancy, bounds, walkability and strict fields while preserving original blocked rows',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});const check=(field,value,code)=>{const p=structuredClone(project);p[field]=value;assert.throws(()=>previewEditedProject(p,f.options),e=>e.code===code);};
+ check('gameSpawnEdits',{version:1,cell:[2,2]},'BLOCKED_SPAWN');check('gameSpawnEdits',{version:1,cell:[1,1]},'OCCUPIED_SPAWN');check('gameSpawnEdits',{version:1,cell:[8,1]},'INVALID_RUNTIME_EDIT');
+ check('gamePortalEdits',runtimePatch([{entityId:'P1',cell:[2,2]}]),'BLOCKED_PORTAL');check('gamePortalEdits',runtimePatch([{entityId:'P2',cell:[5,5],enabled:true}]),'PORTAL_OCCUPIED');check('gamePortalEdits',runtimePatch([{entityId:'P1',destMap:'missing'}]),'INVALID_RUNTIME_EDIT');
+ check('gameMonsterEdits',runtimePatch([{entityId:'M1',cell:[2,2],spread:0}]),'NO_MONSTER_CELLS');check('gameMonsterEdits',runtimePatch([{entityId:'M1',count:201}]),'INVALID_RUNTIME_EDIT');check('gameMonsterEdits',runtimePatch([{entityId:'M1',flipX:true}]),'INVALID_RUNTIME_EDIT');
+ const q=structuredClone(project);q.blocked.push([5,5]);q.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NW'}]);assert.doesNotThrow(()=>previewEditedProject(q,f.options));
+});
+
+test('runtime dependencies guard destination walk and bounds while unrelated walk rows stay mergeable',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
+ fs.appendFileSync(f.walkPath,'\r\nunrelated,1,1\r\n');assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,false);assert.doesNotThrow(()=>exportEditedProject(project,f.options));
+ fs.appendFileSync(f.walkPath,'other,2,3\r\n');assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,true);assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='STALE_RUNTIME_SOURCE');
+});
+test('runtime refresh cannot silently substitute a new current-map walk baseline or follow linked source storage',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'}),baseline=path.join(f.options.baselineRoot,project.gameSync.baselineId),before=fileTreeHashes(baseline);
+ fs.appendFileSync(f.walkPath,'\r\nfixture,0,0\r\n');assert.throws(()=>refreshRuntimeProject(project,f.options),e=>e.code==='STALE_RUNTIME_WALK');assert.deepEqual(fileTreeHashes(baseline),before);
+ fs.writeFileSync(f.walkPath,fs.readFileSync(f.walkPath,'utf8').replace('\r\nfixture,0,0\r\n',''));const fresh=refreshRuntimeProject(project,f.options);const sourceDir=path.join(f.options.baselineRoot,'runtime-'+fresh.project.gameRuntimeSync.sourceId),snapshot=path.join(sourceDir,'snapshot');fs.renameSync(snapshot,path.join(sourceDir,'original-snapshot'));fs.symlinkSync(f.root,snapshot,'junction');assert.throws(()=>previewEditedProject(fresh.project,f.options),e=>e.code==='UNSAFE_CANDIDATE');
+});
+test('runtime review catches class/config dependency changes and export catches concurrent source writes',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});mixedRuntime(project);const c=exportEditedProject(project,f.options),identity={candidateId:c.candidateId,mapName:'fixture',baselineId:project.gameSync.baselineId};
+ const cls=f.runtimeFile('DT_MonsterClass'),old=fs.readFileSync(cls);fs.writeFileSync(cls,old.toString().replace('1.5','1.6'));assert.equal(reviewCandidate(identity,f.options).status,'blocked');fs.writeFileSync(cls,old);
+ const write=fs.writeFileSync;let changed=false;fs.writeFileSync=function(file,...args){const out=write.call(fs,file,...args);if(!changed&&String(file).includes('reference')&&String(file).endsWith('DT_MonsterSpawn.csv')){changed=true;write.call(fs,cls,old.toString().replace('1.5','1.6'));}return out;};try{assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='REFERENCE_CHANGED_DURING_EXPORT');}finally{fs.writeFileSync=write;}assert.equal(changed,true);
+});
+
+test('runtime spawn candidates depend on current-map NPC occupancy but not unrelated NPC visuals or other-map rows',fixtureOptions,t=>{
+ const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});project.gameSpawnEdits={version:1,cell:[3,7]};
+ fs.writeFileSync(f.npcClass,fs.readFileSync(f.npcClass,'utf8').replace('1.2','1.3'));fs.writeFileSync(f.npcSpawn,fs.readFileSync(f.npcSpawn,'utf8').replace('other_N1,other,103,1,1','other_N1,other,103,2,1'));
+ const candidate=exportEditedProject(project,f.options),identity={candidateId:candidate.candidateId,mapName:'fixture',baselineId:project.gameSync.baselineId};assert.equal(reviewCandidate(identity,f.options).status,'ready');
+ fs.writeFileSync(f.npcSpawn,fs.readFileSync(f.npcSpawn,'utf8').replace('fixture_N1,fixture,101,1,1','fixture_N1,fixture,101,3,7'));assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='STALE_NPC_SOURCE');assert.equal(reviewCandidate(identity,f.options).status,'blocked');
+});
+test('runtime CSV surgical patch preserves reordered headers and refuses duplicate latest global IDs',()=>{
+ const runtime=require('./runtime.cjs'),bytes=Buffer.from('\ufeffEnabled,#Note,MapName,MonsterSpawnID,MonsterClassID,CellX,CellY,Count,Spread,RespawnMinSec,RespawnMaxSec,FirstSpawnSec,Scale,FlipX\r\nTrue,"quoted, note",fixture,M1,201,1,1,1,0,3,0,0,0.5,True\r\nFalse,last,other,M2,201,3,3,1,0,0,0,0,,');
+ const table={relative:'RootDesk/MyDesk/DataSet/actor/DT_MonsterSpawn.csv',bytes};const files={DT_MonsterSpawn:table,DT_MonsterClass:{relative:'class.csv',bytes:Buffer.from('MonsterClassID,MonsterName,MonsterAppearanceID,ModelID,BodyScale\n201,M,1,monster01,1\n')},DT_MonsterAppearance:{relative:'appearance.csv',bytes:Buffer.from('MonsterAppearanceID,Action,BaseDir,Ruid\n1,Idle,SE,11111111111111111111111111111111\n')},DT_Bounds:{relative:'bounds.csv',bytes:Buffer.from('MapName,MinX,MaxX,MinY,MaxY,SpawnX,SpawnY\nfixture,0,7,0,7,1,1\nother,0,7,0,7,1,1\n')},DT_Walk:{relative:'walk.csv',bytes:Buffer.from('MapName,CellX,CellY\n')}};
+ const profile=runtime.analyzeRuntime(files,'fixture'),edit=runtime.inspectRuntime({blocked:[],gameMonsterEdits:runtimePatch([{entityId:'M1',count:2}])},profile,{TILE_W:2.56,TILE_H:1.28,ORIGIN_X:15,ORIGIN_Y:15,DEPTH_SCALE:.21875});
+ const output=runtime.buildCandidates(edit,files)[0].bytes.toString();assert.ok(output.startsWith('\ufeffEnabled,#Note'));assert.ok(output.includes('True,"quoted, note",fixture,M1,201,1,1,2,0,3,0,0,0.5,True'));assert.ok(output.endsWith('False,last,other,M2,201,3,3,1,0,0,0,0,,'));
+ const duplicate={...files,DT_MonsterSpawn:{...table,bytes:Buffer.from(bytes.toString()+'\nFalse,new,other,M2,201,4,4,1,0,0,0,0,,\n')}};assert.throws(()=>runtime.buildCandidates(edit,duplicate),e=>e.code==='UNSUPPORTED_RUNTIME');
 });

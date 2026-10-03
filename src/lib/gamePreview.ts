@@ -1,3 +1,4 @@
+import type { GameMonsterDescriptor, GamePortalDescriptor, GameSpawnDescriptor, GameMonsterClass, GameMapDestination, GameRuntimeSource, GameRuntimeEdits } from "./gameRuntime";
 import type { GameNpcDescriptor, GameNpcClass, GameNpcEdits, GameNpcSource } from "./gameNpc";
 import type { GameSyncReport } from "./gameSync";
 import type { GameObjectDescriptor } from "./gameObjects";
@@ -16,6 +17,8 @@ export interface GamePreviewSprite {
   id: string;
   objectEntityId?: string;
   npcEntityId?: string;
+  monsterEntityId?: string;
+  portalEntityId?: string;
   path: string;
   name: string;
   ruid: string;
@@ -44,6 +47,15 @@ export interface GamePreviewScene {
   npcCatalog?: GameNpcClass[];
   npcEdits?: GameNpcEdits | null;
   npcSource?: GameNpcSource;
+  npcDialogGroups?: string[];
+  npcDialogGroupsAvailable?: boolean;
+  monsters?: GameMonsterDescriptor[];
+  portals?: GamePortalDescriptor[];
+  spawn?: GameSpawnDescriptor | null;
+  monsterCatalog?: GameMonsterClass[];
+  mapDestinations?: GameMapDestination[];
+  runtimeSource?: GameRuntimeSource;
+  runtimeEdits?: GameRuntimeEdits | null;
   objectPrototypes?: GameObjectDescriptor[];
   defaultSortingLayer: string;
   sprites: GamePreviewSprite[];

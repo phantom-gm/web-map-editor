@@ -1,3 +1,4 @@
+import { parseRuntimeProject, parseGameRuntimeSync, parseMonsterPatch, parsePortalPatch, parseGameMonsterEdits, parseGamePortalEdits, parseGameSpawnEdits, runtimeEditsKey, runtimeSourceKey, runtimeCellInBounds, updateRuntimeEdit, removeRuntimeEdit, type RuntimeProjectFields, type RuntimeSelection, type RuntimeCell, type MonsterFields, type PortalFields, type GameRuntimeSync } from "../lib/gameRuntime";
 import { create } from "zustand";
 import { TW, type Camera } from "../lib/grid";
 import { toStoredTile, type PaletteTile } from "../lib/palette";
@@ -106,7 +107,7 @@ const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | EntityKind;
+export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | "spawn" | EntityKind;
 
 // 팔레트 타일의 category(스토리지 subcategory)로 선택 시 활성화할 도구 결정.
 //   foothold → 브러시(바닥 타일), npc/monster → 해당 배치, 그 외 전부 → 오브젝트 배치.
@@ -128,7 +129,7 @@ export type VisualFlags = Record<VisualLayer, boolean>;
 type Ground = Map<CellKey, number>;
 type Blocked = Set<CellKey>;
 type Entities = MapEntity[];
-export interface Snapshot {
+export interface Snapshot extends RuntimeProjectFields {
   ground: Ground;
   blocked: Blocked;
   entities: Entities; // 불변 배열(액션마다 새 배열) → 참조 보관으로 스냅샷
@@ -143,6 +144,7 @@ export const captureEditorSnapshot = (state: Snapshot): Snapshot => ({
   entities: state.entities,
   gameObjectEdits: state.gameObjectEdits,
   gameNpcEdits: state.gameNpcEdits, gameNpcSync: state.gameNpcSync,
+  ...parseRuntimeProject(state),
 });
 function groundEqual(a: Ground, b: Ground): boolean {
   if (a.size !== b.size) return false;
@@ -155,7 +157,10 @@ function blockedEqual(a: Blocked, b: Blocked): boolean {
   return true;
 }
 
-export interface EditorState {
+export interface EditorState extends RuntimeProjectFields {
+  gameRuntimeVer: number;
+  selectedGameRuntime: RuntimeSelection | null;
+  gameRuntimeError: string | null;
   mapName: string;
   gameSync: GameSyncMetadata | undefined;
   gameObjectEdits: GameObjectEdits | undefined;
@@ -237,6 +242,15 @@ export interface EditorState {
   duplicateEntity: (id: string) => void;
   updateEntity: (id: string, patch: Partial<MapEntity>) => void;
   selectEntity: (id: string | null) => void;
+  selectGameRuntime: (selection: RuntimeSelection | null) => void;
+  updateGameMonster: (id: string, patch: Partial<MonsterFields>, scene: GamePreviewScene) => boolean;
+  addGameMonster: (classId: number, cell: RuntimeCell, scene: GamePreviewScene) => string | null;
+  removeGameMonster: (id: string, scene: GamePreviewScene) => boolean;
+  updateGamePortal: (id: string, patch: Partial<PortalFields>, scene: GamePreviewScene) => boolean;
+  addGamePortal: (fields: PortalFields, scene: GamePreviewScene) => string | null;
+  removeGamePortal: (id: string, scene: GamePreviewScene) => boolean;
+  setGameSpawn: (cell: RuntimeCell, scene: GamePreviewScene) => boolean;
+  replaceGameRuntimeSource: (sync: GameRuntimeSync, baselineId: string, expectedKey: string) => boolean;
   selectGameNpc: (id: string | null) => void;
   updateGameNpc: (id: string, patch: GameNpcPatch, scene: GamePreviewScene) => boolean;
   addGameNpc: (npcClassId: number, cell: GameNpcCell, scene: GamePreviewScene) => string | null;
@@ -275,8 +289,63 @@ function assertNpcScene(state: EditorState, scene: GamePreviewScene): void {
 }
 function assertNpcCell(state: EditorState, scene: GamePreviewScene, cell: GameNpcCell, excludeId?: string): void {
   if (!npcCellInBounds(cell, state.size)) throw new Error("NPC를 맵 안의 칸에 배치하세요.");
+  if (state.gameSpawnEdits?.cell[0] === cell[0] && state.gameSpawnEdits.cell[1] === cell[1]) throw new Error("수정한 시작점에는 NPC를 놓을 수 없습니다.");
   if (scene.npcs?.some(npc => npc.entityId !== excludeId && npc.enabled && npc.cell[0] === cell[0] && npc.cell[1] === cell[1])) throw new Error("다른 NPC가 있는 칸입니다. 옆 칸을 선택하세요.");
 }
+
+
+function assertRuntimeScene(state: EditorState, scene: GamePreviewScene): void {
+  const echo = scene.runtimeEdits;
+  if (!state.gameSync || scene.baselineId !== state.gameSync.baselineId || scene.mapName !== state.mapName ||
+      !scene.monsters || !scene.portals || !scene.runtimeSource ||
+      (scene.runtimeSource.sourceId ?? null) !== (state.gameRuntimeSync?.sourceId ?? null) ||
+      runtimeEditsKey({gameMonsterEdits:echo?.monsters??undefined,gamePortalEdits:echo?.portals??undefined,gameSpawnEdits:echo?.spawn??undefined}) !== runtimeEditsKey(state)) {
+    throw new Error("몬스터·포털·시작점 미리보기를 갱신한 뒤 다시 편집하세요.");
+  }
+  if (scene.npcs && (npcEditsKey(scene.npcEdits??undefined)!==npcEditsKey(state.gameNpcEdits) || (scene.npcSource?.sourceId??null)!==(state.gameNpcSync?.sourceId??null))) throw new Error("NPC 미리보기를 갱신한 뒤 배치를 편집하세요.");
+  if (scene.runtimeSource.stale) throw new Error("게임 배치 원본이 바뀌었습니다. 원본을 다시 불러오세요.");
+}
+function assertRuntimeCell(state: EditorState, scene: GamePreviewScene, cell: RuntimeCell, walkable = false): void {
+  const bounds = scene.spawn?.bounds ?? {minX:0,maxX:state.size[0]-1,minY:0,maxY:state.size[1]-1};
+  if (!runtimeCellInBounds(cell, bounds)) throw new Error("맵 경계 안의 칸을 선택하세요.");
+  if (walkable && state.blocked.has(cellKey(...cell))) throw new Error("이동불가 칸에는 시작점이나 포털을 놓을 수 없습니다.");
+}
+function assertMonster(state: EditorState, scene: GamePreviewScene, fields: MonsterFields): void {
+  assertRuntimeCell(state,scene,fields.cell);
+  const cls = scene.monsterCatalog?.find(c=>c.monsterClassId===fields.monsterClassId);
+  if (!cls?.canAdd) throw new Error(cls?.reason || "몬스터 종류를 확인하세요.");
+  const bounds=scene.spawn?.bounds??{minX:0,minY:0,maxX:state.size[0]-1,maxY:state.size[1]-1};
+  if (fields.spread > Math.max(bounds.maxX-bounds.minX+1,bounds.maxY-bounds.minY+1)) throw new Error("스폰 범위가 맵 크기보다 큽니다.");
+  if(fields.enabled){
+    const occupied=new Set((scene.npcs??[]).filter(n=>n.enabled).map(n=>cellKey(...n.cell)));
+    let available=false;
+    for(let y=Math.max(bounds.minY,fields.cell[1]-fields.spread);y<=Math.min(bounds.maxY,fields.cell[1]+fields.spread)&&!available;y++){
+      for(let x=Math.max(bounds.minX,fields.cell[0]-fields.spread);x<=Math.min(bounds.maxX,fields.cell[0]+fields.spread);x++){
+        const key=cellKey(x,y);if(!state.blocked.has(key)&&!occupied.has(key)){available=true;break;}
+      }
+    }
+    if(!available)throw new Error("스폰 범위에 이동 가능한 빈 칸이 없습니다. 범위나 위치를 바꾸세요.");
+  }
+}
+function assertPortal(state: EditorState, scene: GamePreviewScene, fields: PortalFields, previous?: PortalFields, excludeId?: string): void {
+  assertRuntimeCell(state,scene,fields.cell);
+  const changedSource = !previous || JSON.stringify(previous.cell)!==JSON.stringify(fields.cell) || (!previous.enabled && fields.enabled);
+  if (fields.enabled && changedSource) assertRuntimeCell(state,scene,fields.cell,true);
+  if (fields.enabled && scene.portals?.some(p=>p.entityId!==excludeId && p.enabled && p.cell[0]===fields.cell[0] && p.cell[1]===fields.cell[1])) throw new Error("같은 출발 칸에 활성 포털이 있습니다.");
+  const target = scene.mapDestinations?.find(m=>m.mapName===fields.destMap);
+  if (!target?.canTarget || !runtimeCellInBounds(fields.destCell,target.bounds)) throw new Error(target?.reason || "도착 맵과 도착 칸을 확인하세요.");
+  const changedDestination = !previous || previous.destMap!==fields.destMap || JSON.stringify(previous.destCell)!==JSON.stringify(fields.destCell) || (!previous.enabled && fields.enabled);
+  if (fields.enabled && changedDestination) {
+    const blocked = fields.destMap===state.mapName ? state.blocked.has(cellKey(...fields.destCell)) : target.blocked?.some(c=>c[0]===fields.destCell[0]&&c[1]===fields.destCell[1]);
+    if (blocked) throw new Error("포털 도착 칸이 이동불가 상태입니다.");
+  }
+}
+const runtimeFailure = (error: unknown) => ({gameRuntimeError:error instanceof Error ? error.message : String(error)});
+const runtimeCommit = (s: EditorState, fields: RuntimeProjectFields, selection: RuntimeSelection | null): Partial<EditorState> => ({
+  ...fields, selectedGameRuntime:selection, selectedGameNpcId:null, selectedEntityId:null,
+  selectedGameObjectId:null,selectedGameObjectIds:[],selectedBlockedCells:[], gameRuntimeError:null,
+  gameRuntimeVer:s.gameRuntimeVer+1,dirty:true,undoStack:[...s.undoStack,captureEditorSnapshot(s)].slice(-UNDO_CAP),redoStack:[],
+});
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   mapName: "newmap",
@@ -284,7 +353,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   gameObjectEdits: undefined,
   gameObjectsVer: 0,
   gameNpcEdits: undefined, gameNpcSync: undefined, gameNpcsVer: 0,
-  selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+  gameRuntimeVer: 0,
+  selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
   size: [20, 20],
   camera: { x: 0, y: 0, zoom: 1 },
   hover: null,
@@ -673,9 +743,98 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
       };
     }),
-  selectEntity: (id) => set({ selectedGameNpcId: null, gameNpcError: null, selectedEntityId: id, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null }),
+  selectEntity: (id) => set({ selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedEntityId: id, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null }),
+
+  selectGameRuntime: (selection) => set({
+    selectedGameRuntime:selection,gameRuntimeError:null,selectedGameNpcId:null,selectedEntityId:null,
+    selectedGameObjectId:null,selectedGameObjectIds:[],selectedBlockedCells:[],
+  }),
+  updateGameMonster: (id,input,scene) => {
+    let ok=false;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);
+      const current=scene.monsters!.find(m=>m.entityId===id);
+      if(!current?.canEdit)throw new Error(current?.reason||"이 스포너는 수정할 수 없습니다.");
+      const patch=parseMonsterPatch(input), fields={...current,...patch};
+      if(Object.entries(patch).every(([k,v])=>JSON.stringify(current[k as keyof MonsterFields])===JSON.stringify(v))){ok=true;return {gameRuntimeError:null};}
+      assertMonster(s,scene,fields);
+      const gameMonsterEdits=parseGameMonsterEdits(updateRuntimeEdit(s.gameMonsterEdits,id,patch));ok=true;
+      return runtimeCommit(s,{gameMonsterEdits},{kind:"monster",entityId:id});
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  addGameMonster: (monsterClassId,cell,scene) => {
+    let id:string|null=null;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);
+      const fields:MonsterFields={monsterClassId,cell,count:1,spread:0,respawnMinSec:0,respawnMaxSec:0,firstSpawnSec:0,enabled:true};
+      assertMonster(s,scene,fields);
+      const entityId=newEntityId(),edits=s.gameMonsterEdits??{version:1,updated:[],removed:[],added:[]};
+      const gameMonsterEdits=parseGameMonsterEdits({...edits,added:[...edits.added,{entityId,...fields}]});id=entityId;
+      return runtimeCommit(s,{gameMonsterEdits},{kind:"monster",entityId});
+    }catch(e){return runtimeFailure(e);}});return id;
+  },
+  removeGameMonster: (id,scene) => {
+    let ok=false;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);const current=scene.monsters!.find(m=>m.entityId===id);
+      if(!current?.canEdit)throw new Error(current?.reason||"이 스포너는 삭제할 수 없습니다.");
+      const gameMonsterEdits=removeRuntimeEdit(s.gameMonsterEdits,id);ok=true;
+      return runtimeCommit(s,{gameMonsterEdits},null);
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  updateGamePortal: (id,input,scene) => {
+    let ok=false;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);const current=scene.portals!.find(p=>p.entityId===id);
+      if(!current?.canEdit)throw new Error(current?.reason||"이 포털은 수정할 수 없습니다.");
+      const patch=parsePortalPatch(input),fields={...current,...patch};
+      if(Object.entries(patch).every(([k,v])=>JSON.stringify(current[k as keyof PortalFields])===JSON.stringify(v))){ok=true;return {gameRuntimeError:null};}
+      assertPortal(s,scene,fields,current,id);
+      const gamePortalEdits=parseGamePortalEdits(updateRuntimeEdit(s.gamePortalEdits,id,patch));ok=true;
+      return runtimeCommit(s,{gamePortalEdits},{kind:"portal",entityId:id});
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  addGamePortal: (fields,scene) => {
+    let id:string|null=null;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);assertPortal(s,scene,fields);
+      const entityId=newEntityId(),edits=s.gamePortalEdits??{version:1,updated:[],removed:[],added:[]};
+      const gamePortalEdits=parseGamePortalEdits({...edits,added:[...edits.added,{entityId,...fields}]});id=entityId;
+      return runtimeCommit(s,{gamePortalEdits},{kind:"portal",entityId});
+    }catch(e){return runtimeFailure(e);}});return id;
+  },
+  removeGamePortal: (id,scene) => {
+    let ok=false;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);const current=scene.portals!.find(p=>p.entityId===id);
+      if(!current?.canEdit)throw new Error(current?.reason||"이 포털은 삭제할 수 없습니다.");
+      const gamePortalEdits=removeRuntimeEdit(s.gamePortalEdits,id);ok=true;
+      return runtimeCommit(s,{gamePortalEdits},null);
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  setGameSpawn: (cell,scene) => {
+    let ok=false;
+    set(s=>{try{
+      assertRuntimeScene(s,scene);
+      if(!scene.spawn?.canEdit)throw new Error(scene.spawn?.reason||"이 맵에는 편집 가능한 시작점이 없습니다.");
+      if(JSON.stringify(cell)===JSON.stringify(scene.spawn.cell)){ok=true;return {gameRuntimeError:null};}
+      assertRuntimeCell(s,scene,cell,true);
+      if(scene.npcs?.some(n=>n.enabled&&n.cell[0]===cell[0]&&n.cell[1]===cell[1]))throw new Error("NPC가 있는 칸에는 시작점을 놓을 수 없습니다.");
+      const gameSpawnEdits=JSON.stringify(cell)===JSON.stringify(scene.spawn.sourceCell)?undefined:parseGameSpawnEdits({version:1,cell});ok=true;
+      return runtimeCommit(s,{gameSpawnEdits},{kind:"spawn",entityId:s.mapName});
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  replaceGameRuntimeSource: (sync,baselineId,expectedKey) => {
+    let ok=false;
+    set(s=>{try{
+      const gameRuntimeSync=parseGameRuntimeSync(sync);
+      if(!gameRuntimeSync || s.gameSync?.baselineId!==baselineId || runtimeSourceKey(s)!==expectedKey)throw new Error("작업이 바뀌어 원본 다시 읽기를 취소했습니다.");
+      ok=true;return runtimeCommit(s,{gameRuntimeSync,gameMonsterEdits:undefined,gamePortalEdits:undefined,gameSpawnEdits:undefined},null);
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+
   selectGameNpc: (id) => set({
-    selectedGameNpcId: id, gameNpcError: null, selectedEntityId: null,
+    selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: id, gameNpcError: null, selectedEntityId: null,
     selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
   }),
   updateGameNpc: (id, patch, scene) => {
@@ -691,6 +850,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (patch.flipX !== undefined && patch.flipX !== npc.flipX) changed.flipX = patch.flipX;
         if (patch.dialogId !== undefined && patch.dialogId !== npc.dialogId) changed.dialogId = patch.dialogId;
         if (!Object.keys(changed).length) { success = true; return { gameNpcError: null }; }
+        if (changed.dialogId && (scene.npcDialogGroupsAvailable === false || (scene.npcDialogGroups && !scene.npcDialogGroups.includes(changed.dialogId)))) throw new Error("대사 목록에 없는 ID입니다. 목록에서 선택하거나 빈 값으로 두세요.");
         const gameNpcEdits = updateGameNpcEdit(s.gameNpcEdits, id, changed);
         success = true;
         return { gameNpcEdits, gameNpcsVer: s.gameNpcsVer + 1, dirty: true, gameNpcError: null,
@@ -711,7 +871,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const gameNpcEdits = addGameNpcEdit(s.gameNpcEdits, { entityId, npcClassId, cell, flipX: false, dialogId: "" });
         addedId = entityId;
         return { gameNpcEdits, gameNpcsVer: s.gameNpcsVer + 1, dirty: true, gameNpcError: null,
-          selectedGameNpcId: entityId, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], selectedEntityId: null,
+          selectedGameRuntime: null, selectedGameNpcId: entityId, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], selectedEntityId: null,
           undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
       } catch (error) { return { gameNpcError: error instanceof Error ? error.message : String(error) }; }
     });
@@ -741,7 +901,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           JSON.stringify([s.gameNpcSync ?? null, npcEditsKey(s.gameNpcEdits)]) !== expectedKey) throw new Error("NPC 작업이 바뀌어 원본 다시 읽기를 취소했습니다.");
         success = true;
         return { gameNpcSync, gameNpcEdits: undefined, gameNpcsVer: s.gameNpcsVer + 1,
-          selectedGameNpcId: null, gameNpcError: null, dirty: true,
+          selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, dirty: true,
           undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
       } catch (error) { return { gameNpcError: error instanceof Error ? error.message : String(error) }; }
     });
@@ -752,7 +912,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const selectedGameObjectIds = mergeGameSelection(s.selectedGameObjectIds, ids.filter(id => typeof id === "string" && id.length > 0), mode);
       return {
-        selectedGameNpcId: null, gameNpcError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
         selectedGameObjectIds, selectedGameObjectId: selectedGameObjectIds[selectedGameObjectIds.length - 1] ?? null,
         selectedBlockedCells: mode === "replace" ? [] : s.selectedBlockedCells.filter(key => s.blocked.has(key)),
         selectedEntityId: null, gameSelectionError: null,
@@ -760,13 +920,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   selectBlockedCells: (cells, mode = "replace") =>
     set((s) => ({
-      selectedGameNpcId: null, gameNpcError: null,
+      selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
       selectedBlockedCells: mergeGameSelection(s.selectedBlockedCells.filter(key => s.blocked.has(key)),
         cells.filter(key => s.blocked.has(key)), mode),
       selectedEntityId: null, gameSelectionError: null,
     })),
   clearGameSelection: () => set({
-    selectedGameNpcId: null, gameNpcError: null,
+    selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
     selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [],
     selectedEntityId: null, gameSelectionError: null,
   }),
@@ -811,7 +971,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       gameObjectEdits: addGameObjectEdit(s.gameObjectEdits, entityId, prototypeId, position),
       gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
-      selectedGameNpcId: null, gameNpcError: null,
+      selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
       selectedGameObjectId: entityId, selectedGameObjectIds: [entityId], selectedBlockedCells: [], selectedEntityId: null, activeTool: "cursor",
       undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [],
     }));
@@ -866,7 +1026,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   undo: () =>
     set((s) => {
-      if (s.undoStack.length === 0) return { selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
+      if (s.undoStack.length === 0) return { selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
       const prev = s.undoStack[s.undoStack.length - 1];
       const cur = captureEditorSnapshot(s);
       s.ground.clear();
@@ -877,9 +1037,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         dirty: true,
         entities: prev.entities,
         gameObjectEdits: prev.gameObjectEdits,
+        ...parseRuntimeProject(prev), gameRuntimeVer: s.gameRuntimeVer + 1,
         gameNpcEdits: prev.gameNpcEdits, gameNpcSync: prev.gameNpcSync, gameNpcsVer: s.gameNpcsVer + 1,
         gameObjectsVer: s.gameObjectsVer + 1,
-        selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         undoStack: s.undoStack.slice(0, -1),
@@ -890,7 +1051,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   redo: () =>
     set((s) => {
-      if (s.redoStack.length === 0) return { selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
+      if (s.redoStack.length === 0) return { selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
       const next = s.redoStack[s.redoStack.length - 1];
       const cur = captureEditorSnapshot(s);
       s.ground.clear();
@@ -901,9 +1062,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         dirty: true,
         entities: next.entities,
         gameObjectEdits: next.gameObjectEdits,
+        ...parseRuntimeProject(next), gameRuntimeVer: s.gameRuntimeVer + 1,
         gameNpcEdits: next.gameNpcEdits, gameNpcSync: next.gameNpcSync, gameNpcsVer: s.gameNpcsVer + 1,
         gameObjectsVer: s.gameObjectsVer + 1,
-        selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         entitiesVer: s.entitiesVer + 1,
         selectedEntityId: null,
         redoStack: s.redoStack.slice(0, -1),
@@ -929,9 +1091,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         mapName: r.mapName,
         gameSync: undefined,
         gameObjectEdits: undefined,
+        ...parseRuntimeProject({}), gameRuntimeVer: s.gameRuntimeVer + 1,
         gameNpcEdits: undefined, gameNpcSync: undefined, gameNpcsVer: s.gameNpcsVer + 1,
         gameObjectsVer: s.gameObjectsVer + 1,
-        selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: r.size,
         groundOrigin: r.groundOrigin,
         staticLayer: r.staticLayer,
@@ -983,7 +1146,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       type: PROJECT_TYPE,
       version: PROJECT_VERSION, // 항상 v2(참조만) 로 저장 — v1 을 열었어도 저장 시 승격된다.
       map: s.mapName,
-      ...(s.gameSync ? { gameSync: { ...s.gameSync } } : {}),
+      ...(s.gameSync ? { gameSync: { ...s.gameSync }, ...Object.fromEntries(Object.entries(parseRuntimeProject(s)).filter(([,value])=>value!==undefined)) } : {}),
       ...(s.gameSync && s.gameNpcEdits ? { gameNpcEdits: parseGameNpcEdits(s.gameNpcEdits) } : {}),
       ...(s.gameSync && s.gameNpcSync ? { gameNpcSync: parseGameNpcSync(s.gameNpcSync) } : {}),
       ...(s.gameSync && s.gameObjectEdits ? { gameObjectEdits: parseGameObjectEdits(s.gameObjectEdits) } : {}),
@@ -1004,6 +1167,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   loadProject: (p, tiles) =>
     set((s) => {
       const gameSync = parseGameSync(p.gameSync, p.map);
+      const runtime = parseRuntimeProject(p);
+      if (Object.values(runtime).some(Boolean) && !gameSync) throw new Error("런타임 배치 편집에는 게임 원본 연결이 필요합니다.");
       const gameObjectEdits = parseGameObjectEdits(p.gameObjectEdits);
       const gameNpcEdits = parseGameNpcEdits(p.gameNpcEdits), gameNpcSync = parseGameNpcSync(p.gameNpcSync);
       if ((gameNpcEdits || gameNpcSync) && !gameSync) throw new Error("NPC 편집 정보에는 게임 원본 연결이 필요합니다.");
@@ -1019,9 +1184,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         mapName: p.map,
         gameSync,
         gameObjectEdits,
+        ...runtime, gameRuntimeVer: s.gameRuntimeVer + 1,
         gameNpcEdits, gameNpcSync, gameNpcsVer: s.gameNpcsVer + 1,
         gameObjectsVer: s.gameObjectsVer + 1,
-        selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: p.size,
         groundOrigin: p.groundOrigin,
         staticLayer: p.staticLayer ?? emptyLayer(),
@@ -1054,9 +1220,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         mapName: "newmap",
         gameSync: undefined,
         gameObjectEdits: undefined,
+        ...parseRuntimeProject({}), gameRuntimeVer: s.gameRuntimeVer + 1,
         gameNpcEdits: undefined, gameNpcSync: undefined, gameNpcsVer: s.gameNpcsVer + 1,
         gameObjectsVer: s.gameObjectsVer + 1,
-        selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
+        selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null,
         size: [20, 20],
         groundOrigin: [0, 0],
         staticLayer: emptyLayer(),

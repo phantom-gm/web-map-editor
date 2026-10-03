@@ -7,6 +7,8 @@ const crypto = require('node:crypto');
 const objectEdits = require('./object-edits.cjs');
 const walkEdits = require('./walk-edits.cjs');
 const npcEdits = require('./npcs.cjs');
+const runtimeEdits = require('./runtime.cjs');
+const { applyActorDepth } = require('./actor-depth.cjs');
 
 const VERSION = 1;
 const TILE_NAME = /^Tile_(\d+)_(\d+)$/;
@@ -179,13 +181,14 @@ function projectDefaults(raw, mapName) {
   p.ground = p.ground || []; p.blocked = p.blocked || []; p.entities = p.entities || [];
   p.palette = (p.palette || []).map(t => { const v = { ...t }; delete v.url; delete v.img; return v; });
   delete p.gameNpcEdits; delete p.gameNpcSync;
+  for (const k of ['gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits']) delete p[k];
   delete p.gameObjectEdits; // The actual native map, not an old editor overlay, is the baseline.
   p.staticLayer = p.staticLayer || emptyLayer(); p.attributeBase = p.attributeBase || emptyLayer();
   return p;
 }
 function protectedState(p) {
   const out = { ...p };
-  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked', 'gameNpcEdits', 'gameNpcSync']) delete out[k];
+  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked', 'gameNpcEdits', 'gameNpcSync', 'gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits']) delete out[k];
   return out;
 }
 function counts(blocks, groundCells, groundEntities = blocks.length) {
@@ -411,7 +414,7 @@ function loadNpcProfile(project, state) {
     const sourceDir = candidateChild(path.dirname(dir), 'npc-' + sourceId, root);
     const saved = readJson(candidateChild(sourceDir, 'manifest.json', root));
     if (saved.version !== 1 || saved.sourceId !== sourceId || saved.baselineId !== manifest.baselineId || saved.mapName !== manifest.mapName || saved.gameRoot !== root ||
-      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 3 || saved.files.length > 4 ||
+      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 3 || saved.files.length > npcEdits.FILES.length ||
       new Set(saved.files.map(f => f.relative)).size !== saved.files.length) fail('NPC_SOURCE_MISMATCH', 'NPC 기준이 현재 맵·게임·동기화 기준과 다릅니다.');
     const savedByPath = new Map(saved.files.map(f => [f.relative, f]));
     files = readNpcFiles(root, saved.files.map(f => f.relative), relative => {
@@ -421,6 +424,13 @@ function loadNpcProfile(project, state) {
     });
     if (Object.keys(files).length !== saved.files.length) fail('INVALID_NPC_SOURCE', 'NPC 기준에 허용되지 않은 파일이 있습니다.');
   } else files = readNpcFiles(root, manifest.datasetFiles, relative => fs.readFileSync(safeChild(dir, 'snapshot/' + relative, root)));
+  // Old NPC refresh pointers predate dialog catalogs. Extend them only from their
+  // immutable original baseline, never from unreviewed current game files.
+  if (!files.DT_QuestSequence && npcEdits.FILES.includes('DT_QuestSequence.csv')) {
+    const questPaths = manifest.datasetFiles.filter(relative => path.basename(relative) === 'DT_QuestSequence.csv');
+    if (questPaths.length > 1) fail('AMBIGUOUS_NPC_SOURCE', '대사 그룹 CSV 경로가 중복되었습니다.');
+    if (questPaths.length) files.DT_QuestSequence = { relative: questPaths[0], bytes: fs.readFileSync(safeChild(dir, 'snapshot/' + questPaths[0], root)) };
+  }
   return npcEdits.analyzeNpcs(files, manifest.mapName, sourceId);
 }
 function currentNpcFiles(root, profile) {
@@ -450,6 +460,70 @@ function refreshNpcProject(project, options) {
   return { project: next, scene: previewEditedProject(next, options) };
 }
 
+function readRuntimeFiles(root, relatives, read) {
+  const out = {};
+  for (const name of runtimeEdits.FILES) {
+    const paths = relatives.filter(relative => path.basename(relative) === name);
+    if (paths.length > 1) fail('AMBIGUOUS_RUNTIME_SOURCE', '몬스터·포탈·시작점 CSV 경로가 중복되었습니다: ' + name);
+    if (paths.length) {
+      const relative = paths[0];
+      if (!relative.startsWith('RootDesk/MyDesk/DataSet/')) fail('INVALID_RUNTIME_SOURCE', '몬스터·포탈·시작점 CSV 경로가 올바르지 않습니다.');
+      const bytes = read ? read(relative) : fs.readFileSync(sourceRelative(root, relative));
+      out[name.slice(0, -4)] = { relative, bytes };
+    }
+  }
+  return out;
+}
+function loadRuntimeProfile(project, state) {
+  const { root, dir, manifest } = state;
+  let files, sourceId = null;
+  if (project.gameRuntimeSync !== undefined) {
+    const pointer = project.gameRuntimeSync;
+    if (!pointer || pointer.version !== 1 || !REVIEW_UUID.test(pointer.sourceId || '') || Object.keys(pointer).some(k => !['version', 'sourceId'].includes(k))) fail('INVALID_RUNTIME_SOURCE', '몬스터·포탈·시작점 원본 기준 정보가 올바르지 않습니다.');
+    sourceId = pointer.sourceId;
+    const sourceDir = candidateChild(path.dirname(dir), 'runtime-' + sourceId, root);
+    const saved = readJson(candidateChild(sourceDir, 'manifest.json', root));
+    if (saved.version !== 1 || saved.sourceId !== sourceId || saved.baselineId !== manifest.baselineId || saved.mapName !== manifest.mapName || saved.gameRoot !== root ||
+      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 1 || saved.files.length > runtimeEdits.FILES.length ||
+      new Set(saved.files.map(f => f.relative)).size !== saved.files.length) fail('RUNTIME_SOURCE_MISMATCH', '런타임 기준이 현재 맵·게임·동기화 기준과 다릅니다.');
+    const savedByPath = new Map(saved.files.map(f => [f.relative, f]));
+    files = readRuntimeFiles(root, saved.files.map(f => f.relative), relative => {
+      const info = savedByPath.get(relative), bytes = fs.readFileSync(candidateChild(sourceDir, 'snapshot/' + relative, root));
+      if (!REVIEW_HASH.test(info.sha256 || '') || hash(bytes) !== info.sha256) fail('RUNTIME_SOURCE_CORRUPT', '런타임 기준 사본이 변경되었습니다. 다시 가져오세요.');
+      return bytes;
+    });
+    if (Object.keys(files).length !== saved.files.length) fail('INVALID_RUNTIME_SOURCE', '런타임 기준에 허용되지 않은 파일이 있습니다.');
+  } else files = readRuntimeFiles(root, manifest.datasetFiles, relative => fs.readFileSync(safeChild(dir, 'snapshot/' + relative, root)));
+  return runtimeEdits.analyzeRuntime(files, manifest.mapName, sourceId);
+}
+function currentRuntimeFiles(root, profile) {
+  const out = {};
+  for (const [name, file] of Object.entries(profile.files)) {
+    try { out[name] = { relative: file.relative, bytes: fs.readFileSync(sourceRelative(root, file.relative)) }; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return out;
+}
+function refreshRuntimeProject(project, options) {
+  const state = loadBaseline(project, options), { root, dir, manifest } = state;
+  const next = clone(project); delete next.gameMonsterEdits; delete next.gamePortalEdits; delete next.gameSpawnEdits; delete next.gameRuntimeSync;
+  // Keep every existing ground, object, blocked and legacy field; refresh only RUNTIME inputs.
+  inspectLoadedProject(next, state);
+  const files = readRuntimeFiles(root, datasetFiles(root)), profile = runtimeEdits.analyzeRuntime(files, manifest.mapName);
+  if (!Object.values(profile.supported).some(Boolean)) fail('UNSUPPORTED_RUNTIME', Object.values(profile.reasons).flat().join(' '));
+  if (profile.files.DT_Walk && stable([...new Set(profile.walk.filter(r => r.map === manifest.mapName).map(r => r.cell.join(',')))].sort()) !== stable([...new Set(state.baseline.blocked.map(c => c.join(',')))].sort())) fail('STALE_RUNTIME_WALK', '현재 맵의 게임 이동불가 원본이 바뀌었습니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
+  const sourceId = crypto.randomUUID(), sourceDir = candidateChild(path.dirname(dir), 'runtime-' + sourceId, root);
+  const saved = { version: 1, sourceId, baselineId: manifest.baselineId, mapName: manifest.mapName, gameRoot: root,
+    createdAt: new Date().toISOString(), baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
+    files: Object.values(files).map(file => ({ relative: file.relative, sha256: hash(file.bytes) })) };
+  fs.mkdirSync(sourceDir, { recursive: false });
+  for (const file of Object.values(files)) writeFile(sourceDir, 'snapshot/' + file.relative, file.bytes, root);
+  writeFile(sourceDir, 'manifest.json', jsonBytes(saved), root);
+  for (const file of Object.values(files)) if (hash(fs.readFileSync(sourceRelative(root, file.relative))) !== hash(file.bytes)) fail('RUNTIME_SOURCE_CHANGED', '몬스터·포탈·시작점 원본을 가져오는 동안 CSV가 변경되었습니다. 다시 시도하세요.');
+  next.gameRuntimeSync = { version: 1, sourceId };
+  return { project: next, scene: previewEditedProject(next, options) };
+}
+
 function inspectSyncProject(project, options) {
   return inspectLoadedProject(project, loadBaseline(project, options));
 }
@@ -475,6 +549,10 @@ function inspectLoadedProject(project, state) {
   const npcProfile = loadNpcProfile(project, state), npcs = npcEdits.inspectNpcs(project, npcProfile, manifest.constants);
   const npcChangedFiles = npcProfile.supported ? npcEdits.sourceDrift(npcProfile, currentNpcFiles(root, npcProfile)) : [];
   const npcSource = { sourceId: npcProfile.sourceId, stale: npcChangedFiles.length > 0, changedFiles: npcChangedFiles, refreshAvailable: true };
+  const runtimeProfile = loadRuntimeProfile(project, state), runtime = runtimeEdits.inspectRuntime(project, runtimeProfile, manifest.constants, npcs.descriptors);
+  const runtimeChangedFiles = Object.values(runtimeProfile.supported).some(Boolean) ? runtimeEdits.sourceDrift(runtimeProfile, currentRuntimeFiles(root, runtimeProfile), runtime) : [];
+  if (runtime.edited && runtimeProfile.files.DT_Walk && stable([...new Set(runtimeProfile.walk.filter(r => r.map === manifest.mapName).map(r => r.cell.join(',')))].sort()) !== stable([...walk.before].sort())) fail('STALE_RUNTIME_WALK', '런타임 기준과 맵 이동불가 기준이 다릅니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
+  const runtimeSource = { sourceId: runtimeProfile.sourceId, stale: runtimeChangedFiles.length > 0, changedFiles: runtimeChangedFiles, refreshAvailable: true };
   const before = groundMap(baseline), after = groundMap(project);
   const changed = changesBetween(before, after);
   if (changed.length && !manifest.groundEditingSupported) fail('UNSUPPORTED_GROUND', '이 맵의 바닥 편집은 지원하지 않습니다: ' + manifest.unsupportedReasons.join(' / '));
@@ -493,13 +571,18 @@ function inspectLoadedProject(project, state) {
   const warnings = changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.'] : [...manifest.unsupportedReasons];
   if (objects.changed) warnings.push('선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.');
   if (walk.changed) warnings.push('후보 DT_Walk에 현재 맵에서 직접 수정한 이동불가 셀만 반영합니다. 게임 원본에는 적용하지 않습니다.');
-  warnings.push(...npcs.warnings);
+  warnings.push(...npcs.warnings, ...runtime.warnings);
+  if (runtimeSource.stale) warnings.push('몬스터·포탈·시작점 CSV가 변경되었습니다. 보관된 기준을 표시하며 변경 출력 전에 런타임 원본을 새로 가져오세요.');
   if (npcSource.stale) warnings.push('NPC 원본 CSV가 변경되었습니다. 현재 NPC는 보관된 기준을 표시하며, NPC 변경 출력 전에 NPC 원본을 새로 가져오세요.');
   if (npcProfile.supported) warnings.push('NPC는 정적 Idle 외형입니다. 건물과의 런타임 깊이 보정·이름표·대화 동작은 별도 게임 검증이 필요합니다.');
-  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk, npcs, npcSource,
-    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed && !npcs.edited, mapUnchanged,
+  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk, npcs, npcSource, runtime, runtimeSource,
+    report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed && !npcs.edited && !runtime.edited, mapUnchanged,
       ...(npcProfile.supported ? { npcChanges: { moved: npcs.moves.length, added: npcs.added.length, removed: npcs.removed.length, updated: npcs.updates.length }, npcEditingSupported: true } : { npcEditingSupported: false }),
       npcEditingReasons: npcProfile.reasons,
+      ...(runtimeProfile.supported.monsters ? { monsterChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.monsters[k].length])) } : {}),
+      ...(runtimeProfile.supported.portals ? { portalChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.portals[k].length])) } : {}),
+      ...(runtimeProfile.supported.spawn ? { spawnChanged: runtime.spawnChanged } : {}),
+      runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
       objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
@@ -621,13 +704,22 @@ function previewFromChecked(project, checked) {
     ruid: npc.ruid, kind: 'other', npcEntityId: npc.entityId, position: npc.position, scale: [npc.bodyScale, npc.bodyScale],
     quaternion: [0, 0, 0, 1], rotationDeg: 0, flipX: npc.flipX, flipY: false, sortingLayer: null, orderInLayer: 0,
     sourceOrder: scene.sprites.length, color: [1, 1, 1, 1] });
+  for (const [kind, actors] of [['monster', checked.runtime.scene.monsters], ['portal', checked.runtime.scene.portals]]) {
+    for (const actor of actors) if (actor.enabled && actor.ruid) scene.sprites.push({
+      id: kind + ':' + actor.entityId, name: actor.name || actor.portalId, path: '/maps/' + manifest.mapName + '/' + kind + 'Preview_' + actor.entityId,
+      ruid: actor.ruid, kind: 'other', [kind + 'EntityId']: actor.entityId, position: actor.position,
+      scale: [actor.bodyScale || 1, actor.bodyScale || 1], quaternion: [0, 0, 0, 1], rotationDeg: 0,
+      flipX: false, flipY: false, sortingLayer: null, orderInLayer: 0, sourceOrder: scene.sprites.length, color: [1, 1, 1, 1] });
+  }
+  applyActorDepth(scene, mb, root, { npcs: checked.npcs.descriptors, monsters: checked.runtime.scene.monsters, portals: checked.runtime.scene.portals });
   verifySources(root, manifest);
   return {
     version: VERSION, baselineId: manifest.baselineId, mapName: manifest.mapName,
     constants: { ...manifest.constants, PPU: deps.ppu }, groundOrigin: clone(project.groundOrigin),
     // Native SpriteRendererComponent.d.mlua declares SortingLayer = "Default".
     defaultSortingLayer: 'Default', sprites: scene.sprites, ...nativeObjects,
-    npcs: checked.npcs.descriptors, npcCatalog: checked.npcs.catalog, npcEdits: checked.npcs.requested, npcSource: checked.npcSource,
+    npcs: checked.npcs.descriptors, npcCatalog: checked.npcs.catalog, npcEdits: checked.npcs.requested, npcSource: checked.npcSource, npcDialogGroups: checked.npcs.profile.dialogGroups || [], npcDialogGroupsAvailable: checked.npcs.profile.dialogGroupsAvailable === true,
+    ...checked.runtime.scene, runtimeEdits: checked.runtime.echoes, runtimeSource: checked.runtimeSource,
     groundBrushRuids: [...new Set(manifest.catalog.filter(t => t.n === 1).map(t => t.ruid))],
     warnings: [...report.warnings, ...scene.warnings],
     report: { ...report, spriteCount: scene.spriteCount, visibleSpriteCount: scene.sprites.length,
@@ -636,16 +728,17 @@ function previewFromChecked(project, checked) {
   };
 }
 // Original and current previews share one scene encoder; neither path creates files.
-function previewBaselineProject({ mapName, baselineId, npcSourceId } = {}, options) {
+function previewBaselineProject({ mapName, baselineId, npcSourceId, runtimeSourceId } = {}, options) {
   validMapName(mapName);
   const state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, options);
   const original = clone(state.baseline);
   if (npcSourceId !== undefined && npcSourceId !== null) original.gameNpcSync = { version: 1, sourceId: npcSourceId };
+  if (runtimeSourceId !== undefined && runtimeSourceId !== null) original.gameRuntimeSync = { version: 1, sourceId: runtimeSourceId };
   const checked = inspectLoadedProject(original, state);
   const scene = previewFromChecked(original, checked);
   return {
     version: VERSION, baselineId: state.manifest.baselineId, mapName: state.manifest.mapName,
-    npcSourceId: npcSourceId ?? null, size: clone(state.baseline.size), groundOrigin: clone(state.baseline.groundOrigin), scene,
+    npcSourceId: npcSourceId ?? null, runtimeSourceId: runtimeSourceId ?? null, size: clone(state.baseline.size), groundOrigin: clone(state.baseline.groundOrigin), scene,
     ground: sortedKeys(checked.before).map(k => [...coord(k), checked.before.get(k)]),
     blocked: sortedKeys(checked.walk.before).map(coord)
   };
@@ -661,7 +754,7 @@ function comparisonFromChecked(checked) {
       repackedCells: sortedKeys(new Set([...dirty].filter(k => !changed.has(k)))).map(coord),
       affectedBeforeBlocks: affected.map(block), replacementBlocks: replacements.map(block)
     },
-    npcs: checked.npcs.comparison,
+    npcs: checked.npcs.comparison, ...checked.runtime.comparison,
     objects: {
       // Editor IDs are stable across requests; generated native GUIDs intentionally are not.
       moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...e.position] })),
@@ -686,6 +779,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const references = captureDatasetReferences(root, manifest);
   if (checked.npcs.edited && checked.npcSource.stale) fail('STALE_NPC_SOURCE', 'NPC 원본이 변경되었습니다. NPC 원본을 새로 가져온 후 다시 편집해 주세요.');
   if (checked.npcs.edited && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).length) fail('STALE_NPC_SOURCE', 'NPC 원본이 후보 준비 중 변경되었습니다. 다시 가져오세요.');
+  if (checked.runtime.edited && checked.runtimeSource.stale) fail('STALE_RUNTIME_SOURCE', '몬스터·포탈·시작점 원본이 변경되었습니다. 런타임 원본을 새로 가져오세요.');
+  const runtimeCandidates = checked.runtime.edited ? runtimeEdits.buildCandidates(checked.runtime, readRuntimeFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)) : [];
+  if (runtimeUsesNpcOccupancy(report) && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).includes(checked.npcs.profile.spawnRelative)) fail('STALE_NPC_SOURCE', '현재 맵 NPC 배치가 변경되어 스폰 위치를 검증할 수 없습니다. NPC 원본을 새로 가져오세요.');
   const npcReference = checked.npcs.edited ? references.captured.find(r => r.relative === checked.npcs.profile.spawnRelative) : null;
   if (checked.npcs.edited && !npcReference?.bytes) fail('STALE_NPC_SOURCE', 'NPC 배치 원본이 없어졌습니다.');
   const npcCandidate = checked.npcs.edited ? npcEdits.buildNpcCandidate(npcReference.bytes, checked.npcs) : null;
@@ -717,6 +813,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   }
   if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
   if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
+  for (const candidate of runtimeCandidates) writeFile(candidateDir, candidate.relative, candidate.bytes, root);
   for (const reference of references.captured) {
     writeFile(candidateDir, 'reference/' + reference.relative, reference.bytes, root);
   }
@@ -732,9 +829,12 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
-    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : [])], datasetReferenceDirectory: 'reference',
+    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : []), ...runtimeCandidates.map(c => c.relative)], datasetReferenceDirectory: 'reference',
     walkComparison: walkCandidate ? walkCandidate.comparison : { unchanged: true },
     ...(npcCandidate ? { npcComparison: npcCandidate.comparison, npcSourceFiles: Object.values(checked.npcs.profile.files).filter(f => f.relative !== checked.npcs.profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) })) } : {}),
+    ...(runtimeCandidates.length ? { runtimeComparisons: Object.fromEntries(runtimeCandidates.map(c => [c.relative, c.comparison])),
+      runtimeNpcDependency: runtimeUsesNpcOccupancy(report) ? runtimeNpcDependency(checked.npcs.profile) : null,
+      runtimeSourceFiles: Object.values(checked.runtime.profile.files).map(f => ({ relative: f.relative, sha256: hash(f.bytes) })) } : {}),
     objectComparison: { unchangedObjectsExact: true, existingIdsPreserved: true, permittedFieldsOnly: true },
     candidateOnly: true, gameApplied: false, runtimeVerified: false
   });
@@ -744,7 +844,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     version: VERSION, candidateId, mapName: manifest.mapName, baselineId: manifest.baselineId, createdAt,
     baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
     applyFiles: report.applyFiles.map(relative => {
-      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : relative === checked.walk.relative ? walkReference.bytes : npcReference.bytes;
+      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : references.captured.find(f => f.relative === relative).bytes;
       return { path: relative, bytes: candidate.bytes, sourceBytes: source.length, sourceSha256: hash(source), candidateSha256: candidate.sha256 };
     }),
     referenceFiles: references.captured.map(item => descriptor('reference/' + item.relative)),
@@ -754,6 +854,16 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   writeFile(candidateDir, 'review-manifest.json', jsonBytes(reviewManifest), root);
   return { candidateId, candidateDir, mapPath, reportPath, report };
 }
+function runtimeUsesNpcOccupancy(report) { return report?.spawnChanged === true || Object.values(report?.monsterChanges || {}).some(n => n > 0); }
+function runtimeNpcDependency(profile) { const file = profile.files.DT_NpcSpawn; return file ? { relative: file.relative, sha256: hash(file.bytes) } : null; }
+function runtimeApplyPaths(report, manifest) {
+  const result = [];
+  for (const [name, changed] of [['DT_MonsterSpawn.csv', Object.values(report?.monsterChanges || {}).some(n => n > 0)], ['DT_Portal.csv', Object.values(report?.portalChanges || {}).some(n => n > 0)], ['DT_Bounds.csv', report?.spawnChanged === true]]) {
+    const files = manifest.datasetFiles.filter(p => path.basename(p) === name);
+    if (changed && files.length === 1) result.push(files[0]);
+  }
+  return result;
+}
 function candidateSummary(report) {
   return {
     groundChangedCells: report.changedCells ?? 0,
@@ -762,6 +872,9 @@ function candidateSummary(report) {
     objectsRemoved: report.objectChanges?.removed ?? 0,
     blockedAdded: report.walkComparison?.addedRows ?? 0, blockedRemoved: report.walkComparison?.removedRows ?? 0,
     walkChangedCells: report.walkChangedCells ?? 0,
+    ...(report.monsterChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['monsters' + k[0].toUpperCase() + k.slice(1), report.monsterChanges[k] ?? 0])) : {}),
+    ...(report.portalChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['portals' + k[0].toUpperCase() + k.slice(1), report.portalChanges[k] ?? 0])) : {}),
+    ...(report.spawnChanged !== undefined ? { spawnChanged: Number(report.spawnChanged) } : {}),
     ...(report.npcChanges ? { npcsMoved: report.npcChanges.moved ?? 0, npcsAdded: report.npcChanges.added ?? 0, npcsRemoved: report.npcChanges.removed ?? 0, npcsUpdated: report.npcChanges.updated ?? 0 } : {})
   };
 }
@@ -785,7 +898,7 @@ function validReviewManifest(review, identity) {
   const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
   return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
     typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 3 &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 6 &&
     review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
     Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
     artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
@@ -827,7 +940,7 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
       const walk = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
       const npcFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
       const npcChanged = Object.values(report.npcChanges || {}).some(n => n > 0);
-      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : [])];
+      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, manifest)];
       if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
       for (const relative of applyFiles) candidateChild(dir, relative, root);
       if (review) {
@@ -878,7 +991,7 @@ function packageCandidate(input, options) {
   catch (error) { if (error.code === 'ENOENT') packageFailure('검토 기록이 없어 ZIP을 받을 수 없습니다. 후보를 다시 구워 주세요.', reviewCandidate(input, options)); throw error; }
   let metadata;
   try { metadata = JSON.parse(metadataBytes); } catch { packageFailure('후보 검토 기록을 읽을 수 없습니다. 후보를 다시 구워 주세요.'); }
-  const applyWalk = state.manifest.datasetFiles.filter(relative => ['DT_Walk.csv', 'DT_NpcSpawn.csv'].includes(path.basename(relative)) && metadata?.applyFiles?.some?.(item => item.path === relative));
+  const applyWalk = state.manifest.datasetFiles.filter(relative => ['DT_Walk.csv', 'DT_NpcSpawn.csv', 'DT_MonsterSpawn.csv', 'DT_Portal.csv', 'DT_Bounds.csv'].includes(path.basename(relative)) && metadata?.applyFiles?.some?.(item => item.path === relative));
   for (const entry of state.manifest.sourceFiles.filter(f => !state.manifest.datasetFiles.includes(f.relative) || applyWalk.includes(f.relative))) {
     try { if (fs.statSync(sourceRelative(root, entry.relative)).size > MAX_ZIP_BYTES) packageFailure('게임 원본 파일 크기가 다운로드 검토 한도를 넘었습니다.'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -969,16 +1082,27 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   const walkPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
   const npcPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
   const npcChanged = Object.values(report?.npcChanges || {}).some(n => n > 0);
-  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : [])];
+  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : []), ...runtimeApplyPaths(report, manifest)];
+  const runtimeChanged = runtimeApplyPaths(report, manifest).length > 0;
   if (npcChanged && project) attempt('NPC 원본 기준', () => {
     const profile = loadNpcProfile(project, state), drift = npcEdits.sourceDrift(profile, currentNpcFiles(root, profile));
     if (!profile.supported || drift.length) throw new Error('NPC 원본 기준이 변경되었습니다. NPC 원본을 다시 가져오세요.');
     const expected = Object.values(profile.files).filter(f => f.relative !== profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) }));
     if (stable(expected) !== stable(report.npcSourceFiles)) throw new Error('NPC 원본 파일 기록이 일치하지 않습니다.');
   });
+  if (runtimeChanged && project) attempt('몬스터·포탈·시작점 원본 기준', () => {
+    const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []);
+    if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited).length) throw new Error('런타임 원본이 변경되었습니다. 원본을 다시 가져오세요.');
+    const expected = Object.values(profile.files).map(f => ({ relative: f.relative, sha256: hash(f.bytes) }));
+    if (stable(expected) !== stable(report.runtimeSourceFiles)) throw new Error('런타임 원본 파일 기록이 일치하지 않습니다.');
+    if (runtimeUsesNpcOccupancy(report)) {
+      const npcProfile = loadNpcProfile(project, state);
+      if (stable(runtimeNpcDependency(npcProfile)) !== stable(report.runtimeNpcDependency) || npcEdits.sourceDrift(npcProfile, currentNpcFiles(root, npcProfile)).includes(npcProfile.spawnRelative)) throw new Error('스폰 위치의 NPC 배치 기준이 변경되었습니다. NPC 원본을 다시 가져오세요.');
+    }
+  });
   const filePaths = review.applyFiles.map(item => item.path);
   if (!check('적용 대상 파일 목록', stable(filePaths) === stable(applyPaths) && stable(report?.applyFiles) === stable(applyPaths),
-    '후보 적용 파일은 해당 맵과 변경된 DT_Walk·DT_NpcSpawn만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+    '후보 적용 파일은 해당 맵과 변경된 이동불가·NPC·몬스터·포탈·시작점 CSV만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
   for (const item of review.applyFiles) {
     const sourceFile = sourceRelative(root, item.path), candidateBytes = read(item.path);
     let sourceBytes = null;
@@ -991,7 +1115,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
       currentSourceSha256, currentCandidateSha256, sourceMatches, candidateMatches });
     const isMap = item.path === manifest.mapRelative;
     const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
-    const csvComparison = item.path === npcPaths[0] ? report.npcComparison : report.walkComparison;
+    const csvComparison = item.path === npcPaths[0] ? report.npcComparison : item.path === walkPaths[0] ? report.walkComparison : report.runtimeComparisons?.[item.path];
     const expectedCandidate = isMap ? report.candidateMapSha256 : csvComparison?.candidateSha256;
     check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : csvComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
     check(item.path + ' 현재 게임 원본', sourceMatches, sourceMatches ? undefined : item.path + ': 후보 작성 이후 게임 원본이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
@@ -1016,11 +1140,13 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
       if ((bytes ? hash(bytes) : null) !== item.currentSourceSha256) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
     }
     verifySources(root, manifest);
+    if (runtimeChanged && project) { const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []); if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited).length) throw new Error('검토 도중 런타임 원본이 변경되었습니다. 다시 검토해 주세요.'); }
+    if (runtimeUsesNpcOccupancy(report) && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).includes(profile.spawnRelative)) throw new Error('검토 도중 NPC 배치 원본이 변경되었습니다.'); }
     if (npcChanged && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).length) throw new Error('검토 도중 NPC 원본이 변경되었습니다. 다시 검토해 주세요.'); }
   });
   result.checkedAt = new Date().toISOString(); result.status = result.issues.length ? 'blocked' : 'ready';
   return result;
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, validateStorageRoot,
+module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

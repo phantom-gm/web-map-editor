@@ -34,6 +34,9 @@ export interface GameSyncReport {
     sourceSha256: string; candidateSha256: string;
   };
   npcSourceFiles?: Array<{ relative: string; sha256: string }>;
+  monsterChanges?: { moved: number; added: number; removed: number; updated: number };
+  portalChanges?: { moved: number; added: number; removed: number; updated: number };
+  spawnChanged?: boolean;
   walkEditingSupported?: boolean;
   walkEditingReasons?: string[];
   walkChangedCells?: number;

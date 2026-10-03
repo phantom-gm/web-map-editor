@@ -140,9 +140,10 @@ describe("comparison response contract", () => {
       groundChangedCells: 1, groundRepackedCells: 3, objectsMoved: 1, objectsAdded: 1,
       objectsRemoved: 1, blockedAdded: 2, blockedRemoved: 1,
       npcsMoved: 0, npcsAdded: 0, npcsRemoved: 0, npcsUpdated: 0,
+      monstersMoved:0,monstersAdded:0,monstersRemoved:0,monstersUpdated:0,portalsMoved:0,portalsAdded:0,portalsRemoved:0,portalsUpdated:0,spawnChanged:0,
     });
     expect(f.comparison).toEqual(before);
-    expect(Object.values(getComparisonCounts(emptyComparison()))).toEqual(Array(11).fill(0));
+    expect(Object.values(getComparisonCounts(emptyComparison()))).toEqual(Array(20).fill(0));
   });
 });
 
@@ -347,5 +348,46 @@ describe("NPC comparison source and overlays", () => {
     expect(r.images).toEqual([]); expect(r.transforms).toEqual([]); expect(r.strokes).toHaveLength(2);
     expect(r.fills.every(fill => fill.path[0].operation === "arc")).toBe(true);
     expect(getComparisonCounts(f.comparison).npcsRemoved).toBe(1);
+  });
+});
+
+describe("runtime comparison sources and overlays", () => {
+  function runtimeFixture() {
+    const f = fixture();
+    const monster = {entityId:"spawn-a",spawnId:"spawn-a",name:"Slime",ruid:"slime",bodyScale:1,
+      monsterClassId:1,cell:[3,4] as [number,number],sourceCell:[3,4] as [number,number],source:null,position:[0,0,0] as [number,number,number],
+      count:5,spread:2,respawnMinSec:10,respawnMaxSec:20,firstSpawnSec:0,enabled:true,canEdit:true};
+    const portal = {entityId:"portal-a",portalId:"portal-a",cell:[2,2] as [number,number],sourceCell:[2,2] as [number,number],source:null,
+      position:[1,2,3] as [number,number,number],destMap:"home",destCell:[4,5] as [number,number],destFacing:"SE" as const,enabled:true,canEdit:true};
+    const spawn = {cell:[5,5] as [number,number],sourceCell:[5,5] as [number,number],position:[2,3,4] as [number,number,number],bounds:{minX:0,minY:0,maxX:11,maxY:11},canEdit:true};
+    f.baseline.runtimeSourceId = "runtime-source";
+    f.baseline.scene = {...f.baseline.scene,monsters:[monster],portals:[portal],spawn,runtimeSource:{sourceId:"runtime-source",stale:false,changedFiles:[],refreshAvailable:true}};
+    f.current = {...f.current,monsters:[{...monster,count:8,cell:[4,4],position:[2,1,0]}],
+      portals:[{...portal,destMap:"shop"}],spawn:{...spawn,cell:[6,5],position:[3,4,5]},runtimeSource:f.baseline.scene.runtimeSource};
+    f.comparison.monsters = {moved:[{entityId:"spawn-a",from:[0,0,0],to:[2,1,0]}],added:[],removed:[],updated:[{entityId:"spawn-a",position:[2,1,0]}]};
+    f.comparison.portals = {moved:[],added:[],removed:[],updated:[{entityId:"portal-a",position:[1,2,3]}]};
+    f.comparison.spawn = {from:[2,3,4],to:[3,4,5]};
+    return f;
+  }
+  it("validates actual settings and counts spawner, portal and spawn changes independently", () => {
+    const f=runtimeFixture();
+    expect(validateComparisonPair(f.baseline,f.current,f.comparison)).toBe(true);
+    expect(getComparisonCounts(f.comparison)).toMatchObject({monstersMoved:1,monstersUpdated:1,portalsUpdated:1,spawnChanged:1});
+  });
+  it("rejects stale runtime source pairs and invented setting changes", () => {
+    const f=runtimeFixture();
+    f.current.runtimeSource={...f.current.runtimeSource!,sourceId:"another-source"};
+    expect(()=>validateComparisonPair(f.baseline,f.current,f.comparison)).toThrow();
+    f.current.runtimeSource=f.baseline.scene.runtimeSource;
+    f.current.monsters![0].count=5;
+    expect(()=>validateComparisonPair(f.baseline,f.current,f.comparison)).toThrow();
+  });
+  it("draws runtime markers and connectors without requiring sprite images or changing hit-test scenes", () => {
+    const f=runtimeFixture(),recorder=recordingContext(),before=structuredClone(f.current);
+    drawGameComparison(recorder.ctx,f.baseline,f.current,f.comparison,f.images,camera,{ground:false,objects:false,blocked:false,npcs:false,monsters:true,portals:true,spawn:true});
+    expect(recorder.strokes.length).toBeGreaterThan(0);
+    expect(recorder.fills.length).toBeGreaterThan(0);
+    expect(f.current).toEqual(before);
+    expect(recorder.stack).toHaveLength(0);
   });
 });

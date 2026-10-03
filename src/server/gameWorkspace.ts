@@ -1,3 +1,4 @@
+import { parseRuntimeProject } from "../lib/gameRuntime";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -56,6 +57,7 @@ function validateProject(input: unknown): ProjectFile {
     parseGameObjectEdits(input.gameObjectEdits);
     parseGameNpcEdits(input.gameNpcEdits);
     parseGameNpcSync(input.gameNpcSync);
+    parseRuntimeProject(input);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     throw new WorkspaceError(error instanceof Error ? error.message : "게임 동기화 정보 형식이 올바르지 않습니다.");
