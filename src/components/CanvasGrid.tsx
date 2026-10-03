@@ -1,14 +1,14 @@
-import { GameRuntimeInspector, openRuntimePanel } from "./GameRuntimePanel";
+import { GameRuntimeInspector } from "./GameRuntimePanel";
 import { gameRuntimeHit, runtimeDescriptor, sceneWithRuntimeDraft, drawGameRuntime } from "../lib/gameRuntimePreview";
 import type { RuntimeCell, RuntimeSelection, RuntimeKind } from "../lib/gameRuntime";
 import { drawGameComparison } from "../lib/gameComparison";
 import { GameObjectInspector } from "./GameObjectPanel";
 import { previewScreenToWorld, gameObjectHitCandidates, snapObjectPosition, objectCellOffset, sceneWithGameObjectGroupDraft, drawGameObjectSelection, gameObjectsInScreenRect } from "../lib/gameObjectPreview";
-import { GameNpcInspector, openNpcPanel } from "./GameNpcPanel";
+import { GameNpcInspector } from "./GameNpcPanel";
 import { gameNpcHitCandidates, sceneWithNpcDraft, drawGameNpcLabels, drawGameNpcSelection } from "../lib/gameNpcPreview";
 import type { GameNpcCell } from "../lib/gameNpc";
 import type { GameObjectDescriptor, GameObjectPosition } from "../lib/gameObjects";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditorStore, captureEditorSnapshot, type Snapshot, type VisualFlags } from "../store/editorStore";
 import {
   TW,
@@ -21,6 +21,8 @@ import {
 } from "../lib/grid";
 import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
+import { activateEditorTool, editorShortcutsBlocked, rollbackEditorStroke, palettePlacementIssue } from "../lib/editorCommands";
+import { CanvasChrome } from "./CanvasChrome";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
 import { ENTITY_META, entityDisplayFootprintCells, isEntityIncomplete, type MapEntity } from "../types/entity";
@@ -619,6 +621,7 @@ export function CanvasGrid() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<Dims>({ w: 800, h: 600 });
+  const [placementIssue, setPlacementIssue] = useState<string | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const mode = useRef<"pan" | "paint" | "blockErase" | "rect" | "moveEntity" | "moveGameRuntime" | "moveGameNpc" | "moveGameObject" | "selectGameRegion" | null>(null);
   const strokeBefore = useRef<Snapshot | null>(null);
@@ -650,6 +653,18 @@ export function CanvasGrid() {
   const visual = useEditorStore((s) => s.visual);
   const stand = useEditorStore(selectStandCtx); // 엔티티·이동불가 버전이 바뀔 때만 새 객체
   const setCamera = useEditorStore((s) => s.setCamera);
+
+  const cancelGesture = useCallback((rollback = true) => {
+    const before = strokeBefore.current, hadDrawing = mode.current === "paint" || mode.current === "blockErase" || mode.current === "rect" || mode.current === "moveEntity";
+    const sameBaseline = activeGroundBaseline.current === (useEditorStore.getState().gameSync?.baselineId ?? null);
+    mode.current = null; drag.current = null; strokeBefore.current = null; rectStart.current = null;
+    movingId.current = null; activeGroundBaseline.current = null; downPoint.current = null;
+    runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null);
+    nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
+    useEditorStore.getState().setRectPreview(null);
+    if (rollback && before && sameBaseline) rollbackEditorStroke(before);
+    return hadDrawing;
+  }, []);
 
   useEffect(() => useWorkspaceSession.subscribe((state, previous) => {
     if (!state.loading || previous.loading) return;
@@ -708,10 +723,11 @@ export function CanvasGrid() {
       state.gameRuntimeVer === previous.gameRuntimeVer && state.selectedGameRuntime === previous.selectedGameRuntime && state.gameNpcsVer === previous.gameNpcsVer && state.selectedGameNpcId === previous.selectedGameNpcId &&
       state.blockedVer === previous.blockedVer && state.activeTool === previous.activeTool &&
       state.selectedGameObjectIds === previous.selectedGameObjectIds && state.selectedBlockedCells === previous.selectedBlockedCells) return;
+    if (state.activeTool !== previous.activeTool) { cancelGesture(); return; }
     runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null);
     selectionStart.current = null; setSelectionBox(null);
     if (mode.current === "moveGameRuntime" || mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
-  }), []);
+  }), [cancelGesture]);
 
   useEffect(() => {
     const cancel = () => {
@@ -720,21 +736,23 @@ export function CanvasGrid() {
       if (mode.current === "moveGameRuntime" || mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
     };
     const unsubscribe = useGamePreviewStore.subscribe((state, previous) => {
+      if (state.comparisonEnabled !== previous.comparisonEnabled) { cancelGesture(); return; }
       if (state.runtimePlacement !== previous.runtimePlacement || state.runtimePanel !== previous.runtimePanel || state.selectionMode !== previous.selectionMode || state.showScene !== previous.showScene ||
         state.placementNpcClassId !== previous.placementNpcClassId || state.placementPrototypeId !== previous.placementPrototypeId || state.comparisonEnabled !== previous.comparisonEnabled || state.status === "error") cancel();
     });
-    window.addEventListener("blur", cancel);
-    return () => { unsubscribe(); window.removeEventListener("blur", cancel); };
-  }, []);
+    const blur = () => { spaceDown.current = false; cancelGesture(); };
+    window.addEventListener("blur", blur);
+    return () => { unsubscribe(); window.removeEventListener("blur", blur); };
+  }, [cancelGesture]);
 
   // 키보드: Space(팬) + undo/redo
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
       if (useWorkspaceSession.getState().loading) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (editorShortcutsBlocked(e)) return;
       if (e.code === "Space") {
-        spaceDown.current = true;
+        if ((e.target as Element | null)?.closest?.("button, a, summary, [role=button]")) return;
+        e.preventDefault(); spaceDown.current = true;
         return;
       }
       // 단축키는 e.code(물리 키)로 판정 — 한글 IME/레이아웃에서 e.key 가 자모로 바뀌어도 동작.
@@ -746,18 +764,16 @@ export function CanvasGrid() {
           ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) e.preventDefault();
         return;
       }
-      // Commands cancel a local drag before mouseup can commit a stale object.
-      if (current.gameSync && (runtimeDrag.current || npcDrag.current || nativeDrag.current || selectionStart.current)) {
-        runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; nativeHits.current = []; setObjectDraft(null); mode.current = null;
-        selectionStart.current = null; setSelectionBox(null);
+      if (e.key === "Escape") {
+        e.preventDefault(); cancelGesture();
+        activateEditorTool("cursor"); return;
       }
-      if (current.gameSync && e.key === "Escape") {
-        useGamePreviewStore.getState().setSelectionMode("objects");
-        useGamePreviewStore.getState().setRuntimePlacement(null); useGamePreviewStore.getState().setPlacementNpc(null);
-        current.setTool("cursor"); current.clearGameSelection(); runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null);
-        return;
+      // Ctrl+Z while painting cancels that live stroke, rather than undoing an older action too.
+      if (mod && e.code === "KeyZ" && !e.shiftKey && (mode.current === "paint" || mode.current === "blockErase" || mode.current === "rect" || mode.current === "moveEntity")) {
+        e.preventDefault(); cancelGesture(); return;
       }
-      if(current.gameSync&&current.selectedGameRuntime&&((mod&&e.code==="KeyD")||["Delete","Backspace","ArrowRight","ArrowLeft","ArrowUp","ArrowDown"].includes(e.key))){
+      if (current.gameSync && (runtimeDrag.current || npcDrag.current || nativeDrag.current || selectionStart.current)) cancelGesture();
+      if(current.gameSync&&current.activeTool==="cursor"&&current.selectedGameRuntime&&((mod&&e.code==="KeyD")||["Delete","Backspace","ArrowRight","ArrowLeft","ArrowUp","ArrowDown"].includes(e.key))){
         e.preventDefault();const view=useGamePreviewStore.getState(),scene=view.scene,selection=current.selectedGameRuntime;
         if(!scene||view.status!=="ready"||mod)return;
         const item=runtimeDescriptor(scene,selection);if(!item)return;
@@ -772,7 +788,7 @@ export function CanvasGrid() {
         }
         return;
       }
-      if (current.gameSync && current.selectedGameNpcId &&
+      if (current.gameSync && current.activeTool === "cursor" && current.selectedGameNpcId &&
         ((mod && e.code === "KeyD") || ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key))) {
         e.preventDefault();
         const view = useGamePreviewStore.getState(), scene = view.scene;
@@ -785,7 +801,7 @@ export function CanvasGrid() {
         ]},scene);
         return;
       }
-      if (current.gameSync &&
+      if (current.gameSync && current.activeTool === "cursor" &&
         ((mod && e.code === "KeyD") || ["Delete", "Backspace", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key))) {
         e.preventDefault();
         const preview = useGamePreviewStore.getState(), scene = preview.scene;
@@ -808,13 +824,13 @@ export function CanvasGrid() {
         e.preventDefault();
         useEditorStore.getState().redo();
       } else if (mod && e.code === "KeyD") {
-        const sel = useEditorStore.getState().selectedEntityId;
+        const sel = current.activeTool === "cursor" ? current.selectedEntityId : null;
         if (sel) {
           e.preventDefault();
           useEditorStore.getState().duplicateEntity(sel);
         }
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        const sel = useEditorStore.getState().selectedEntityId;
+        const sel = current.activeTool === "cursor" ? current.selectedEntityId : null;
         if (sel) {
           e.preventDefault();
           useEditorStore.getState().removeEntity(sel);
@@ -823,7 +839,7 @@ export function CanvasGrid() {
         // 선택 엔티티를 iso 방향으로 한 셀 이동. 오른쪽=SE(gx+1) / 위=NE(gy−1) / 왼쪽=NW(gx−1) / 아래=SW(gy+1).
         //   ⚠ 방향키는 e.key 로 판정 — e.code 는 일부 환경/합성이벤트서 빈 문자열. e.key 는 레이아웃 무관 안정.
         const st = useEditorStore.getState();
-        const ent = st.selectedEntityId ? st.entities.find((x) => x.id === st.selectedEntityId) : null;
+        const ent = st.activeTool === "cursor" && st.selectedEntityId ? st.entities.find((x) => x.id === st.selectedEntityId) : null;
         if (ent) {
           e.preventDefault();
           const gx = ent.gx + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0);
@@ -833,14 +849,7 @@ export function CanvasGrid() {
       } else if (!mod) {
         const t = CODE_TO_TOOL[e.code];
         if (t && (!useEditorStore.getState().gameSync || GROUND_TOOLS.has(t))) {
-          const view = useGamePreviewStore.getState();
-          if (current.gameSync) {
-            view.setSelectionMode("objects");
-            if (t === "monster" || t === "portal") { openRuntimePanel(t); return; }
-            if (t === "npc") { openNpcPanel(); return; }
-            if (t === "object") { view.setShowObjects(true); view.setShowScene(true); current.setTool("cursor"); return; }
-          }
-          current.setTool(t);
+          e.preventDefault(); cancelGesture(); activateEditorTool(t);
         }
       }
     };
@@ -853,7 +862,7 @@ export function CanvasGrid() {
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
     };
-  }, []);
+  }, [cancelGesture]);
 
   // 마우스/휠
   useEffect(() => {
@@ -865,8 +874,9 @@ export function CanvasGrid() {
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      if (useWorkspaceSession.getState().loading) return;
+      if (useWorkspaceSession.getState().loading || !e.deltaY) return;
       const p = local(e);
+      cancelGesture();
       runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
       if (mode.current === "moveGameRuntime" || mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
       fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
@@ -898,7 +908,11 @@ export function CanvasGrid() {
         return;
       }
       if (e.button !== 0) return;
+      canvas.focus({ preventScroll: true });
       const tool = st.activeTool;
+      const issue = palettePlacementIssue(tool);
+      setPlacementIssue(issue);
+      if (issue) return;
       if (st.gameSync && !GROUND_TOOLS.has(tool)) return;
       const paintsGround = tool === "brush" || tool === "eraser" || tool === "rect";
       if (st.gameSync && paintsGround && !linkedGroundReady(st.gameSync.baselineId)) return;
@@ -1043,7 +1057,7 @@ export function CanvasGrid() {
         if (tool === "object" && !((tile?.img?.naturalWidth ?? 0) > 0)) {
           alert(
             `"${tile?.name ?? "선택한 타일"}" 은 이미지가 없어 크기를 알 수 없습니다 (RUID 매핑만 불러온 타일).\n` +
-              "스토리지/PNG 로 이미지를 포함해 팔레트에 추가한 뒤 배치하세요.",
+              "MSW 리소스 서버에서 이미지를 불러온 뒤 배치하세요.",
           );
           return;
         }
@@ -1114,6 +1128,7 @@ export function CanvasGrid() {
       st.setHover([gx, gy]);
     };
     const onUp = (e: MouseEvent) => {
+      if (editorShortcutsBlocked({ target: null, isComposing: false, defaultPrevented: false })) { cancelGesture(); return; }
       const st = useEditorStore.getState();
       if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
         mode.current = null; drag.current = null; strokeBefore.current = null;
@@ -1220,7 +1235,7 @@ export function CanvasGrid() {
       canvas.removeEventListener("mouseleave", onLeave);
       canvas.removeEventListener("contextmenu", onContext);
     };
-  }, []);
+  }, [cancelGesture]);
 
   // 캔버스 버퍼/표시 크기 — dims 변경 시에만. (canvas.width 대입은 백버퍼 재할당이라
   // 매 redraw마다 하면 마우스 이동 1회당 버퍼를 새로 만든다 → 분리.)
@@ -1327,7 +1342,12 @@ export function CanvasGrid() {
 
   return (
     <div ref={wrapRef} className="canvas-wrap">
-      <canvas ref={canvasRef} style={{ cursor: comparisonEnabled || (activeTool === "cursor" && selectionMode !== "blocked") ? "grab" : "crosshair" }} />
+      <canvas ref={canvasRef} tabIndex={0} aria-label="맵 편집 캔버스" style={{ cursor: comparisonEnabled || (activeTool === "cursor" && selectionMode !== "blocked") ? "grab" : "crosshair" }} />
+      <CanvasChrome onZoom={(factor) => {
+        cancelGesture(); fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
+        useEditorStore.getState().zoomAt(factor, dims.w / 2, dims.h / 2);
+      }} />
+      {placementIssue && <div className="canvas-placement-notice" role="alert"><span>{placementIssue}</span><button type="button" aria-label="배치 안내 닫기" onClick={() => setPlacementIssue(null)}>×</button></div>}
       {gameSync && comparisonEnabled && <div className="comparison-view-badge" role="status">
         {previewStatus !== "ready" ? "비교 준비 중" : comparisonMode === "original" ? "가져온 원본" : comparisonMode === "edited" ? "현재 수정본" : "현재 수정본 + 변경 강조"} · 보기 전용
       </div>}

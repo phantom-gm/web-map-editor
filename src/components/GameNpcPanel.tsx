@@ -1,3 +1,4 @@
+import { activateEditorTool } from "../lib/editorCommands";
 import { useEffect, useId, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
@@ -64,7 +65,7 @@ export function GameNpcLibrary() {
   }
   return <section className="game-npc-library" aria-label="NPC 목록">
     <div className="palette-head"><strong>NPC</strong>
-      <button onClick={() => { view.setShowNpcs(false); useEditorStore.getState().selectGameNpc(null); useEditorStore.getState().setTool("brush"); }}>바닥 소재</button>
+      <button onClick={() => activateEditorTool("brush")}>바닥 소재</button>
       <button onClick={() => { view.setShowObjects(true); useEditorStore.getState().selectGameNpc(null); useEditorStore.getState().setTool("cursor"); }}>건물·장식</button>
     </div>
     <div className="object-tabs">

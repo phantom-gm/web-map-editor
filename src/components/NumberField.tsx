@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 /**
  * 숫자 입력 필드. 편집 중에는 빈칸/중간값(예 "1." "-")을 그대로 허용하고,
@@ -25,6 +25,7 @@ export function NumberField({
   disabled?: boolean;
   onCommit: (n: number) => void;
 }) {
+  const cancelled = useRef(false);
   const [text, setText] = useState(String(value));
   // 외부(스토어) 값이 바뀌면 입력칸을 동기화 — 렌더 중 보정(effect 불필요).
   const [lastValue, setLastValue] = useState(value);
@@ -34,11 +35,13 @@ export function NumberField({
   }
 
   const commit = () => {
+    if (cancelled.current) { cancelled.current = false; return; }
     const n = float ? parseFloat(text) : parseInt(text, 10);
     let v = Number.isFinite(n) ? n : value; // 빈칸/숫자아님 → 이전 값 유지
     if (min !== undefined) v = Math.max(min, v);
     if (max !== undefined) v = Math.min(max, v);
-    setText(String(v)); // 보정값으로 표시 동기화
+    // 승인된 부모 값이 화면의 기준이다. 거절된 좌표를 입력칸에 남기지 않는다.
+    setText(String(value));
     if (v !== value) onCommit(v);
   };
 
@@ -56,6 +59,10 @@ export function NumberField({
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") {
+          e.preventDefault(); e.stopPropagation(); cancelled.current = true;
+          setText(String(value)); e.currentTarget.blur();
+        }
       }}
     />
   );

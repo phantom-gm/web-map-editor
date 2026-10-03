@@ -4,9 +4,9 @@ import { selectSouthCounts } from "../store/southSelectors";
 
 const TOOL_LABEL: Record<Tool, string> = {
   spawn: "시작점",
-  cursor: "커서",
-  brush: "브러시",
-  rect: "사각",
+  cursor: "선택",
+  brush: "바닥 칠하기",
+  rect: "사각 채우기",
   eraser: "지우개",
   block: "이동불가",
   eyedropper: "스포이드",
@@ -47,7 +47,7 @@ export function StatusBar() {
         맵: {size[0]}×{size[1]}
       </span>
       <span>도구: {TOOL_LABEL[tool]}</span>
-      <span>활성: {activeName}</span>
+      <span className="status-active">활성: {activeName}</span>
       <span>
         셀 {painted} · 이동불가 {blockedCount} · {linked ? `오브젝트 ${preview.scene?.objects?.length ?? 0}` : `엔티티 ${entityCount}`}
       </span>

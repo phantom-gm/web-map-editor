@@ -1,0 +1,125 @@
+
+/* Primary local map workflow. Kept separate from canvas and editing-tool styles. */
+.topbar.workflow-topbar { min-height: 52px; padding: 9px 18px; gap: 18px; background: #101a23; border-bottom: 1px solid #30404e; color: #e9eff5; flex-wrap: wrap; }
+.workflow-brand, .workflow-document, .workflow-topbar-actions { display: flex; align-items: center; gap: 10px; }
+.workflow-brand { flex-shrink: 0; font-size: 15px; letter-spacing: -.3px; }
+.workflow-logo { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #53877b; border-radius: 8px; color: #a2e2c9; font-size: 24px; background: #17372f; }
+.workflow-document { min-width: 0; flex: 1; }
+.workflow-document > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.workflow-document-tag { flex-shrink: 0; font-size: 11px; color: #b4c0cd; border: 1px solid #40515f; padding: 3px 7px; border-radius: 5px; }
+.workflow-document-tag.linked { color: #abdfcb; border-color: #3d6b5e; }
+.workflow-dimensions { color: #92a2b2; font-size: 12px; white-space: nowrap; }
+.workflow-topbar-actions { margin-left: auto; gap: 7px; }
+.workflow-topbar .fm-trigger, .workflow-advanced > summary { color: #cad7e3; background: #1b2935; border: 1px solid #405463; border-radius: 6px; padding: 7px 10px; font-size: 12px; cursor: pointer; }
+.workflow-advanced { position: relative; }
+.workflow-advanced > summary { list-style: none; white-space: nowrap; }
+.workflow-advanced > summary::-webkit-details-marker { display: none; }
+.workflow-advanced > summary::after { content: ' ▾'; color: #91a9bc; }
+.workflow-advanced[open] > summary { background: #293d4c; border-color: #7394ad; }
+.workflow-advanced-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 130; width: 290px; max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; padding: 15px; color: #d5e0eb; background: #192833; border: 1px solid #516577; border-radius: 9px; box-shadow: 0 12px 36px #0007; }
+.workflow-advanced-menu > strong { font-size: 12px; color: #99b0c3; margin-bottom: 3px; }
+.workflow-advanced-menu p { margin: 0; font-size: 12px; line-height: 1.6; }
+.topbar .workflow-advanced-menu label { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.topbar .workflow-advanced-menu input { width: 150px; }
+.workflow-size-fields { display: flex; gap: 12px; }
+.topbar .workflow-size-fields label { gap: 6px; }
+.topbar .workflow-size-fields input.num { width: 61px; }
+.topbar .workflow-advanced-menu button { padding: 8px 10px; text-align: left; }
+.workflow-topbar .filemenu .fm-menu { right: 0; left: auto; min-width: 270px; border-radius: 9px; padding: 7px; z-index: 140; }
+.workflow-file-help { color: #a6bacb; padding: 8px; font-size: 12px; line-height: 1.6; max-width: 250px; }
+.workflow-topbar .filemenu .fm-menu button { padding: 9px 10px; border-radius: 4px; }
+.game-sync-panel.workflow-panel { background: #17232e; color: #dbe6ef; padding: 12px 18px 8px; border-bottom: 1px solid #364757; font-size: 12px; }
+.workflow-steps { display: flex; align-items: stretch; gap: 17px; flex-wrap: wrap; }
+.workflow-step { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.workflow-step-number { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #486070; color: #adc0d0; border-radius: 50%; flex-shrink: 0; font-size: 12px; font-weight: 700; }
+.workflow-step-label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: #a9bed0; }
+.workflow-step-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.workflow-step-content { min-width: 0; }
+.workflow-save-step, .workflow-export-step { padding-left: 17px; border-left: 1px solid #354858; }
+.workflow-save-step { flex: 1; }
+.workflow-button, .workflow-step select, .workflow-step .game-candidate-open { min-height: 36px; border: 1px solid #587184; border-radius: 6px; padding: 7px 12px; font-size: 13px; line-height: 1.3; color: #e4edf4; background: #243847; cursor: pointer; white-space: nowrap; }
+.workflow-step select { min-width: 153px; max-width: 230px; background: #10222d; }
+.workflow-button:hover:not(:disabled), .workflow-step .game-candidate-open:hover:not(:disabled) { background: #334f62; border-color: #9cb8ca; }
+.workflow-open-button { background: #2c6558; border-color: #529c89; color: #e5fff3; font-weight: 650; }
+.workflow-open-button:hover:not(:disabled) { background: #357b67; }
+.workflow-export-button { background: #356e9c; border-color: #73a5c6; color: #fff; font-weight: 650; }
+.workflow-export-button:hover:not(:disabled) { background: #3b83b6; }
+.workflow-panel button:disabled, .workflow-panel select:disabled { opacity: .45; cursor: default; }
+.workflow-save-status { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #a9bfcc; font-size: 11px; max-width: 205px; line-height: 1.5; }
+.workflow-save-status time { color: #90a3b2; font-size: 10px; }
+.workflow-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.workflow-save-status[data-state='saved'] { color: #9ed4b5; }
+.workflow-save-status[data-state='dirty'], .workflow-save-status[data-state='saving'] { color: #e4c580; }
+.workflow-save-status[data-state='error'] { color: #ffb4ac; font-weight: 650; }
+.workflow-context-row { margin-top: 9px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.workflow-current-map { color: #9cb5c7; }
+.workflow-current-map strong { color: #e3eff7; margin-left: 4px; }
+.workflow-context-row .game-comparison-controls { padding: 0; }
+.workflow-context-row .game-comparison-controls button { font-size: 12px; padding: 5px 9px; }
+.workflow-output-scope { color: #9fb0c0; margin-left: auto; font-size: 11px; }
+.workflow-save-failure { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border: 1px solid #a66a58; border-radius: 7px; padding: 10px 12px; margin-top: 10px; background: #3a2825; color: #ffd2c7; }
+.workflow-save-failure > div { flex: 1; min-width: 240px; }
+.workflow-save-failure p { margin: 4px 0 0; white-space: pre-wrap; font-size: 12px; }
+.workflow-text-button { color: #e3c4be; border: 0; background: transparent; text-decoration: underline; padding: 7px 4px; font-size: 12px; cursor: pointer; }
+.workflow-confirm { border: 1px solid #ae9254; padding: 10px 12px; border-radius: 7px; margin-top: 10px; background: #353124; color: #ead8b0; }
+.workflow-confirm p { margin: 0 0 8px; }
+.workflow-confirm button { margin-right: 7px; }
+.workflow-image-warning { margin-top: 8px; color: #e6cb8c; }
+.workflow-result-message { color: #addbc1; margin-top: 8px; }
+.workflow-output { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border: 1px solid #426f5b; border-radius: 7px; background: #19352c; }
+.workflow-output > strong { color: #c0eed4; }
+.workflow-output > details { min-width: 0; }
+.workflow-output > details[open] { flex-basis: 100%; }
+.workflow-output summary { cursor: pointer; color: #a6c4b5; }
+.workflow-output code { display: block; margin-top: 7px; font-size: 11px; }
+.game-sync-details.workflow-diagnostics { color: #9fb4c5; margin-top: 8px; }
+.workflow-diagnostics > summary { width: fit-content; font-size: 11px; }
+.workflow-diagnostics[open] { border-top: 1px solid #344957; padding-top: 8px; }
+.workflow-diagnostics .game-sync-view { gap: 12px; padding: 6px 0; }
+.workflow-diagnostics .workflow-counts { color: #b0c8bb; padding: 8px 10px; background: #11212a; border-radius: 5px; line-height: 1.7; }
+.workflow-source-actions { display: flex; align-items: center; gap: 12px; padding-top: 4px; }
+.workflow-diagnostics details { margin-top: 8px; }
+.workflow-diagnostics summary { cursor: pointer; }
+.workflow-panel :is(button, select):focus-visible, .workflow-topbar :is(button, summary, input):focus-visible { outline: 2px solid #9bd6f8; outline-offset: 3px; }
+@media (max-width: 1150px) {
+  .workflow-steps { gap: 12px; }
+  .workflow-save-step, .workflow-export-step { padding-left: 12px; }
+  .workflow-save-status { max-width: 150px; }
+  .workflow-step select { min-width: 130px; }
+  .workflow-step-number { display: none; }
+}
+@media (max-width: 880px) {
+  .topbar.workflow-topbar, .game-sync-panel.workflow-panel { padding-left: 10px; padding-right: 10px; }
+  .workflow-save-step { flex: 0 1 auto; }
+  .workflow-export-step { border-left: 0; padding-left: 0; }
+  .workflow-output-scope { flex-basis: 100%; margin-left: 0; }
+  .workflow-document-tag { display: none; }
+}
+@media (max-width: 520px) {
+  .workflow-topbar { gap: 10px; }
+  .workflow-brand { font-size: 13px; }
+  .workflow-document { flex-basis: 45%; }
+  .workflow-topbar-actions { margin-left: 0; }
+  .workflow-save-step { border-left: 0; padding-left: 0; }
+  .workflow-save-status { max-width: none; }
+  .workflow-step select { max-width: 180px; }
+}
+
+/* Keep the everyday workflow near 100px; diagnostics open above the canvas. */
+.game-sync-panel.workflow-panel { position: relative; z-index: 55; overflow: visible; max-height: none; padding-top: 9px; padding-bottom: 6px; }
+.workflow-context-row { margin-top: 6px; gap: 10px; min-height: 25px; }
+.workflow-context-row .workflow-result-message { display: inline-flex; align-items: center; gap: 5px; margin: 0; font-size: 11px; }
+.workflow-result-message > button { padding: 0 4px; border: 0; background: transparent; color: #aacbbd; cursor: pointer; font-size: 15px; }
+.game-sync-details.workflow-diagnostics { position: relative; margin: 0; }
+.workflow-diagnostics > summary { padding: 5px 8px; border: 1px solid #415a6a; border-radius: 5px; line-height: 1.2; list-style: none; white-space: nowrap; }
+.workflow-diagnostics > summary::-webkit-details-marker { display: none; }
+.workflow-diagnostics > summary::after { content: ' ▾'; color: #a2b8c9; }
+.workflow-diagnostics[open] { border: 0; padding: 0; }
+.workflow-diagnostics[open] > summary { background: #304758; border-color: #7ca0b9; }
+.workflow-diagnostics-popover { position: absolute; z-index: 150; top: calc(100% + 7px); left: 0; box-sizing: border-box; width: min(680px, calc(100vw - 40px)); max-height: min(460px, 65vh); overflow: auto; padding: 14px 16px; border: 1px solid #536d81; border-radius: 9px; background: #1b2a36; box-shadow: 0 14px 38px #0008; }
+.workflow-diagnostics-popover .game-sync-view { margin-top: 0; }
+@media (max-width: 880px) {
+  .workflow-context-row .workflow-output-scope { flex-basis: auto; margin-left: auto; }
+  .workflow-diagnostics { position: static!important; }
+  .workflow-diagnostics-popover { top: 100%; left: 10px; width: calc(100vw - 20px); }
+}

@@ -1,9 +1,8 @@
-import { openRuntimePanel } from "./GameRuntimePanel";
+import { activateEditorTool } from "../lib/editorCommands";
+import { useWorkspaceSession } from "../lib/gameWorkspace";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import type { ReactNode } from "react";
 import { useEditorStore, type Tool, type VisualLayer } from "../store/editorStore";
-import { openNpcPanel } from "./GameNpcPanel";
-import { ENTITY_KINDS, ENTITY_META } from "../types/entity";
 import { TOOL_SHORTCUTS } from "../lib/shortcuts";
 
 // 보기 토글 — 편집 오버레이 표시 on/off
@@ -78,91 +77,72 @@ const TOOLS: Array<{ id: Tool; label: string }> = [
 export function Toolbar() {
   const gameSync = useEditorStore(s => s.gameSync);
   const preview = useGamePreviewStore();
+  const loading = useWorkspaceSession(s => s.loading);
   const canPaint = !gameSync || (preview.baselineId === gameSync.baselineId && preview.status === "ready" && preview.scene?.report?.groundEditingSupported === true);
-  const tool = useEditorStore((s) => s.activeTool);
-  const setTool = useEditorStore((s) => s.setTool);
-  const clearAll = useEditorStore((s) => s.clearAll);
-  const undo = useEditorStore((s) => s.undo);
-  const redo = useEditorStore((s) => s.redo);
-  const canUndo = useEditorStore((s) => s.undoStack.length > 0);
-  const canRedo = useEditorStore((s) => s.redoStack.length > 0);
-  const painted = useEditorStore((s) => s.ground.size);
-  const blockedCount = useEditorStore((s) => s.blocked.size);
-  const visual = useEditorStore((s) => s.visual);
-  const toggleVisual = useEditorStore((s) => s.toggleVisual);
-
-  return (
-    <div className="toolbar">
-      {TOOLS.map((t) => {
-        const label = withShortcut(t.label, t.id);
-        return (
-          <button
-            key={t.id}
-            className={"tool-btn" + (tool === t.id ? " sel" : "")}
-            data-label={label}
-            aria-label={label}
-            aria-pressed={tool === t.id}
-            disabled={preview.comparisonEnabled || (!!gameSync && !canPaint && t.id !== "cursor" && t.id !== "block")}
-            onClick={() => {
-              preview.setSelectionMode("objects"); preview.setPlacementNpc(null); preview.setRuntimePlacement(null);
-              if (gameSync && t.id === "block") { preview.setShowOverlays(true); if (!visual.blocked) toggleVisual("blocked"); }
-              setTool(t.id);
-            }}
-          >
-            {ICONS[t.id]}
-          </button>
-        );
-      })}
-      <span className="sep" />
-      {gameSync && <button className={"tool-btn ent-btn" + (preview.showObjects ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="건물·장식 오브젝트" data-label="건물·장식 오브젝트" onClick={() => { preview.setSelectionMode("objects"); preview.setShowObjects(true); preview.setShowScene(true); useEditorStore.getState().selectGameNpc(null); setTool("cursor"); }}>O</button>}
-      {gameSync && <button className={"tool-btn ent-btn" + (preview.showNpcs ? " sel" : "")} disabled={preview.comparisonEnabled} aria-label="NPC 목록·편집" data-label="NPC 목록·편집" onClick={openNpcPanel}>N</button>}
-      {gameSync && (["monster","portal","spawn"] as const).map((kind,i)=><button key={kind} className={"tool-btn ent-btn"+(preview.runtimePanel===kind?" sel":"")} disabled={preview.comparisonEnabled} aria-label={["몬스터 스포너 편집","포털 편집","시작점 편집"][i]} data-label={["몬스터 스포너 편집","포털 편집","시작점 편집"][i]} onClick={()=>openRuntimePanel(kind)}>{["M","P","S"][i]}</button>)}
-      {!gameSync && ENTITY_KINDS.map((k) => {
-        const meta = ENTITY_META[k];
-        const label = withShortcut(`${meta.label} 배치`, k);
-        return (
-          <button
-            key={k}
-            className={"tool-btn ent-btn" + (tool === k ? " sel" : "")}
-            data-label={label}
-            aria-label={label}
-            aria-pressed={tool === k}
-            onClick={() => setTool(k)}
-          >
-            <span className="ent-badge" style={{ background: meta.color }}>
-              {meta.marker}
-            </span>
-          </button>
-        );
-      })}
-      <span className="sep" />
-      <span className="view-group" aria-label="보기 토글">
-        {VIEW_TOGGLES.filter(v => !gameSync || v.key !== "footprint").map((v) => (
-          <button
-            key={v.key}
-            className={"view-btn" + (visual[v.key] ? " on" : "")}
-            aria-pressed={visual[v.key]}
-            title={`${v.label} 표시 ${visual[v.key] ? "켜짐 — 클릭하여 숨기기" : "꺼짐 — 클릭하여 표시"}`}
-            disabled={!!gameSync && !preview.showOverlays}
-            onClick={() => toggleVisual(v.key)}
-          >
-            {visual[v.key] ? "👁" : "🚫"} {v.label}
-          </button>
-        ))}
-      </span>
-      <span className="sep" />
-      <button onClick={undo} disabled={!canUndo || preview.comparisonEnabled} title="실행취소 (⌘/Ctrl+Z)">
-        ↶ 취소
-      </button>
-      <button onClick={redo} disabled={!canRedo || preview.comparisonEnabled} title="다시실행 (⌘/Ctrl+Shift+Z)">
-        ↷ 다시
-      </button>
-      <button onClick={clearAll} disabled={preview.comparisonEnabled || !canPaint || (painted === 0 && blockedCount === 0)}>
-        {gameSync ? "바닥 지우기" : "전체 지우기"}
-      </button>
-      <span className="toolbar-info">
-        {preview.comparisonEnabled && "현재 작업 · "}칠해진 셀: {painted} · 이동불가: {blockedCount}
-      </span>
+  const canBlock = !gameSync || (preview.baselineId === gameSync.baselineId && preview.status === "ready" && preview.scene?.report?.walkEditingSupported === true);
+  const tool = useEditorStore(s => s.activeTool);
+  const canUndo = useEditorStore(s => s.undoStack.length > 0);
+  const canRedo = useEditorStore(s => s.redoStack.length > 0);
+  const painted = useEditorStore(s => s.ground.size);
+  const blockedCount = useEditorStore(s => s.blocked.size);
+  const entityCount = useEditorStore(s => s.entities.length);
+  const visual = useEditorStore(s => s.visual);
+  const locked = loading || preview.comparisonEnabled;
+  const panels: Array<{id: Tool; name: string; marker: string; active: boolean}> = [
+    {id: "object", name: "건물·장식", marker: "O", active: preview.showObjects},
+    {id: "npc", name: "NPC", marker: "N", active: preview.showNpcs},
+    {id: "monster", name: "몬스터", marker: "M", active: preview.runtimePanel === "monster"},
+    {id: "portal", name: "포털", marker: "P", active: preview.runtimePanel === "portal"},
+    {id: "spawn", name: "시작점", marker: "S", active: preview.runtimePanel === "spawn"},
+  ];
+  const toolNames: Partial<Record<Tool, string>> = { cursor: "선택", brush: "바닥", rect: "사각 채우기", eraser: "지우개", block: "이동불가", eyedropper: "스포이드" };
+  const clear = () => {
+    const description = gameSync ? "바닥 " + painted + "칸" : "바닥 " + painted + "칸, 이동불가 " + blockedCount + "칸, 배치 " + entityCount + "개";
+    if (window.confirm(description + "를 모두 지울까요?\n실행 후 Ctrl+Z로 되돌릴 수 있습니다.")) useEditorStore.getState().clearAll();
+  };
+  return <div className="toolbar" role="toolbar" aria-label="맵 편집 도구">
+    <div className="tool-group">
+      <span className="tool-group-label">편집</span>
+      {TOOLS.map(t => <button key={t.id} className={"tool-btn" + (tool === t.id ? " sel" : "")}
+        title={withShortcut(t.label, t.id)} aria-label={withShortcut(toolNames[t.id] ?? t.label, t.id)}
+        aria-pressed={tool === t.id}
+        disabled={locked || (t.id === "block" ? !canBlock : t.id !== "cursor" && !canPaint)}
+        onClick={() => activateEditorTool(t.id)}>
+        {ICONS[t.id]}<span>{toolNames[t.id]}</span>
+        {TOOL_SHORTCUTS[t.id] && <kbd>{TOOL_SHORTCUTS[t.id]}</kbd>}
+      </button>)}
     </div>
-  );
+    <div className="tool-group placement-tools" aria-label="배치 종류">
+      <span className="tool-group-label">배치</span>
+      {(gameSync ? panels : panels.filter(p => p.id !== "spawn")).map(p => <button key={p.id}
+        className={"tool-btn ent-btn" + ((gameSync ? p.active : tool === p.id) ? " sel" : "")}
+        aria-label={p.name + (gameSync ? " 목록·편집" : " 배치")} aria-pressed={gameSync ? p.active : tool === p.id}
+        title={withShortcut(p.name, p.id)} disabled={locked} onClick={() => activateEditorTool(p.id)}>
+        <span className={"kind-marker kind-" + p.id}>{p.marker}</span><span>{p.name}</span>
+      </button>)}
+    </div>
+    <div className="tool-group history-tools">
+      <button onClick={() => useEditorStore.getState().undo()} disabled={!canUndo || locked} title="실행 취소 (Ctrl+Z)" aria-label="실행 취소">↶ <span>실행 취소</span></button>
+      <button onClick={() => useEditorStore.getState().redo()} disabled={!canRedo || locked} title="다시 실행 (Ctrl+Shift+Z)" aria-label="다시 실행">↷ <span>다시 실행</span></button>
+    </div>
+    <details className="toolbar-options">
+      <summary>보기·설정 <span aria-hidden="true">⌄</span></summary>
+      <div className="toolbar-options-popover">
+        <strong>편집 표시</strong>
+        {VIEW_TOGGLES.filter(v => !gameSync || v.key !== "footprint").map(v => <label key={v.key}>
+          <input type="checkbox" checked={visual[v.key] && (!gameSync || preview.showOverlays)} onChange={() => {
+            if (gameSync && !preview.showOverlays) {
+              preview.setShowOverlays(true);
+              if (!visual[v.key]) useEditorStore.getState().toggleVisual(v.key);
+            } else useEditorStore.getState().toggleVisual(v.key);
+          }} />{v.label}
+        </label>)}
+        <hr /><strong>일괄 편집</strong>
+        <button className="danger-action" disabled={locked || !canPaint || (gameSync ? painted === 0 : painted + blockedCount + entityCount === 0)} onClick={clear}>
+          {gameSync ? "바닥 전체 지우기…" : "모든 배치 지우기…"}
+        </button>
+        <small>개별 삭제는 지우개 또는 대상을 선택한 뒤 Delete</small>
+      </div>
+    </details>
+  </div>;
 }

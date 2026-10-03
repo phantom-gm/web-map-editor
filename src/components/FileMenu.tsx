@@ -12,6 +12,7 @@ export function FileMenu() {
   const [fileName, setFileName] = useState<string | null>(currentFileName());
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const doSaveRef = useRef<((forceNew: boolean) => Promise<void>) | null>(null);
   const mapName = useEditorStore((s) => s.mapName);
   const linked = useEditorStore(s => !!s.gameSync);
@@ -52,7 +53,7 @@ export function FileMenu() {
       return;
     }
     if (!isProjectFile(parsed)) {
-      alert("프로젝트 파일이 아닙니다 (web-map-editor-project). 게임 blueprint 는 상단 Import 를 쓰세요.");
+      alert("프로젝트 파일이 아닙니다 (web-map-editor-project). 게임 blueprint 는 고급 도구의 Blueprint 가져오기를 사용하세요.");
       return;
     }
     try {
@@ -142,21 +143,25 @@ export function FileMenu() {
     } finally { if (token !== undefined) finishProjectLoad(token); }
   };
   return (
-    <div className="filemenu" ref={rootRef}>
+    <div className="filemenu" ref={rootRef} onKeyDown={event => {
+      if (event.key === "Escape" && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus(); }
+    }}>
       <button
+        ref={triggerRef} aria-expanded={open} aria-controls="project-file-menu"
         className={open ? "fm-trigger open" : "fm-trigger"}
         disabled={loading}
         onClick={() => setOpen((v) => !v)}
         title={(dirty ? "● 미저장 변경 있음 — " : "") + (fileName ? `현재 파일: ${fileName}` : "프로젝트 파일 (.json)")}
       >
-        파일{dirty && <span className="fm-dirty">●</span>} ▾
+        파일·백업{dirty && <span className="fm-dirty" aria-label="미저장 변경 있음">●</span>} ▾
       </button>
       {open && (
-        <div className="fm-menu">
-          <button onClick={doNew}>새로 만들기</button>
+        <div className="fm-menu" id="project-file-menu" aria-label="프로젝트 파일·백업">
+          <div className="workflow-file-help">{linked ? "작업은 이 PC에 자동 저장됩니다. 파일 사본으로 별도 보관할 수 있습니다." : "일반 프로젝트를 파일로 열거나 저장합니다."}</div>
+          <button onClick={doNew}>새 빈 프로젝트…</button>
           <button onClick={doOpen}>파일 사본 열기…</button>
           <button onClick={() => doSave(false)}>{linked ? "작업 저장" : "저장"} (⌘/Ctrl+S)</button>
-          <button onClick={() => doSave(true)}>{linked ? "파일 사본 저장…" : "다른 이름으로 저장…"}</button>
+          <button onClick={() => doSave(true)}>{linked ? "백업 사본 저장…" : "다른 이름으로 저장…"}</button>
           {fileName && <div className="fm-current" title={fileName}>📄 {fileName}</div>}
         </div>
       )}

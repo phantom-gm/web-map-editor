@@ -1,3 +1,4 @@
+import { activateEditorTool } from "../lib/editorCommands";
 import { useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
@@ -46,7 +47,7 @@ export function GameObjectLibrary() {
   const ready = current && preview.status === "ready" && !loading;
   return <section className="game-object-library" aria-label="게임 오브젝트 목록">
     <div className="palette-head"><strong>건물·장식·오브젝트 바닥</strong>
-      <button onClick={() => { preview.setShowObjects(false); preview.setSelectionMode("objects"); useEditorStore.getState().setTool("brush"); }}>바닥 소재</button>
+      <button onClick={() => activateEditorTool("brush")}>바닥 소재</button>
     </div>
     <div className="object-tabs">
       <button aria-pressed={!adding} onClick={() => setAdding(false)}>배치된 오브젝트 {objects.length}</button>

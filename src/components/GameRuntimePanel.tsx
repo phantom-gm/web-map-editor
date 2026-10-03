@@ -1,3 +1,4 @@
+import { activateEditorTool } from "../lib/editorCommands";
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
@@ -64,7 +65,7 @@ export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {
   }
   const choose=(selected:RuntimeSelection)=>{if(!scene)return;view.setRuntimePlacement(null);useEditorStore.getState().setTool("cursor");useEditorStore.getState().selectGameRuntime(selected);focusRuntime(selected,scene);};
   return <section className="game-runtime-library" aria-label={names[kind]+" 목록"}>
-    <div className="palette-head"><strong>{names[kind]}</strong><button onClick={()=>{view.setRuntimePanel(null);useEditorStore.getState().clearGameSelection();useEditorStore.getState().setTool("brush");}}>바닥 소재</button></div>
+    <div className="palette-head"><strong>{names[kind]}</strong><button onClick={()=>activateEditorTool("brush")}>바닥 소재</button></div>
     <div className="object-tabs">{(["monster","portal","spawn"] as const).map(k=><button key={k} aria-pressed={k===kind} onClick={()=>openRuntimePanel(k)}>{names[k]}</button>)}</div>
     {kind!=="spawn"&&<div className="object-tabs"><button aria-pressed={!adding} onClick={()=>setAdding(false)}>현재 배치</button><button aria-pressed={adding} onClick={()=>setAdding(true)}>{names[kind]} 추가</button></div>}
     {kind!=="spawn"&&<input className="object-search" aria-label={names[kind]+" 검색"} value={search} placeholder="이름·번호·맵 검색" onChange={e=>setSearch(e.target.value)}/>}
