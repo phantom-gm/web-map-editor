@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, validateStorageRoot, _test } = require('./core.cjs');
+const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -702,5 +702,131 @@ test('baseline and comparison previews recheck sources after native scene genera
       assert.throws(() => action === 'baseline' ? previewBaselineProject(compareIdentity(project), f.options) : compareEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
       assert.equal(changed, true); assert.equal(fs.existsSync(f.options.outputRoot), false);
     } finally { f.MapBuilder.prototype.build = build; }
+  }
+});
+
+
+const reviewInput = (output, project) => ({ candidateId: output.candidateId, mapName: project.map, baselineId: project.gameSync.baselineId });
+test('candidate review manifest records exact files and hashes while review is strictly read-only', fixtureOptions, t => {
+  const f = objectFixture(t), sourceBefore = fileTreeHashes(f.root);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const output = exportEditedProject(project, f.options);
+  const manifest = JSON.parse(fs.readFileSync(path.join(output.candidateDir, 'review-manifest.json'), 'utf8'));
+  assert.match(output.candidateId, /^[a-f0-9-]{36}$/); assert.equal(output.report.candidateId, output.candidateId);
+  assert.equal(manifest.candidateId, output.candidateId); assert.equal(manifest.createdAt, output.report.createdAt);
+  assert.deepEqual(manifest.applyFiles.map(f => f.path), output.report.applyFiles);
+  assert.equal(manifest.referenceFiles.length, 3); assert.ok(manifest.referenceFiles.every(f => f.path.startsWith('reference/')));
+  for (const item of [...manifest.referenceFiles, manifest.project, manifest.report]) {
+    const bytes = fs.readFileSync(path.join(output.candidateDir, item.path));
+    assert.equal(item.bytes, bytes.length); assert.equal(item.sha256, crypto.createHash('sha256').update(bytes).digest('hex'));
+  }
+  const before = fileTreeHashes(f.temp), review = readWithoutWrites(() => reviewCandidate(reviewInput(output, project), f.options));
+  assert.deepEqual(fileTreeHashes(f.temp), before); assert.deepEqual(fileTreeHashes(f.root), sourceBefore);
+  assert.equal(review.status, 'ready'); assert.deepEqual(review.issues, []); assert.ok(review.checks.every(c => c.passed === true && c.detail === undefined));
+  assert.equal(review.files.length, 1); assert.equal(review.files[0].path, 'map/fixture.map');
+  assert.equal(review.files[0].sourceMatches, true); assert.equal(review.files[0].candidateMatches, true);
+  assert.equal(review.files[0].sourceSha256, review.files[0].candidateSha256);
+  assert.ok(Number.isFinite(Date.parse(review.checkedAt))); assert.equal(review.gameApplied, false); assert.equal(review.runtimeVerified, false);
+  assert.deepEqual(review.summary, { groundChangedCells: 0, groundRepackedCells: 0, objectsMoved: 0, objectsAdded: 0, objectsRemoved: 0, blockedAdded: 0, blockedRemoved: 0, walkChangedCells: 0 });
+});
+test('mixed candidate review summarizes material, native objects and explicit blocked edits', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const scene = previewEditedProject(project, f.options), object = scene.objects.find(o => o.name === 'Obj_editable'), floor = scene.objects.find(o => o.name === 'Obj_floor');
+  project.ground.find(c => c[0] === 1 && c[1] === 1)[2] = project.palette.findIndex(p => p.ruid === tile('물').ruid);
+  project.gameObjectEdits = objectPatch([{ entityId: object.entityId, position: [8.28, 7.36] }], [floor.entityId], [{ entityId: crypto.randomUUID(), prototypeId: object.entityId, position: [5.72, 7.36] }]);
+  project.blocked = [[2, 2], [4, 4]];
+  const output = exportEditedProject(project, f.options), review = reviewCandidate(reviewInput(output, project), f.options);
+  assert.equal(review.status, 'ready'); assert.deepEqual(review.files.map(f => f.path), ['map/fixture.map', f.walkRelative]);
+  assert.deepEqual(review.summary, { groundChangedCells: 1, groundRepackedCells: 15, objectsMoved: 1, objectsAdded: 1, objectsRemoved: 1, blockedAdded: 1, blockedRemoved: 1, walkChangedCells: 2 });
+  assert.ok(review.files.every(file => file.sourceMatches && file.candidateMatches && file.sourceSha256 !== file.candidateSha256));
+});
+test('candidate review blocks modified or missing map, walk, editor project and report files', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' }); project.blocked.push([4, 4]);
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  for (const relative of ['map/fixture.map', f.walkRelative, 'editor-project.json', 'report.json']) {
+    const file = path.join(output.candidateDir, relative), original = fs.readFileSync(file);
+    for (const operation of ['modify', 'remove']) {
+      if (operation === 'modify') fs.appendFileSync(file, ' '); else fs.unlinkSync(file);
+      const review = readWithoutWrites(() => reviewCandidate(input, f.options));
+      assert.equal(review.status, 'blocked', relative + ' ' + operation); assert.ok(review.issues.some(issue => issue.includes(relative)));
+      if (relative === 'map/fixture.map' || relative === f.walkRelative) {
+        const row = review.files.find(item => item.path === relative); assert.equal(row.candidateMatches, false);
+        assert.equal(row.currentCandidateSha256 === null, operation === 'remove');
+      }
+      fs.writeFileSync(file, original);
+    }
+  }
+  assert.equal(reviewCandidate(input, f.options).status, 'ready');
+});
+test('review blocks any applied DT_Walk source change but permits unrelated current reference CSV edits', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' }); project.blocked.push([4, 4]);
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  fs.appendFileSync(path.join(f.root, f.csvRelative), 'p-new,elsewhere,1,2');
+  assert.equal(reviewCandidate(input, f.options).status, 'ready');
+  fs.appendFileSync(f.walkPath, '\nother-map,1,2');
+  const review = reviewCandidate(input, f.options);
+  assert.equal(review.status, 'blocked'); assert.equal(review.files.find(file => file.path === f.walkRelative).sourceMatches, false);
+  assert.ok(review.issues.some(issue => issue.includes('DT_Walk')));
+  const noWalk = { ...project, blocked: [[2, 2], [3, 3]] };
+  const withoutWalk = exportEditedProject(noWalk, f.options);
+  fs.appendFileSync(f.walkPath, '\nother-map,4,5');
+  assert.equal(reviewCandidate(reviewInput(withoutWalk, noWalk), f.options).status, 'ready');
+});
+test('review strictly checks current native map, project, catalog, constants and builder hashes', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  for (const relative of ['map/fixture.map', 'map/fixture.json', 'scripts/storage-inventory.lock.json', 'scripts/build_map.cjs', '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs']) {
+    const file = path.join(f.root, relative), original = fs.readFileSync(file); fs.appendFileSync(file, ' ');
+    const review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked', relative);
+    assert.ok(review.issues.some(issue => issue.includes(relative))); fs.writeFileSync(file, original);
+  }
+});
+test('legacy, malformed and mismatched candidate metadata fail closed with a rebake instruction', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  const file = path.join(output.candidateDir, 'review-manifest.json'), original = fs.readFileSync(file);
+  fs.unlinkSync(file); let review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked'); assert.ok(review.issues.some(s => s.includes('다시 구워')));
+  for (const bytes of ['{broken', 'null', JSON.stringify({ ...JSON.parse(original), mapName: 'elsewhere' })]) {
+    fs.writeFileSync(file, bytes); review = reviewCandidate(input, f.options);
+    assert.equal(review.status, 'blocked'); assert.deepEqual(review.files, []); assert.ok(review.checks.every(c => typeof c.passed === 'boolean'));
+    assert.ok(review.issues.some(s => s.includes('다시 구워')));
+  }
+  fs.writeFileSync(file, original);
+  const record = JSON.parse(original); record.applyFiles[0].path = 'reference/RootDesk/MyDesk/DataSet/world/DT_Portal.csv';
+  fs.writeFileSync(file, JSON.stringify(record)); assert.equal(reviewCandidate(input, f.options).status, 'blocked');
+  fs.writeFileSync(file, original);
+  const corruptSource = JSON.parse(original); corruptSource.applyFiles[0].sourceSha256 = '0'.repeat(64);
+  fs.writeFileSync(file, JSON.stringify(corruptSource)); review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked');
+  assert.ok(review.checks.some(c => c.label.includes('기록 정합성') && c.passed === false));
+});
+test('candidate review rejects unsafe IDs and linked candidate folders or inner map folders', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  assert.throws(() => reviewCandidate({ ...input, candidateId: '../map' }, f.options), e => e.code === 'INVALID_CANDIDATE');
+  assert.throws(() => reviewCandidate({ ...input, mapName: '../map' }, f.options), e => e.code === 'INVALID_MAP');
+  assert.throws(() => reviewCandidate(input, { ...f.options, outputRoot: f.root }), e => e.code === 'GAME_WRITE_FORBIDDEN');
+  const mapDir = path.join(output.candidateDir, 'map'); fs.renameSync(mapDir, mapDir + '-saved');
+  fs.symlinkSync(path.join(f.root, 'map'), mapDir, 'junction');
+  assert.throws(() => reviewCandidate(input, f.options), e => e.code === 'UNSAFE_CANDIDATE');
+  const next = exportEditedProject(project, f.options), nextInput = reviewInput(next, project);
+  fs.renameSync(next.candidateDir, next.candidateDir + '-saved'); fs.symlinkSync(f.root, next.candidateDir, 'junction');
+  assert.throws(() => reviewCandidate(nextInput, f.options), e => e.code === 'UNSAFE_CANDIDATE');
+});
+test('review catches baseline or reference snapshot tampering and changes during the review', fixtureOptions, t => {
+  const f = objectFixture(t), imported = createSyncProject({ ...f.options, mapName: 'fixture' }), { project } = imported;
+  project.blocked.push([4, 4]); const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  const baselineProject = fs.readFileSync(imported.projectPath); fs.appendFileSync(imported.projectPath, ' ');
+  assert.equal(reviewCandidate(input, f.options).status, 'blocked'); fs.writeFileSync(imported.projectPath, baselineProject);
+  const reference = path.join(output.candidateDir, 'reference', f.csvRelative), originalReference = fs.readFileSync(reference);
+  fs.appendFileSync(reference, ' '); assert.equal(reviewCandidate(input, f.options).status, 'blocked'); fs.writeFileSync(reference, originalReference);
+  for (const changedPath of [f.walkPath, path.join(output.candidateDir, 'map/fixture.map')]) {
+    const original = fs.readFileSync(changedPath), read = fs.readFileSync; let changed = false;
+    fs.readFileSync = function(file, ...args) {
+      const bytes = read.call(fs, file, ...args);
+      if (!changed && path.resolve(String(file)) === path.resolve(reference)) { changed = true; fs.appendFileSync(changedPath, ' '); }
+      return bytes;
+    };
+    try { const review = reviewCandidate(input, f.options); assert.equal(changed, true); assert.equal(review.status, 'blocked'); assert.ok(review.issues.some(i => i.includes('검토 도중'))); }
+    finally { fs.readFileSync = read; fs.writeFileSync(changedPath, original); }
   }
 });

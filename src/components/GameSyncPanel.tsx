@@ -1,4 +1,5 @@
 import type { GameSyncReport } from "../lib/gameSync";
+import { GameCandidatePanel } from "./GameCandidatePanel";
 import { useEffect, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
@@ -14,6 +15,7 @@ interface SyncResult extends WorkspaceReceipt {
   project?: ProjectFileInput;
   report?: SyncReport;
   candidateDir?: string;
+  candidateId?: string;
   resumed?: boolean;
 }
 import { GameComparisonPanel } from "./GameComparisonPanel";
@@ -26,6 +28,7 @@ export function GameSyncPanel() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [candidate, setCandidate] = useState("");
+  const [candidateId, setCandidateId] = useState("");
   const [report, setReport] = useState<SyncReport | null>(null);
   const [resultFor, setResultFor] = useState("");
   const gameSync = useEditorStore(s => s.gameSync);
@@ -60,7 +63,7 @@ export function GameSyncPanel() {
   // Hide a previous candidate as soon as another stroke changes the current output.
   if (lastGroundVer !== contentVersion) {
     setLastGroundVer(contentVersion);
-    setCandidate(""); setReport(null); setMessage("");
+    setCandidate(""); setCandidateId(""); setReport(null); setMessage("");
   }
 
   const openMap = async (fresh = false, discardUnsaved = false) => {
@@ -90,7 +93,7 @@ export function GameSyncPanel() {
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   };
   const bake = async () => {
-    setBusy(true); setError(""); setCandidate(""); setMessage("");
+    setBusy(true); setError(""); setCandidate(""); setCandidateId(""); setMessage("");
     const project = useEditorStore.getState().exportProject();
     const captured = JSON.stringify(project);
     try {
@@ -101,6 +104,7 @@ export function GameSyncPanel() {
         return;
       }
       setReport(result.report ?? null); setCandidate(result.candidateDir ?? "");
+      setCandidateId(result.candidateId ?? "");
       setResultFor(project.gameSync?.baselineId ?? "");
       setMessage("후보 맵을 만들었습니다. 게임에 적용하기 전 검토할 출력물입니다.");
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
@@ -164,7 +168,11 @@ export function GameSyncPanel() {
       {(error || session.error) && <div className="game-sync-error" role="alert">{error || session.error}</div>}
       {currentPreview && preview.error && <div className="game-sync-error" role="alert">{preview.error}</div>}
       {message && resultFor === gameSync?.baselineId && <div className="game-sync-message">{message}</div>}
-      {candidate && resultFor === gameSync?.baselineId && <div className="game-sync-output">출력 폴더: <code>{candidate}</code></div>}
+      {candidate && resultFor === gameSync?.baselineId && <div className="game-sync-output">
+        <span>출력 폴더: <code>{candidate}</code></span>
+        {candidateId && gameSync && !session.loading && <GameCandidatePanel key={candidateId}
+          candidateId={candidateId} mapName={gameSync.mapName} baselineId={gameSync.baselineId} />}
+      </div>}
     </section>
   );
 }

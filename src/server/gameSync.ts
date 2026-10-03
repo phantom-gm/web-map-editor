@@ -39,9 +39,10 @@ interface SyncCore {
   previewEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
   previewBaselineProject(input: { mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
   compareEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
+  reviewCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
   createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string }): { project: ProjectFile; report: SyncReport };
   exportEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): {
-    candidateDir: string; mapPath: string; reportPath: string; report: SyncReport;
+    candidateId: string; candidateDir: string; mapPath: string; reportPath: string; report: SyncReport;
   };
 }
 
@@ -63,7 +64,7 @@ export function listGameMaps(): string[] {
 
 export async function runGameSync(body: unknown) {
   if (!body || typeof body !== "object") throw new GameSyncError("요청 형식을 확인해 주세요.");
-  const input = body as { action?: unknown; mapName?: unknown; baselineId?: unknown; project?: unknown; expectedRevision?: unknown };
+  const input = body as { action?: unknown; mapName?: unknown; baselineId?: unknown; candidateId?: unknown; project?: unknown; expectedRevision?: unknown };
   const paths = gameSyncPaths();
   const compiler = await core();
   const workspace = { ...paths, validateStorageRoot: compiler.validateStorageRoot };
@@ -82,6 +83,12 @@ export async function runGameSync(body: unknown) {
   if (input.action === "save") {
     const saved = saveWorkspace(input.project, (input.expectedRevision ?? null) as string | null, workspace);
     return { action: "save", revision: saved.revision, savedAt: saved.savedAt };
+  }
+  if (input.action === "review-candidate") {
+    if (typeof input.candidateId !== "string" || typeof input.mapName !== "string" || typeof input.baselineId !== "string") {
+      throw new GameSyncError("후보와 맵의 기준 정보가 필요합니다.");
+    }
+    return { review: compiler.reviewCandidate({ candidateId: input.candidateId, mapName: input.mapName, baselineId: input.baselineId }, paths) };
   }
   if (input.action === "baseline-preview") {
     if (typeof input.mapName !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(input.mapName) ||

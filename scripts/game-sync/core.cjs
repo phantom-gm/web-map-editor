@@ -607,7 +607,8 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const output = outsideGame(outputRoot, root);
   const storage = outsideGame(baselineRoot, root);
   if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
-  const candidateDir = safeChild(output, manifest.mapFileName + '-' + crypto.randomUUID(), root);
+  const candidateId = crypto.randomUUID(), createdAt = new Date().toISOString();
+  const candidateDir = safeChild(output, manifest.mapFileName + '-' + candidateId, root);
   fs.mkdirSync(candidateDir, { recursive: true });
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mapPath = safeChild(candidateDir, manifest.mapRelative, root);
@@ -635,6 +636,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   verifyDatasetCapture(root, references.captured);
   if (references.changes.length) report.warnings.push('기준 이후 CSV ' + references.changes.length + '개가 변경되어 최신 참고 사본을 보관했습니다. 게임에는 적용하지 않습니다.');
   Object.assign(report, {
+    candidateId, createdAt,
     sourceMapSha256: hash(originalBytes), candidateMapSha256: hash(fs.readFileSync(mapPath)),
     exactMapBytes: originalBytes.equals(fs.readFileSync(mapPath)), sourceFilesUnchanged: true,
     strictSourceFilesUnchangedSinceBaseline: true,
@@ -647,8 +649,150 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     candidateOnly: true, gameApplied: false, runtimeVerified: false
   });
   const reportPath = writeFile(candidateDir, 'report.json', jsonBytes(report), root);
-  return { candidateDir, mapPath, reportPath, report };
+  const descriptor = relative => { const bytes = fs.readFileSync(safeChild(candidateDir, relative, root)); return { path: relative, bytes: bytes.length, sha256: hash(bytes) }; };
+  const reviewManifest = {
+    version: VERSION, candidateId, mapName: manifest.mapName, baselineId: manifest.baselineId, createdAt,
+    baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
+    applyFiles: report.applyFiles.map(relative => {
+      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : walkReference.bytes;
+      return { path: relative, bytes: candidate.bytes, sourceBytes: source.length, sourceSha256: hash(source), candidateSha256: candidate.sha256 };
+    }),
+    referenceFiles: references.captured.map(item => descriptor('reference/' + item.relative)),
+    project: descriptor('editor-project.json'), report: descriptor('report.json'),
+    summary: candidateSummary(report)
+  };
+  writeFile(candidateDir, 'review-manifest.json', jsonBytes(reviewManifest), root);
+  return { candidateId, candidateDir, mapPath, reportPath, report };
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, validateStorageRoot,
+function candidateSummary(report) {
+  return {
+    groundChangedCells: report.changedCells ?? 0,
+    groundRepackedCells: Math.max(0, (report.affectedCells ?? 0) - (report.changedCells ?? 0)),
+    objectsMoved: report.objectChanges?.moved ?? 0, objectsAdded: report.objectChanges?.added ?? 0,
+    objectsRemoved: report.objectChanges?.removed ?? 0,
+    blockedAdded: report.walkComparison?.addedRows ?? 0, blockedRemoved: report.walkComparison?.removedRows ?? 0,
+    walkChangedCells: report.walkChangedCells ?? 0
+  };
+}
+const REVIEW_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const REVIEW_HASH = /^[a-f0-9]{64}$/;
+function candidateChild(base, relative, root) {
+  if (typeof relative !== 'string' || !relative || relative.length > 2048 || relative.includes('\\') || relative.includes(':') ||
+    relative.split('/').some(part => !part || part === '.' || part === '..')) fail('UNSAFE_CANDIDATE', '후보 검토 경로가 올바르지 않습니다.');
+  let cursor = base;
+  for (const part of relative.split('/')) {
+    cursor = path.join(cursor, part);
+    let stat;
+    try { stat = fs.lstatSync(cursor); } catch (e) { if (e.code === 'ENOENT') break; throw e; }
+    if (stat.isSymbolicLink()) fail('UNSAFE_CANDIDATE', '후보 검토에는 심볼릭 링크나 연결 폴더를 사용할 수 없습니다.');
+  }
+  return safeChild(base, relative, root);
+}
+function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
+  const { candidateId, mapName, baselineId } = input || {};
+  validMapName(mapName);
+  if (!REVIEW_UUID.test(candidateId || '') || !REVIEW_UUID.test(baselineId || '')) fail('INVALID_CANDIDATE', '후보와 동기화 기준 ID가 올바르지 않습니다.');
+  const root = gamePath(gameRoot), output = outsideGame(outputRoot, root), storage = outsideGame(baselineRoot, root);
+  if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
+  const result = { candidateId, mapName, baselineId, createdAt: '', checkedAt: new Date().toISOString(), status: 'blocked',
+    files: [], referenceFiles: 0, checks: [], issues: [], summary: candidateSummary({}),
+    candidateDir: '', gameApplied: false, runtimeVerified: false };
+  const check = (label, passed, detail) => {
+    result.checks.push({ label, passed, ...(!passed && detail ? { detail } : {}) });
+    if (!passed) result.issues.push(detail || label);
+    return passed;
+  };
+  const fatalPath = e => ['UNSAFE_CANDIDATE', 'UNSAFE_OUTPUT', 'GAME_WRITE_FORBIDDEN', 'UNSUPPORTED_SOURCE_LINK'].includes(e.code);
+  const attempt = (label, fn) => { try { fn(); return check(label, true); } catch (e) { if (fatalPath(e)) throw e; return check(label, false, e.message); } };
+  let state;
+  if (!attempt('동기화 기준 무결성', () => { state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, { gameRoot, baselineRoot }); })) return result;
+  const { manifest, dir } = state;
+  validMapName(manifest.mapFileName);
+  const candidateDir = candidateChild(output, manifest.mapFileName + '-' + candidateId, root);
+  result.candidateDir = candidateDir;
+  const read = relative => { const file = candidateChild(candidateDir, relative, root); try { return fs.readFileSync(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+  const manifestBytes = read('review-manifest.json');
+  if (!manifestBytes) { check('후보 검토 기록', false, '검토 기록이 없는 이전 후보이거나 후보 폴더가 없습니다. 현재 작업에서 후보 맵을 다시 구워 주세요.'); return result; }
+  let review;
+  if (!attempt('후보 검토 기록', () => { try { review = JSON.parse(manifestBytes.toString('utf8')); } catch { throw new Error('후보 검토 기록을 읽을 수 없습니다. 현재 작업에서 후보 맵을 다시 구워 주세요.'); } })) return result;
+  const sized = item => !!item && typeof item.path === 'string' && Number.isSafeInteger(item.bytes) && item.bytes >= 0;
+  const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
+  const valid = !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === candidateId && review.mapName === mapName && review.baselineId === baselineId &&
+    typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 2 &&
+    review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
+    Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
+    artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
+  if (!check('후보 식별 정보', valid, valid ? undefined : '후보 기록 형식 또는 맵·기준 ID가 일치하지 않습니다. 후보를 다시 구워 주세요.')) return result;
+  result.createdAt = review.createdAt; result.referenceFiles = review.referenceFiles.length;
+  check('기준 연결 기록', hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) === review.baselineManifestSha256, '후보를 만든 동기화 기준 기록과 현재 기준 기록이 일치하지 않습니다.');
+  const captured = new Map([['review-manifest.json', hash(manifestBytes)]]);
+  function inspectArtifact(item, label) {
+    const bytes = read(item.path), passed = !!bytes && bytes.length === item.bytes && hash(bytes) === item.sha256;
+    if (bytes) captured.set(item.path, hash(bytes));
+    check(label, passed, passed ? undefined : item.path + ': 후보 작성 이후 파일이 변경되었거나 없어졌습니다. 다시 구워 주세요.');
+    return passed ? bytes : null;
+  }
+  const projectBytes = inspectArtifact(review.project, '편집 프로젝트 무결성'), reportBytes = inspectArtifact(review.report, '출력 보고서 무결성');
+  let project, report;
+  if (projectBytes) attempt('편집 프로젝트 기준', () => {
+    project = JSON.parse(projectBytes.toString('utf8'));
+    if (project.map !== mapName || project.gameSync?.baselineId !== baselineId || project.gameSync?.mapName !== mapName ||
+      stable(protectedState(project)) !== stable(protectedState(state.baseline))) throw new Error('후보 프로젝트의 보호 정보 또는 기준이 다릅니다.');
+  });
+  if (reportBytes) attempt('출력 보고서 기준', () => {
+    report = JSON.parse(reportBytes.toString('utf8'));
+    if (report.mapName !== mapName || report.baselineId !== baselineId || report.candidateId !== candidateId || report.createdAt !== review.createdAt ||
+      report.gameApplied !== false || report.runtimeVerified !== false || report.candidateOnly !== true) throw new Error('후보 보고서의 맵·기준·후보 정보가 다릅니다.');
+    const summary = candidateSummary(report);
+    if (stable(summary) !== stable(review.summary) || Object.values(summary).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('후보 변경 요약과 보고서가 일치하지 않습니다.');
+    result.summary = summary;
+  });
+  const walkPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
+  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : [])];
+  const filePaths = review.applyFiles.map(item => item.path);
+  if (!check('적용 대상 파일 목록', stable(filePaths) === stable(applyPaths) && stable(report?.applyFiles) === stable(applyPaths),
+    '후보 적용 파일은 해당 맵과 변경된 DT_Walk만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+  for (const item of review.applyFiles) {
+    const sourceFile = sourceRelative(root, item.path), candidateBytes = read(item.path);
+    let sourceBytes = null;
+    try { sourceBytes = fs.readFileSync(sourceFile); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const currentSourceSha256 = sourceBytes ? hash(sourceBytes) : null, currentCandidateSha256 = candidateBytes ? hash(candidateBytes) : null;
+    if (candidateBytes) captured.set(item.path, currentCandidateSha256);
+    const sourceMatches = currentSourceSha256 === item.sourceSha256 && sourceBytes?.length === item.sourceBytes;
+    const candidateMatches = currentCandidateSha256 === item.candidateSha256 && candidateBytes?.length === item.bytes;
+    result.files.push({ path: item.path, bytes: item.bytes, sourceSha256: item.sourceSha256, candidateSha256: item.candidateSha256,
+      currentSourceSha256, currentCandidateSha256, sourceMatches, candidateMatches });
+    const isMap = item.path === manifest.mapRelative;
+    const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
+    const expectedCandidate = isMap ? report.candidateMapSha256 : report.walkComparison?.candidateSha256;
+    check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : report.walkComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
+    check(item.path + ' 현재 게임 원본', sourceMatches, sourceMatches ? undefined : item.path + ': 후보 작성 이후 게임 원본이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
+    check(item.path + ' 후보 무결성', candidateMatches, candidateMatches ? undefined : item.path + ': 후보 파일이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
+  }
+  const referencesValid = new Set(review.referenceFiles.map(item => item.path)).size === review.referenceFiles.length &&
+    review.referenceFiles.every(item => item.path.startsWith('reference/RootDesk/MyDesk/DataSet/') && item.path.endsWith('.csv')) &&
+    report?.datasetFilesCopied === review.referenceFiles.length;
+  if (!check('참고 사본 분리', referencesValid, referencesValid ? undefined : '참고 사본의 파일 목록이 유효하지 않습니다.')) return result;
+  let referenceExact = true;
+  for (const item of review.referenceFiles) {
+    const bytes = read(item.path);
+    if (bytes) captured.set(item.path, hash(bytes));
+    if (!bytes || bytes.length !== item.bytes || hash(bytes) !== item.sha256) { referenceExact = false; result.issues.push(item.path + ': 참고 사본이 변경되었거나 없어졌습니다.'); }
+  }
+  check('참고 사본 무결성', referenceExact, referenceExact ? undefined : '참고 사본을 포함한 후보 파일을 다시 구워 주세요.');
+  attempt('현재 게임의 맵·프로젝트·변환 기준', () => verifySources(root, manifest));
+  attempt('검토 중 파일 불변', () => {
+    for (const [relative, expected] of captured) { const bytes = read(relative); if (!bytes || hash(bytes) !== expected) throw new Error('검토 도중 후보 파일이 바뀌었습니다. 다시 검토해 주세요: ' + relative); }
+    for (const item of result.files) {
+      let bytes = null; try { bytes = fs.readFileSync(sourceRelative(root, item.path)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      if ((bytes ? hash(bytes) : null) !== item.currentSourceSha256) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
+    }
+    verifySources(root, manifest);
+  });
+  result.checkedAt = new Date().toISOString(); result.status = result.issues.length ? 'blocked' : 'ready';
+  return result;
+}
+module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

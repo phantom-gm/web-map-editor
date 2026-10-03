@@ -979,3 +979,51 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .comparison-change-list { display:flex; flex-direction:column; gap:5px; }
 .comparison-change-list button { flex:0 0 auto; text-align:left; overflow-wrap:anywhere; font-size:11px; line-height:1.4; }
 .comparison-view-badge { position:absolute; top:12px; right:12px; pointer-events:none; border:1px solid #658095; border-radius:6px; padding:8px 12px; background:#17242be8; color:#d7edf8; font-size:12px; }
+
+/* Read-only candidate file review */
+.game-candidate-open { padding:5px 9px; border:1px solid #6c8ca3; border-radius:5px; background:#263b49; color:#d8eef9; cursor:pointer; white-space:nowrap; }
+.game-candidate-dialog { width:min(920px, calc(100vw - 32px)); max-height:85vh; overflow-y:auto; padding:0; border:1px solid #688297; border-radius:10px; background:#19232e; color:#dce6f0; box-shadow:0 20px 70px #0009; }
+.game-candidate-dialog::backdrop { background:#080d16b8; }
+.game-candidate-dialog button { padding:7px 11px; border:1px solid #647d92; border-radius:5px; background:#2a3b4c; color:#e6f0f8; cursor:pointer; }
+.game-candidate-dialog button:disabled { opacity:.45; cursor:wait; }
+.game-candidate-dialog button:focus-visible, .candidate-hashes summary:focus-visible { outline:2px solid #7ed6ed; outline-offset:3px; }
+.candidate-dialog-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 18px; background:#202e3b; border-bottom:1px solid #3b5062; }
+.candidate-dialog-head h2 { margin:0; font-size:17px; }
+.candidate-dialog-head p { margin:4px 0 0; font-size:12px; color:#aabfce; }
+.candidate-dialog-head button { flex-shrink:0; }
+.candidate-dialog-body { padding:16px 18px; font-size:13px; line-height:1.55; }
+.candidate-scope { margin:0; color:#f0d397; font-weight:600; }
+.candidate-help { margin:6px 0 12px; color:#b7c8d6; font-size:12px; }
+.candidate-loading, .candidate-error { padding:12px; border-radius:6px; background:#273d4e; }
+.candidate-error { border:1px solid #a65a56; background:#472c30; color:#ffd0c9; overflow-wrap:anywhere; }
+.candidate-result { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:12px; border-radius:6px; }
+.candidate-result.ready { background:#244636; border:1px solid #4b936a; }
+.candidate-result.blocked { background:#4c3827; border:1px solid #bc9356; }
+.candidate-result span { color:#c2d2dd; font-size:11px; }
+.candidate-section { margin-top:18px; }
+.candidate-section h3 { margin:0 0 8px; font-size:14px; }
+.candidate-summary { display:grid; grid-template-columns:80px 1fr; gap:5px 12px; margin:0; }
+.candidate-summary dt { color:#a8bfd0; }.candidate-summary dd { margin:0; }
+.candidate-table-wrap { overflow-x:auto; }
+.candidate-files { width:100%; border-collapse:collapse; text-align:left; font-size:12px; }
+.candidate-files th, .candidate-files td { border-bottom:1px solid #34485a; padding:8px; vertical-align:top; }
+.candidate-files th[scope="row"] { font-weight:400; overflow-wrap:anywhere; }
+.candidate-files td { white-space:nowrap; }
+.candidate-files thead { color:#aac1d4; }
+.candidate-reference { margin:9px 0 0; color:#c1ad81; font-size:12px; }
+.candidate-pass { color:#9de3b6; }.candidate-fail { color:#ffbca2; }
+.candidate-checks { list-style:none; margin:0; padding:0; }
+.candidate-checks li { display:flex; align-items:flex-start; gap:12px; padding:7px 0; border-bottom:1px solid #2b4052; }
+.candidate-checks li > span { flex:0 0 62px; font-size:12px; }
+.candidate-checks small { display:block; color:#a8bacb; font-size:11px; overflow-wrap:anywhere; }
+.candidate-issues { background:#422e29; border-left:3px solid #c69265; padding:12px; color:#f5d4b2; }
+.candidate-issues ul { margin:0; padding-left:20px; overflow-wrap:anywhere; }
+.candidate-hashes { margin-top:18px; padding:10px; border:1px solid #3d5163; border-radius:5px; }
+.candidate-hashes summary { cursor:pointer; color:#b9d5e7; }
+.candidate-hashes h4 { margin:12px 0 6px; font-size:12px; overflow-wrap:anywhere; }
+.candidate-hashes dl { margin:0; font-size:11px; }.candidate-hashes dt { margin-top:7px; color:#a5bdce; }
+.candidate-hashes dd { margin:0; overflow-wrap:anywhere; }
+.candidate-location { margin:16px 0 0; color:#a4b8c9; font-size:11px; overflow-wrap:anywhere; }
+.candidate-location code { display:block; }
+.candidate-dialog-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px; padding:12px 18px; background:#202e3b; border-top:1px solid #3b5062; }
+.candidate-dialog-actions p { flex:1 1 260px; margin:0; color:#aebfce; font-size:11px; line-height:1.5; }

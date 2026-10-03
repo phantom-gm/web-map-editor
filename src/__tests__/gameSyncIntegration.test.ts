@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureEditorSnapshot, useEditorStore } from "../store/editorStore";
@@ -808,6 +808,153 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
       };
       evidence.push(row);
       console.log("[comparison-roundtrip]", JSON.stringify(row));
+    }, 90_000);
+  }
+
+  type CandidateSummary = {
+    groundChangedCells: number; groundRepackedCells: number;
+    objectsMoved: number; objectsAdded: number; objectsRemoved: number;
+    blockedAdded: number; blockedRemoved: number; walkChangedCells: number;
+  };
+  type CandidateReview = {
+    candidateId: string; mapName: string; baselineId: string; createdAt: string; checkedAt: string;
+    status: "ready" | "blocked"; candidateDir: string; gameApplied: false; runtimeVerified: false;
+    files: { path: string; bytes: number; sourceSha256: string; candidateSha256: string;
+      currentSourceSha256: string | null; currentCandidateSha256: string | null;
+      sourceMatches: boolean; candidateMatches: boolean }[];
+    referenceFiles: number; checks: { label: string; passed: boolean; detail?: string }[];
+    issues: string[]; summary: CandidateSummary;
+  };
+  const reviewCore = core as Omit<Core, "exportEditedProject"> & {
+    exportEditedProject(project: ProjectFile, options: Options): ReturnType<Core["exportEditedProject"]> & { candidateId: string };
+    reviewCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: Options): CandidateReview;
+  };
+  type MutableCandidateMap = NativeMap & {
+    patchComponent(name: string, type: string, fields: Record<string, unknown>): MutableCandidateMap;
+    write(path: string): MutableCandidateMap;
+  };
+  for (const mapName of ["ferendelmotel", "ferendel"]) {
+    it(mapName + ": candidate review matches actual mixed output, is read-only, and blocks tampered candidate files", () => {
+      const synced = core.createSyncProject({ ...options(), mapName });
+      useEditorStore.getState().loadProject(synced.project, memoryTiles(synced.project));
+      const baseline = exportStore();
+      const scene = core.previewEditedProject(baseline, options()) as ObjectScene;
+      const editable = scene.objects.filter(object => object.canMove && object.canDuplicate && object.canDelete);
+      const mover = editable[0], removed = editable[1];
+      expect(mover).toBeDefined(); expect(removed).toBeDefined();
+      const dx = scene.constants.TILE_W / 2, dy = -scene.constants.TILE_H / 2;
+      useEditorStore.getState().moveGameObjectTo(mover.entityId, [mover.position[0] + dx, mover.position[1] + dy]);
+      useEditorStore.getState().addGameObject(mover.entityId, [mover.position[0] - dx, mover.position[1] + dy]);
+      useEditorStore.getState().removeGameObject(removed.entityId);
+      const beforeBlocked = captureEditorSnapshot(useEditorStore.getState());
+      const removedCell = baseline.blocked[0];
+      const occupied = new Set(baseline.blocked.map(([x, y]) => cellKey(x, y)));
+      let addedCell: [number, number] | undefined;
+      for (let y = 0; y < baseline.size[1] && !addedCell; y++) for (let x = 0; x < baseline.size[0]; x++) {
+        if (!occupied.has(cellKey(x, y))) { addedCell = [x, y]; break; }
+      }
+      expect(addedCell).toBeDefined();
+      useEditorStore.getState().setBlockedAt(...removedCell, false);
+      useEditorStore.getState().setBlockedAt(...addedCell!, true);
+      useEditorStore.getState().commitStroke(beforeBlocked);
+      const original = builder.read(join(gameRoot!, "map", mapName + ".map"));
+      expect(original.getTileMapMode()).toBe(1);
+      const target = blocks(original).find(block => block.asset.size === 4)!;
+      expect(target).toBeDefined();
+      const index = baseline.palette.findIndex(tile => {
+        const asset = assets.get(tile.ruid ?? "");
+        return asset?.size === 1 && asset.material !== target.asset.material && asset.material !== "길경계";
+      });
+      expect(index).toBeGreaterThanOrEqual(0);
+      const beforeGround = captureEditorSnapshot(useEditorStore.getState());
+      useEditorStore.getState().setActiveIdx(index);
+      useEditorStore.getState().setTool("brush");
+      useEditorStore.getState().applyTool(target.gx + 1, target.gy + 1);
+      useEditorStore.getState().commitStroke(beforeGround);
+      const edited = exportStore();
+      const comparison = comparisonCore.compareEditedProject(edited, options());
+      const candidate = reviewCore.exportEditedProject(edited, options());
+      expect(candidate.candidateId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(existsSync(join(candidate.candidateDir, "review-manifest.json"))).toBe(true);
+      assertPreviewFile(comparison.scene, builder.read(candidate.mapPath));
+      assertCoverage(builder.read(candidate.mapPath), edited);
+      const input = { candidateId: candidate.candidateId, mapName, baselineId: baseline.gameSync!.baselineId };
+      const baselineFiles = directoryHashes(synced.baselineDir);
+      const reviewWithoutWrites = () => {
+        const candidateFiles = directoryHashes(candidate.candidateDir);
+        const nativeFs = requireCjs("node:fs") as typeof import("node:fs");
+        const writeMethods = ["writeFileSync", "appendFileSync", "copyFileSync", "mkdirSync", "renameSync", "rmSync", "unlinkSync", "truncateSync"] as const;
+        const guards = writeMethods.map(method => vi.spyOn(nativeFs, method).mockImplementation(() => {
+          throw new Error("Candidate review must not write files: " + method);
+        }));
+        try {
+          const result = reviewCore.reviewCandidate(input, options());
+          for (const guard of guards) expect(guard).not.toHaveBeenCalled();
+          expect(directoryHashes(candidate.candidateDir)).toEqual(candidateFiles);
+          expect(directoryHashes(synced.baselineDir)).toEqual(baselineFiles);
+          return result;
+        } finally {
+          for (const guard of guards) guard.mockRestore();
+        }
+      };
+      const ready = reviewWithoutWrites();
+      expect(ready).toMatchObject({ ...input, status: "ready", candidateDir: candidate.candidateDir, gameApplied: false, runtimeVerified: false });
+      expect(Number.isFinite(Date.parse(ready.createdAt))).toBe(true);
+      expect(Number.isFinite(Date.parse(ready.checkedAt))).toBe(true);
+      expect(ready.issues).toEqual([]);
+      expect(ready.checks.length).toBeGreaterThan(0);
+      expect(ready.checks.every(check => check.passed)).toBe(true);
+      expect(ready.summary).toEqual({
+        groundChangedCells: 1, groundRepackedCells: 15, objectsMoved: 1, objectsAdded: 1, objectsRemoved: 1,
+        blockedAdded: 1, blockedRemoved: 1, walkChangedCells: 2,
+      });
+      expect(ready.summary.groundChangedCells).toBe(comparison.comparison.ground.changedCells.length);
+      expect(ready.summary.groundRepackedCells).toBe(comparison.comparison.ground.repackedCells.length);
+      expect(ready.summary.walkChangedCells).toBe(candidate.report.walkChangedCells);
+      expect(new Set(ready.files.map(file => file.path))).toEqual(new Set(candidate.report.applyFiles));
+      expect(ready.files).toHaveLength(2);
+      expect(ready.referenceFiles).toBe(Object.keys(directoryHashes(join(candidate.candidateDir, "reference"))).length);
+      for (const file of ready.files) {
+        const nativeSource = join(gameRoot!, file.path), candidateFile = join(candidate.candidateDir, file.path);
+        expect(file).toMatchObject({
+          bytes: statSync(candidateFile).size, sourceSha256: hash(nativeSource), candidateSha256: hash(candidateFile),
+          currentSourceSha256: hash(nativeSource), currentCandidateSha256: hash(candidateFile),
+          sourceMatches: true, candidateMatches: true,
+        });
+      }
+      expect(reviewWithoutWrites().files).toEqual(ready.files);
+
+      // Tamper only an isolated candidate: the map via MapBuilder, or its applicable CSV sidecar.
+      let changedPath: string;
+      if (mapName === "ferendelmotel") {
+        changedPath = "map/" + mapName + ".map";
+        const output = builder.read(candidate.mapPath) as MutableCandidateMap;
+        const entity = output.listEntities().find(item => item.id === mover.entityId)!;
+        const sprite = output.component(entity.path, SPRITE)!;
+        output.patchComponent(entity.path, SPRITE, { OrderInLayer: Number(sprite.OrderInLayer) + 1 }).write(candidate.mapPath);
+      } else {
+        changedPath = ready.files.find(file => file.path.endsWith("/DT_Walk.csv"))!.path;
+        const csvPath = join(candidate.candidateDir, changedPath);
+        writeFileSync(csvPath, Buffer.concat([readFileSync(csvPath), Buffer.from("\r\nreview-tampered,0,0\r\n")]));
+      }
+      const blocked = reviewWithoutWrites();
+      expect(blocked.status).toBe("blocked");
+      expect(blocked.gameApplied).toBe(false);
+      expect(blocked.runtimeVerified).toBe(false);
+      expect(blocked.issues.length).toBeGreaterThan(0);
+      expect(blocked.checks.some(check => !check.passed)).toBe(true);
+      expect(blocked.files.filter(file => !file.candidateMatches).map(file => file.path)).toEqual([changedPath]);
+      expect(blocked.files.every(file => file.sourceMatches)).toBe(true);
+      expect(blocked.files.find(file => file.path === changedPath)!.currentCandidateSha256).not.toBe(ready.files.find(file => file.path === changedPath)!.candidateSha256);
+      const row = {
+        scenario: "candidate-review", mapName, candidateId: candidate.candidateId, candidateDir: candidate.candidateDir,
+        readySummary: ready.summary, applicableFiles: ready.files.map(file => ({ path: file.path, bytes: file.bytes, sourceSha256: file.sourceSha256, candidateSha256: file.candidateSha256 })),
+        referenceFiles: ready.referenceFiles, tamperedPath: changedPath, tamperedStatus: blocked.status,
+        reviewWrites: 0, baselineSnapshotHashesUnchanged: Object.keys(baselineFiles).length,
+        sourceFilesChecked: assertSourceManifest(synced.baselineDir),
+      };
+      evidence.push(row);
+      console.log("[candidate-review-roundtrip]", JSON.stringify(row));
     }, 90_000);
   }
 
