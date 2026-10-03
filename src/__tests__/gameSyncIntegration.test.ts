@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { inflateRawSync } from "node:zlib";
 import { captureEditorSnapshot, useEditorStore } from "../store/editorStore";
 import type { GameObjectDescriptor } from "../lib/gameObjects";
 import type { PaletteTile } from "../lib/palette";
@@ -955,6 +956,219 @@ describe.skipIf(!enabled)("actual game → editor store → candidate (opt in: M
       };
       evidence.push(row);
       console.log("[candidate-review-roundtrip]", JSON.stringify(row));
+    }, 90_000);
+  }
+
+
+  // Decode the public ZIP format independently of the production packer.
+  function readZipEntries(bytes: Buffer): Map<string, Buffer> {
+    let end = bytes.length - 22;
+    while (end >= 0 && bytes.readUInt32LE(end) !== 0x06054b50) end--;
+    expect(end).toBeGreaterThanOrEqual(0);
+    expect(end + 22 + bytes.readUInt16LE(end + 20)).toBe(bytes.length);
+    expect(bytes.readUInt16LE(end + 4)).toBe(0);
+    expect(bytes.readUInt16LE(end + 6)).toBe(0);
+    const count = bytes.readUInt16LE(end + 10);
+    expect(bytes.readUInt16LE(end + 8)).toBe(count);
+    const centralSize = bytes.readUInt32LE(end + 12);
+    const centralOffset = bytes.readUInt32LE(end + 16);
+    expect(centralOffset + centralSize).toBe(end);
+    let offset = centralOffset;
+    const entries = new Map<string, Buffer>();
+    for (let index = 0; index < count; index++) {
+      expect(bytes.readUInt32LE(offset)).toBe(0x02014b50);
+      const flags = bytes.readUInt16LE(offset + 8), method = bytes.readUInt16LE(offset + 10);
+      expect(flags & 1, "ZIP must not encrypt apply files").toBe(0);
+      expect([0, 8]).toContain(method);
+      const compressed = bytes.readUInt32LE(offset + 20), uncompressed = bytes.readUInt32LE(offset + 24);
+      const nameLength = bytes.readUInt16LE(offset + 28), extraLength = bytes.readUInt16LE(offset + 30), commentLength = bytes.readUInt16LE(offset + 32);
+      const name = bytes.toString("utf8", offset + 46, offset + 46 + nameLength);
+      expect(name).not.toMatch(/(^\/|\\|:|(^|\/)\.\.(\/|$))/);
+      expect(entries.has(name), "duplicate ZIP member").toBe(false);
+      const local = bytes.readUInt32LE(offset + 42);
+      expect(bytes.readUInt32LE(local)).toBe(0x04034b50);
+      expect(bytes.readUInt16LE(local + 8)).toBe(method);
+      const localNameLength = bytes.readUInt16LE(local + 26), localExtraLength = bytes.readUInt16LE(local + 28);
+      expect(bytes.toString("utf8", local + 30, local + 30 + localNameLength)).toBe(name);
+      const bodyStart = local + 30 + localNameLength + localExtraLength;
+      expect(bodyStart + compressed).toBeLessThanOrEqual(centralOffset);
+      const compressedBytes = bytes.subarray(bodyStart, bodyStart + compressed);
+      const body = method === 8 ? inflateRawSync(compressedBytes) : compressedBytes;
+      expect(body.length).toBe(uncompressed);
+      let checksum = 0xffffffff;
+      for (const byte of body) {
+        checksum ^= byte;
+        for (let bit = 0; bit < 8; bit++) checksum = (checksum >>> 1) ^ ((checksum & 1) ? 0xedb88320 : 0);
+      }
+      expect(bytes.readUInt32LE(offset + 16)).toBe((checksum ^ 0xffffffff) >>> 0);
+      entries.set(name, Buffer.from(body));
+      offset += 46 + nameLength + extraLength + commentLength;
+    }
+    expect(offset).toBe(centralOffset + centralSize);
+    return entries;
+  }
+  function assertNoSyncWrites<T>(read: () => T): T {
+    const nativeFs = requireCjs("node:fs") as typeof import("node:fs");
+    const methods = ["writeFileSync", "appendFileSync", "copyFileSync", "mkdirSync", "renameSync", "rmSync", "unlinkSync", "truncateSync"] as const;
+    const guards = methods.map(method => vi.spyOn(nativeFs, method).mockImplementation(() => {
+      throw new Error("History/package reads must not write files: " + method);
+    }));
+    try {
+      const value = read();
+      for (const guard of guards) expect(guard).not.toHaveBeenCalled();
+      return value;
+    } finally {
+      for (const guard of guards) guard.mockRestore();
+    }
+  }
+
+  type CandidateHistory = {
+    mapName: string; baselineId: string; skipped: number;
+    candidates: {
+      candidateId: string; mapName: string; baselineId: string; createdAt: string;
+      summary: CandidateSummary; applyFileCount: number; referenceFiles: number;
+      sameBaseline: boolean; reviewAvailable: boolean;
+    }[];
+  };
+  type PackageCore = typeof reviewCore & {
+    listCandidates(input: { mapName: string; baselineId: string }, options: Options): CandidateHistory;
+    packageCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: Options): {
+      filename: string; bytes: Buffer; review: CandidateReview;
+    };
+  };
+  for (const mapName of ["ferendelmotel", "ferendel"]) {
+    it(mapName + ": candidate history survives reopening and verified ZIP contains only exact apply files", () => {
+      const synced = core.createSyncProject({ ...options(), mapName });
+      useEditorStore.getState().loadProject(synced.project, memoryTiles(synced.project));
+      const baseline = exportStore();
+      const link = { mapName, baselineId: baseline.gameSync!.baselineId };
+      const noOp = reviewCore.exportEditedProject(baseline, options());
+      expect(noOp.report.exactMapBytes).toBe(true);
+      const original = builder.read(join(gameRoot!, "map", mapName + ".map"));
+      expect(original.getTileMapMode()).toBe(1);
+      const target = blocks(original).find(block => block.asset.size === 4)!;
+      expect(target).toBeDefined();
+      const index = baseline.palette.findIndex(tile => {
+        const asset = assets.get(tile.ruid ?? "");
+        return asset?.size === 1 && asset.material !== target.asset.material && asset.material !== "길경계";
+      });
+      expect(index).toBeGreaterThanOrEqual(0);
+      const before = captureEditorSnapshot(useEditorStore.getState());
+      useEditorStore.getState().setTool("brush");
+      useEditorStore.getState().setActiveIdx(index);
+      useEditorStore.getState().applyTool(target.gx + 1, target.gy + 1);
+      useEditorStore.getState().setBlockedAt(...baseline.blocked[0], false);
+      useEditorStore.getState().commitStroke(before);
+      const edited = exportStore();
+      const candidate = reviewCore.exportEditedProject(edited, options());
+      expect(candidate.report.walkChangedCells).toBe(1);
+      expect(hash(candidate.mapPath)).not.toBe(hash(noOp.mapPath));
+      assertCoverage(builder.read(candidate.mapPath), edited);
+
+      // A second immutable import is visible in history, but must not be identified as this baseline.
+      const other = core.createSyncProject({ ...options(), mapName });
+      useEditorStore.getState().loadProject(other.project, memoryTiles(other.project));
+      const otherCandidate = reviewCore.exportEditedProject(exportStore(), options());
+      const packageCore = core as PackageCore;
+      const savedDirectories = [synced.baselineDir, other.baselineDir, noOp.candidateDir, candidate.candidateDir, otherCandidate.candidateDir];
+      const savedHashes = () => Object.assign({}, ...savedDirectories.map(directoryHashes)) as Record<string, string>;
+      const snapshots = savedHashes();
+      const readOnly = <T,>(read: () => T) => {
+        const result = assertNoSyncWrites(read);
+        expect(savedHashes()).toEqual(snapshots);
+        return result;
+      };
+      const history = readOnly(() => packageCore.listCandidates(link, options()));
+      expect(history).toMatchObject(link);
+      expect(history.candidates.every(item => item.mapName === mapName)).toBe(true);
+      expect(history.candidates.filter(item => item.sameBaseline).map(item => item.candidateId).sort())
+        .toEqual([noOp.candidateId, candidate.candidateId].sort());
+      expect(history.candidates.find(item => item.candidateId === otherCandidate.candidateId))
+        .toMatchObject({ sameBaseline: false, baselineId: other.project.gameSync!.baselineId, reviewAvailable: true });
+      expect(history.candidates.find(item => item.candidateId === candidate.candidateId)).toMatchObject({
+        sameBaseline: true, reviewAvailable: true, applyFileCount: 2,
+        summary: { groundChangedCells: 1, groundRepackedCells: 15, walkChangedCells: 1, blockedRemoved: 1 },
+      });
+      const dates = history.candidates.map(item => Date.parse(item.createdAt));
+      expect(dates.every(Number.isFinite)).toBe(true);
+      expect(dates).toEqual([...dates].sort((a, b) => b - a));
+
+      // A new module instance has no access to the first module's in-memory candidate state.
+      const modulePath = requireCjs.resolve("../../scripts/game-sync/core.cjs");
+      const cached = requireCjs.cache[modulePath];
+      delete requireCjs.cache[modulePath];
+      let reopened: PackageCore;
+      try { reopened = requireCjs(modulePath) as PackageCore; }
+      finally { if (cached) requireCjs.cache[modulePath] = cached; }
+      expect(readOnly(() => reopened.listCandidates(link, options()))).toEqual(history);
+      const packages: { filename: string; bytes: Buffer; review: CandidateReview; entries: Map<string, Buffer> }[] = [];
+      for (const output of [noOp, candidate]) {
+        const identity = { ...link, candidateId: output.candidateId };
+        const archive = readOnly(() => reopened.packageCandidate(identity, options()));
+        expect(archive.filename).toMatch(/\.zip$/);
+        expect(archive.filename).toContain(mapName);
+        expect(Buffer.isBuffer(archive.bytes)).toBe(true);
+        expect(archive.review).toMatchObject({ ...identity, status: "ready", gameApplied: false, runtimeVerified: false });
+        expect(archive.review.issues).toEqual([]);
+        const entries = readZipEntries(archive.bytes);
+        expect(new Set(entries.keys())).toEqual(new Set([...output.report.applyFiles!, "REVIEW.txt"]));
+        expect(entries.size).toBe(output === noOp ? 2 : 3);
+        expect([...entries.keys()].some(name => name.startsWith("reference/") || /project|baseline|manifest|report\.json/.test(name))).toBe(false);
+        expect(archive.review.files).toHaveLength(output === noOp ? 1 : 2);
+        for (const file of archive.review.files) {
+          const bytes = entries.get(file.path)!;
+          expect(bytes).toEqual(readFileSync(join(output.candidateDir, file.path)));
+          expect(createHash("sha256").update(bytes).digest("hex")).toBe(file.candidateSha256);
+          expect(bytes.length).toBe(file.bytes);
+          expect(file.sourceMatches && file.candidateMatches).toBe(true);
+        }
+        const instructions = entries.get("REVIEW.txt")!.toString("utf8");
+        expect(instructions).toContain(identity.candidateId);
+        expect(instructions).toContain(identity.baselineId);
+        expect(instructions).toContain(mapName);
+        expect(instructions).toMatch(/gameApplied\s*[:=]\s*false/i);
+        expect(instructions).toMatch(/runtimeVerified\s*[:=]\s*false/i);
+        for (const file of archive.review.files) {
+          expect(instructions).toContain(file.path);
+          expect(instructions).toContain(file.candidateSha256);
+        }
+        packages.push({ ...archive, entries });
+      }
+
+      // Stale candidate content may remain in history, but cannot become a downloadable verified ZIP.
+      const tampered = builder.read(candidate.mapPath) as MutableCandidateMap;
+      const entity = tampered.listEntities().find(item => item.name.startsWith("Tile_"))!;
+      const sprite = tampered.component(entity.path, SPRITE)!;
+      tampered.patchComponent(entity.path, SPRITE, { OrderInLayer: Number(sprite.OrderInLayer) + 1 }).write(candidate.mapPath);
+      const beforeRejected = savedHashes();
+      let rejection: unknown;
+      assertNoSyncWrites(() => {
+        try { reopened.packageCandidate({ ...link, candidateId: candidate.candidateId }, options()); }
+        catch (error) { rejection = error; }
+      });
+      expect(rejection).toMatchObject({ code: "CANDIDATE_BLOCKED", status: 409, review: { status: "blocked", gameApplied: false, runtimeVerified: false } });
+      expect(savedHashes()).toEqual(beforeRejected);
+      expect(directoryHashes(synced.baselineDir)).toEqual(Object.fromEntries(Object.entries(snapshots).filter(([path]) => path.startsWith(synced.baselineDir))));
+      expect(assertNoSyncWrites(() => reopened.listCandidates(link, options())).candidates.some(item => item.candidateId === candidate.candidateId)).toBe(true);
+      const archiveEvidence = packages.map((archive, index) => {
+        // Caller-side diagnostic output; the history/package APIs themselves never write an archive.
+        const zipPath = join(runRoot, mapName + (index === 0 ? "-unchanged.zip" : "-edited.zip"));
+        writeFileSync(zipPath, archive.bytes);
+        return {
+          zipPath, zipBytes: archive.bytes.length, zipSha256: hash(zipPath),
+          entries: [...archive.entries].map(([name, bytes]) => ({ name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") })),
+          candidateId: archive.review.candidateId, ready: archive.review.status,
+        };
+      });
+      const row = {
+        scenario: "candidate-history-and-package", mapName, baselineId: link.baselineId,
+        historySurvivedReopen: true, sameBaselineCandidates: 2, otherBaselineMarked: true,
+        packages: archiveEvidence, candidateTamperingBlocked: true, historyPackageWrites: 0,
+        baselineSnapshotHashesUnchanged: Object.keys(directoryHashes(synced.baselineDir)).length,
+        sourceFilesChecked: assertSourceManifest(synced.baselineDir),
+      };
+      evidence.push(row);
+      console.log("[candidate-history-package]", JSON.stringify(row));
     }, 90_000);
   }
 

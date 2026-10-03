@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatCandidateReview, validateCandidateReview,
-  type CandidateIdentity, type GameCandidateReview,
+  formatCandidateReview, validateCandidateReview, validateCandidateHistory, validateCandidateIdentity, candidateZipFilename, validateCandidateZipHeaders,
+  type CandidateIdentity, type GameCandidateReview, type GameCandidateHistory,
 } from "../lib/gameCandidate";
 
 const identity: CandidateIdentity = {
@@ -163,5 +163,116 @@ describe("read-only text review summary", () => {
     expect(text).toContain("후보 ID: " + identity.candidateId);
     expect(text).toContain("만든 시각: 2026-10-03T00:00:00.000Z");
     expect(text.endsWith("\n")).toBe(true);
+  });
+});
+
+const olderIdentity: CandidateIdentity = {
+  candidateId: "99999999-8888-4777-8666-555555555555", mapName: identity.mapName,
+  baselineId: "12345678-1234-4234-8234-123456789abc",
+};
+function historyReceipt(): GameCandidateHistory {
+  const current = receipt();
+  return {
+    mapName: identity.mapName, baselineId: identity.baselineId, skipped: 2,
+    candidates: [
+      { ...identity, createdAt: current.createdAt, summary: { ...current.summary },
+        applyFileCount: 2, referenceFiles: 42, sameBaseline: true, reviewAvailable: true },
+      { ...olderIdentity, createdAt: "2026-10-02T00:00:00.000Z", summary: { ...current.summary },
+        applyFileCount: 1, referenceFiles: 41, sameBaseline: false, reviewAvailable: false },
+    ],
+  };
+}
+describe("candidate history is a snapshot inventory, not a ready receipt", () => {
+  it("accepts current/older baseline records and preserves an unavailable legacy record without declaring readiness", () => {
+    const history = freezeDeep(historyReceipt()), before = JSON.stringify(history);
+    expect(() => validateCandidateHistory(history, identity)).not.toThrow();
+    expect(history.candidates[1].reviewAvailable).toBe(false);
+    for (const item of history.candidates) expect(item).not.toHaveProperty("status");
+    expect(JSON.stringify(history)).toBe(before);
+  });
+  it("accepts an empty history and never requires a current freshly baked candidate", () => {
+    const history = historyReceipt(); history.candidates = [];
+    expect(() => validateCandidateHistory(history, identity)).not.toThrow();
+  });
+  it.each(["mapName", "baselineId"] as const)("rejects history arriving for a previous %s", key => {
+    const history = historyReceipt();
+    expect(() => validateCandidateHistory(history, { ...identity, [key]: key === "mapName" ? "velos" : olderIdentity.baselineId })).toThrow("일치하지");
+  });
+  it.each([
+    ["record map", (h: GameCandidateHistory) => { h.candidates[0].mapName = "velos"; }],
+    ["baseline flag", (h: GameCandidateHistory) => { h.candidates[1].sameBaseline = true; }],
+    ["duplicate candidate", (h: GameCandidateHistory) => { h.candidates[1].candidateId = identity.candidateId; }],
+    ["oldest first", (h: GameCandidateHistory) => { h.candidates.reverse(); }],
+    ["invalid date", (h: GameCandidateHistory) => { h.candidates[0].createdAt = "yesterday"; }],
+    ["negative skipped", (h: GameCandidateHistory) => { h.skipped = -1; }],
+    ["negative summary", (h: GameCandidateHistory) => { h.candidates[0].summary.objectsAdded = -1; }],
+    ["fractional apply count", (h: GameCandidateHistory) => { h.candidates[0].applyFileCount = 1.5; }],
+    ["invalid reference count", (h: GameCandidateHistory) => { h.candidates[0].referenceFiles = NaN; }],
+    ["invalid availability", (h: GameCandidateHistory) => { h.candidates[0].reviewAvailable = "ready" as unknown as boolean; }],
+  ] as const)("rejects invalid history: %s", (_label, mutate) => {
+    const history = historyReceipt(); mutate(history);
+    expect(() => validateCandidateHistory(history, identity)).toThrow();
+  });
+  it("accepts the bounded latest 100 records but rejects a larger response", () => {
+    const history = historyReceipt(), sample = history.candidates[0];
+    history.candidates = Array.from({ length: 100 }, (_item, index) => ({
+      ...sample, candidateId: "11111111-2222-4333-8444-" + String(index).padStart(12, "0"),
+    }));
+    expect(() => validateCandidateHistory(history, identity)).not.toThrow();
+    history.candidates.push({ ...sample, candidateId: "11111111-2222-4333-8444-999999999999" });
+    expect(() => validateCandidateHistory(history, identity)).toThrow();
+  });
+  it("keeps the older record baseline when requesting fresh review instead of substituting the current editor baseline", () => {
+    const review = { ...receipt(), ...olderIdentity };
+    expect(() => validateCandidateReview(review, olderIdentity)).not.toThrow();
+    expect(() => validateCandidateReview(review, identity)).toThrow("일치하지");
+  });
+  it("preserves missing-baseline rebake guidance when a blocked result has no creation timestamp", () => {
+    const blocked = blockedReceipt();
+    blocked.createdAt = ""; blocked.files = [];
+    blocked.issues = ["기준 스냅샷이 없습니다. 게임 원본을 다시 가져온 뒤 후보 맵을 다시 구워 주세요."];
+    expect(() => validateCandidateReview(blocked, identity)).not.toThrow();
+    const text = formatCandidateReview(blocked);
+    expect(text).toContain(blocked.issues[0]); expect(text).toContain("만든 시각: 확인 불가");
+    const ready = receipt(); ready.createdAt = "";
+    expect(() => validateCandidateReview(ready, identity)).toThrow();
+  });
+});
+
+describe("ZIP filenames and transport identity", () => {
+  it("derives a filename only from validated map/UUID identity and accepts the exact attachment response", () => {
+    const name = identity.mapName + "-" + identity.candidateId + ".zip";
+    expect(candidateZipFilename(identity)).toBe(name);
+    expect(validateCandidateZipHeaders(identity, "application/zip", 'attachment; filename="' + name + '"')).toBe(name);
+    expect(validateCandidateZipHeaders(identity, "application/zip; charset=binary", 'attachment; filename="' + name + '"')).toBe(name);
+  });
+  it.each([
+    { ...identity, candidateId: "ferendel-" + identity.candidateId },
+    { ...identity, candidateId: "../" + identity.candidateId },
+    { ...identity, baselineId: "not-a-uuid" },
+    { ...identity, mapName: "../ferendel" },
+    { ...identity, mapName: "ferendel/map" },
+    { ...identity, mapName: "C:ferendel" },
+  ])("rejects an unsafe or folder-based identity before naming a ZIP", unsafe => {
+    expect(() => validateCandidateIdentity(unsafe)).toThrow("식별");
+    expect(() => candidateZipFilename(unsafe)).toThrow("식별");
+  });
+  it.each([
+    ["application/json", 'attachment; filename="' + identity.mapName + "-" + identity.candidateId + '.zip"'],
+    ["application/zip", 'attachment; filename="velos-' + identity.candidateId + '.zip"'],
+    ["application/zip", 'attachment; filename="ferendel-' + olderIdentity.candidateId + '.zip"'],
+    ["application/zip", 'attachment; filename="../ferendel-' + identity.candidateId + '.zip"'],
+    ["application/zip", 'inline; filename="ferendel-' + identity.candidateId + '.zip"'],
+    ["application/zip", null],
+    [null, null],
+  ])("rejects non-ZIP, stale identity or unsafe attachment metadata", (contentType, disposition) => {
+    expect(() => validateCandidateZipHeaders(identity, contentType, disposition)).toThrow("ZIP 응답");
+  });
+  it("does not turn a blocked ZIP response into success merely because it identifies the correct candidate", () => {
+    const review = blockedReceipt();
+    expect(() => validateCandidateReview(review, identity)).not.toThrow();
+    expect(review.status).toBe("blocked");
+    expect(() => validateCandidateZipHeaders(identity, "application/json", null)).toThrow();
+    expect(formatCandidateReview(review)).toContain("검토 결과: 다시 확인 필요");
   });
 });

@@ -1,5 +1,6 @@
 import type { GameSyncReport } from "../lib/gameSync";
 import { GameCandidatePanel } from "./GameCandidatePanel";
+import { GameCandidateHistory } from "./GameCandidateHistory";
 import { useEffect, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
@@ -127,6 +128,7 @@ export function GameSyncPanel() {
         <button className="game-open" onClick={() => void openMap()} disabled={locked || !maps.length}>맵 열기</button>
         <button onClick={() => void save()} disabled={locked || !linked || session.status === "saving"}>작업 저장</button>
         <button onClick={() => void bake()} disabled={locked || !linked}>후보 맵 굽기</button>
+        {gameSync && !session.loading && <GameCandidateHistory key={gameSync.baselineId} mapName={gameSync.mapName} baselineId={gameSync.baselineId} disabled={locked} />}
         {session.status === "error" && linked && <button onClick={() => setConfirmation("discard")} disabled={locked}>저장본 다시 열기</button>}
         {linked && <span className="game-save-state" role="status">{gameSync.mapName} · {saveLabel}{managed && session.savedAt && !dirty ? " " + new Date(session.savedAt).toLocaleTimeString("ko-KR") : ""}</span>}
         {!linked && <span>맵을 선택하면 기존 작업을 이어 엽니다.</span>}

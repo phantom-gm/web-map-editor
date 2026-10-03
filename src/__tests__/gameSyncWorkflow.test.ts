@@ -37,7 +37,7 @@ function fixture() {
   function put(root: string, relative: string, data: string | Buffer) {
     const file = path.join(root, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data); return file;
   }
-  for (const name of ["core.cjs", "object-edits.cjs", "walk-edits.cjs"]) {
+  for (const name of ["core.cjs", "object-edits.cjs", "walk-edits.cjs", "zip.cjs"]) {
     const relative = "scripts/game-sync/" + name;
     put(localEditor, relative, fs.readFileSync(path.join(editorRoot, relative)));
   }

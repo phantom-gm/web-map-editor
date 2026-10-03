@@ -40,6 +40,8 @@ interface SyncCore {
   previewBaselineProject(input: { mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
   compareEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
   reviewCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
+  listCandidates(input: { mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
+  packageCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): { filename: string; bytes: Buffer; review: unknown };
   createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string }): { project: ProjectFile; report: SyncReport };
   exportEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): {
     candidateId: string; candidateDir: string; mapPath: string; reportPath: string; report: SyncReport;
@@ -60,6 +62,25 @@ export function listGameMaps(): string[] {
   const files = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
   return [...files].filter((name) => /^[\w-]+\.map$/.test(name) && files.has(name.slice(0, -4) + ".json"))
     .map((name) => name.slice(0, -4)).sort();
+}
+
+export async function downloadGameCandidate(body: unknown): Promise<{ filename: string; bytes: Buffer; review: unknown }> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new GameSyncError("후보 ID 정보가 필요합니다.");
+  const input = body as Record<string, unknown>;
+  const keys = Object.keys(input).sort();
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+  if (keys.join(",") !== "baselineId,candidateId,mapName" || typeof input.mapName !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(input.mapName) ||
+    typeof input.candidateId !== "string" || !uuid.test(input.candidateId) || typeof input.baselineId !== "string" || !uuid.test(input.baselineId)) {
+    throw new GameSyncError("다운로드 요청에는 올바른 후보·맵·기준 ID만 포함해 주세요.");
+  }
+  const compiler = await core();
+  try {
+    return compiler.packageCandidate({ candidateId: input.candidateId, mapName: input.mapName, baselineId: input.baselineId }, gameSyncPaths());
+  } catch (error) {
+    const blocked = new GameSyncError(error instanceof Error ? error.message : String(error), 409) as GameSyncError & { review?: unknown };
+    if (error && typeof error === "object" && "review" in error) blocked.review = error.review;
+    throw blocked;
+  }
 }
 
 export async function runGameSync(body: unknown) {
@@ -83,6 +104,10 @@ export async function runGameSync(body: unknown) {
   if (input.action === "save") {
     const saved = saveWorkspace(input.project, (input.expectedRevision ?? null) as string | null, workspace);
     return { action: "save", revision: saved.revision, savedAt: saved.savedAt };
+  }
+  if (input.action === "list-candidates") {
+    if (typeof input.mapName !== "string" || typeof input.baselineId !== "string") throw new GameSyncError("맵과 동기화 기준 정보가 필요합니다.");
+    return { history: compiler.listCandidates({ mapName: input.mapName, baselineId: input.baselineId }, paths) };
   }
   if (input.action === "review-candidate") {
     if (typeof input.candidateId !== "string" || typeof input.mapName !== "string" || typeof input.baselineId !== "string") {

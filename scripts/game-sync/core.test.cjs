@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, validateStorageRoot, _test } = require('./core.cjs');
+const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -829,4 +829,137 @@ test('review catches baseline or reference snapshot tampering and changes during
     try { const review = reviewCandidate(input, f.options); assert.equal(changed, true); assert.equal(review.status, 'blocked'); assert.ok(review.issues.some(i => i.includes('검토 도중'))); }
     finally { fs.readFileSync = read; fs.writeFileSync(changedPath, original); }
   }
+});
+
+
+// ZIP checks intentionally parse the archive independently of the writer.
+function unzipStored(bytes) {
+  const entries = new Map(), end = bytes.length - 22;
+  assert.equal(bytes.readUInt32LE(end), 0x06054b50);
+  const count = bytes.readUInt16LE(end + 10), centralSize = bytes.readUInt32LE(end + 12);
+  let cursor = bytes.readUInt32LE(end + 16); const centralStart = cursor;
+  for (let n = 0; n < count; n++) {
+    assert.equal(bytes.readUInt32LE(cursor), 0x02014b50); assert.equal(bytes.readUInt16LE(cursor + 8), 0x800);
+    assert.equal(bytes.readUInt16LE(cursor + 10), 0);
+    const crc = bytes.readUInt32LE(cursor + 16), length = bytes.readUInt32LE(cursor + 24), nameLength = bytes.readUInt16LE(cursor + 28);
+    const name = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8'), offset = bytes.readUInt32LE(cursor + 42);
+    assert.equal(bytes.readUInt32LE(offset), 0x04034b50); assert.equal(bytes.readUInt16LE(offset + 6), 0x800);
+    assert.equal(bytes.readUInt32LE(offset + 14), crc); assert.equal(bytes.readUInt32LE(offset + 18), length);
+    assert.equal(bytes.subarray(offset + 30, offset + 30 + nameLength).toString('utf8'), name);
+    const data = bytes.subarray(offset + 30 + nameLength, offset + 30 + nameLength + length);
+    let calculated = 0xffffffff;
+    for (const b of data) { calculated ^= b; for (let bit = 0; bit < 8; bit++) calculated = (calculated >>> 1) ^ ((calculated & 1) ? 0xedb88320 : 0); }
+    assert.equal((calculated ^ 0xffffffff) >>> 0, crc, 'CRC mismatch: ' + name);
+    assert.equal(entries.has(name), false); entries.set(name, data);
+    cursor += 46 + nameLength + bytes.readUInt16LE(cursor + 30) + bytes.readUInt16LE(cursor + 32);
+  }
+  assert.equal(cursor - centralStart, centralSize); assert.equal(cursor, end);
+  return entries;
+}
+test('ZIP writer emits UTF-8 stored entries with valid CRC and rejects unsafe/duplicate/ZIP64 names', () => {
+  const { createStoredZip, crc32 } = require('./zip.cjs');
+  assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926);
+  const entries = [{ name: 'map/한글.map', bytes: Buffer.from('native bytes\r\n') }, { name: 'empty.csv', bytes: Buffer.alloc(0) }];
+  const archive = unzipStored(createStoredZip(entries));
+  for (const entry of entries) assert.deepEqual(archive.get(entry.name), entry.bytes);
+  for (const name of ['../outside', '/absolute', 'C:/game', 'a\\b', 'a//b', 'a/./b', 'bad\0path', 'x'.repeat(65536)]) assert.throws(() => createStoredZip([{ name, bytes: Buffer.alloc(0) }]));
+  assert.throws(() => createStoredZip([entries[0], entries[0]]));
+  assert.throws(() => createStoredZip(Array(65536).fill(entries[0])));
+  assert.throws(() => createStoredZip(entries, new Date('invalid')));
+});
+test('candidate history includes earlier baselines, valid legacy reports and bounded newest records without writes', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(listCandidates(compareIdentity(project), f.options), { ...compareIdentity(project), candidates: [], skipped: 0 });
+  const first = exportEditedProject(project, f.options), second = exportEditedProject(project, f.options);
+  fs.unlinkSync(path.join(second.candidateDir, 'review-manifest.json'));
+  const next = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const third = exportEditedProject(next.project, f.options), input = compareIdentity(next.project);
+  const bad = path.join(f.options.outputRoot, 'fixture-' + crypto.randomUUID()); fs.mkdirSync(bad); fs.writeFileSync(path.join(bad, 'review-manifest.json'), '{broken');
+  const unrelated = path.join(f.options.outputRoot, 'another-' + crypto.randomUUID()); fs.mkdirSync(unrelated);
+  const before = fileTreeHashes(f.temp), result = readWithoutWrites(() => listCandidates(input, f.options));
+  assert.deepEqual(fileTreeHashes(f.temp), before); assert.equal(result.skipped, 1); assert.equal(result.candidates.length, 3);
+  assert.equal(result.candidates[0].candidateId, third.candidateId);
+  const old = result.candidates.find(c => c.candidateId === first.candidateId), legacy = result.candidates.find(c => c.candidateId === second.candidateId);
+  assert.equal(old.sameBaseline, false); assert.equal(old.reviewAvailable, true); assert.equal(legacy.reviewAvailable, false);
+  assert.equal(result.candidates[0].sameBaseline, true); assert.ok(result.candidates.every(c => !Object.hasOwn(c, 'status')));
+  // The history is metadata only: a missing apply file remains visible but cannot be downloaded.
+  fs.unlinkSync(third.mapPath); assert.equal(listCandidates(input, f.options).candidates.length, 3);
+  assert.throws(() => packageCandidate(reviewInput(third, next.project), f.options), e => e.code === 'CANDIDATE_BLOCKED' && e.review.status === 'blocked');
+  const report = JSON.parse(fs.readFileSync(path.join(second.candidateDir, 'report.json'), 'utf8'));
+  for (let i = 0; i < 103; i++) {
+    const candidateId = crypto.randomUUID(), dir = path.join(f.options.outputRoot, 'fixture-' + candidateId);
+    fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify({ ...report, candidateId, createdAt: new Date(Date.UTC(2040, 0, 1, 0, 0, i)).toISOString() }));
+  }
+  const bounded = listCandidates(input, f.options); assert.equal(bounded.candidates.length, 100); assert.equal(bounded.skipped, 1);
+  assert.equal(bounded.candidates[0].createdAt, new Date(Date.UTC(2040, 0, 1, 0, 0, 102)).toISOString());
+});
+test('candidate package contains only exact apply files and review text, preserving all source and candidate files', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([1, 1]); const output = exportEditedProject(project, f.options);
+  const before = fileTreeHashes(f.temp), packaged = readWithoutWrites(() => packageCandidate(reviewInput(output, project), f.options));
+  assert.deepEqual(fileTreeHashes(f.temp), before); assert.equal(packaged.filename, 'fixture-' + output.candidateId + '.zip'); assert.equal(packaged.review.status, 'ready');
+  const entries = unzipStored(packaged.bytes);
+  assert.deepEqual([...entries.keys()], [...output.report.applyFiles, 'REVIEW.txt']);
+  for (const relative of output.report.applyFiles) assert.deepEqual(entries.get(relative), fs.readFileSync(path.join(output.candidateDir, relative)));
+  const note = entries.get('REVIEW.txt').toString('utf8');
+  assert.match(note, /gameApplied: false/); assert.match(note, /runtimeVerified: false/); assert.ok(note.includes(output.candidateId));
+  for (const row of packaged.review.files) assert.ok(note.includes(row.candidateSha256) && note.includes(row.sourceSha256));
+  assert.ok([...entries.keys()].every(name => !name.startsWith('reference/') && !name.includes('editor-project') && !name.includes('manifest')));
+});
+test('candidate package rejects stale sources, corrupt or missing apply files and missing review metadata', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([1, 1]); const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  for (const file of [output.mapPath, path.join(output.candidateDir, f.walkRelative), f.walkPath, f.mapPath, path.join(output.candidateDir, 'editor-project.json')]) {
+    const original = fs.readFileSync(file); fs.appendFileSync(file, '\r\nmodified');
+    assert.throws(() => packageCandidate(input, f.options), e => e.code === 'CANDIDATE_BLOCKED' && e.status === 409 && e.review.status === 'blocked');
+    fs.writeFileSync(file, original);
+  }
+  fs.unlinkSync(output.mapPath);
+  assert.throws(() => packageCandidate(input, f.options), e => e.code === 'CANDIDATE_BLOCKED');
+  fs.writeFileSync(output.mapPath, fs.readFileSync(f.mapPath)); fs.unlinkSync(path.join(output.candidateDir, 'review-manifest.json'));
+  assert.throws(() => packageCandidate(input, f.options));
+});
+test('history and packaging refuse traversal, links, malformed metadata and oversized candidate data', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  assert.throws(() => listCandidates({ mapName: '../fixture', baselineId: input.baselineId }, f.options));
+  assert.throws(() => packageCandidate({ ...input, candidateId: '../escape' }, f.options));
+  assert.throws(() => packageCandidate(input, { ...f.options, outputRoot: f.root }), /게임/);
+  const metadataPath = path.join(output.candidateDir, 'review-manifest.json'), metadata = fs.readFileSync(metadataPath);
+  fs.writeFileSync(metadataPath, 'null'); assert.equal(listCandidates(compareIdentity(project), f.options).skipped, 1); fs.writeFileSync(metadataPath, metadata);
+  const linkDir = path.join(f.options.outputRoot, 'fixture-' + crypto.randomUUID()); fs.symlinkSync(f.root, linkDir, 'junction');
+  assert.equal(listCandidates(compareIdentity(project), f.options).skipped, 1);
+  fs.symlinkSync(f.root, path.join(output.candidateDir, 'linked-game'), 'junction');
+  assert.throws(() => packageCandidate(input, f.options), e => e.code === 'UNSAFE_CANDIDATE'); fs.unlinkSync(path.join(output.candidateDir, 'linked-game'));
+  const tooBig = path.join(output.candidateDir, 'large.bin'); fs.writeFileSync(tooBig, ''); fs.truncateSync(tooBig, 128 * 1024 * 1024 + 1);
+  const originalRead = fs.readFileSync; fs.readFileSync = function(file, ...args) { assert.notEqual(path.resolve(String(file)), path.resolve(tooBig), 'must reject size before reading'); return originalRead.call(this, file, ...args); };
+  try { assert.throws(() => packageCandidate(input, f.options), e => e.code === 'CANDIDATE_BLOCKED' && e.status === 409); } finally { fs.readFileSync = originalRead; }
+});
+test('packaging rechecks sources and metadata after reading the ZIP byte snapshot', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([1, 1]); const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
+  const metadataPath = path.join(output.candidateDir, 'review-manifest.json');
+  for (const target of [f.walkPath, metadataPath]) {
+    const source = fs.readFileSync(target), originalRead = fs.readFileSync; let mapReads = 0;
+    fs.readFileSync = function(file, ...args) {
+      const value = originalRead.call(this, file, ...args);
+      // First review reads the map twice, then package reads its captured bytes.
+      if (path.resolve(String(file)) === path.resolve(output.mapPath) && ++mapReads === 3) fs.appendFileSync(target, '\r\n');
+      return value;
+    };
+    try { assert.throws(() => packageCandidate(input, f.options), e => e.code === 'CANDIDATE_BLOCKED'); } finally { fs.readFileSync = originalRead; fs.writeFileSync(target, source); }
+  }
+});
+
+test('applied DT_Walk source size is checked before review allocates its bytes', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([1, 1]); const output = exportEditedProject(project, f.options);
+  fs.truncateSync(f.walkPath, 128 * 1024 * 1024 + 1);
+  const read = fs.readFileSync;
+  fs.readFileSync = function(file, ...args) {
+    assert.notEqual(path.resolve(String(file)), path.resolve(f.walkPath), 'oversized walk source must not be read');
+    return read.call(this, file, ...args);
+  };
+  try { assert.throws(() => packageCandidate(reviewInput(output, project), f.options), error => error.code === 'CANDIDATE_BLOCKED' && error.status === 409); }
+  finally { fs.readFileSync = read; }
 });

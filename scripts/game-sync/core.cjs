@@ -688,6 +688,138 @@ function candidateChild(base, relative, root) {
   }
   return safeChild(base, relative, root);
 }
+
+function validReviewManifest(review, identity) {
+  const sized = item => !!item && typeof item.path === 'string' && Number.isSafeInteger(item.bytes) && item.bytes >= 0;
+  const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
+  return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
+    typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 2 &&
+    review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
+    Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
+    artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
+}
+function readLimitedCandidate(base, relative, root, maximum) {
+  const file = candidateChild(base, relative, root), stat = fs.statSync(file);
+  if (!stat.isFile() || stat.size > maximum) fail('CANDIDATE_SIZE_LIMIT', '후보 파일 형식 또는 크기 한도를 확인해 주세요: ' + relative);
+  const bytes = fs.readFileSync(file);
+  if (bytes.length > maximum) fail('CANDIDATE_SIZE_LIMIT', '후보 파일 크기가 읽는 도중 한도를 넘었습니다. 다시 검토해 주세요.');
+  return bytes;
+}
+function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
+  const { mapName, baselineId } = input || {};
+  validMapName(mapName);
+  if (!REVIEW_UUID.test(baselineId || '')) fail('INVALID_BASELINE', '동기화 기준 ID가 올바르지 않습니다.');
+  const state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, { gameRoot, baselineRoot });
+  const { root, manifest } = state, output = outsideGame(outputRoot, root), storage = outsideGame(baselineRoot, root);
+  if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
+  validMapName(manifest.mapFileName);
+  const result = { mapName, baselineId, candidates: [], skipped: 0 };
+  let entries;
+  try { entries = fs.readdirSync(output, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return result; throw error; }
+  const prefix = manifest.mapFileName + '-';
+  for (const entry of entries) {
+    if (!entry.name.startsWith(prefix)) continue;
+    const candidateId = entry.name.slice(prefix.length);
+    try {
+      if (!REVIEW_UUID.test(candidateId) || !entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Invalid candidate directory.');
+      const dir = candidateChild(output, entry.name, root);
+      let review = null;
+      try { review = JSON.parse(readLimitedCandidate(dir, 'review-manifest.json', root, 2 * 1024 * 1024)); if (!review) throw new Error('Invalid review metadata.'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const reportBytes = readLimitedCandidate(dir, 'report.json', root, 8 * 1024 * 1024), report = JSON.parse(reportBytes);
+      const recordedBaseline = report?.baselineId;
+      if (!report || report.mapName !== mapName || report.candidateId !== candidateId || !REVIEW_UUID.test(recordedBaseline || '') ||
+        typeof report.createdAt !== 'string' || !Number.isFinite(Date.parse(report.createdAt)) || report.candidateOnly !== true ||
+        report.gameApplied !== false || report.runtimeVerified !== false) throw new Error('Invalid candidate identity.');
+      const summary = candidateSummary(report);
+      if (Object.values(summary).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('Invalid candidate summary.');
+      const walk = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
+      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : [])];
+      if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
+      for (const relative of applyFiles) candidateChild(dir, relative, root);
+      if (review) {
+        if (!validReviewManifest(review, { candidateId, mapName, baselineId: recordedBaseline }) || review.createdAt !== report.createdAt ||
+          review.report.sha256 !== hash(reportBytes) || review.report.bytes !== reportBytes.length || stable(review.summary) !== stable(summary) ||
+          stable(review.applyFiles.map(f => f.path)) !== stable(applyFiles) || review.referenceFiles.length !== report.datasetFilesCopied) throw new Error('Invalid review metadata.');
+        for (const item of [...review.referenceFiles, review.project, review.report]) candidateChild(dir, item.path, root);
+      }
+      // Listing describes saved metadata only. It never claims a candidate is ready.
+      result.candidates.push({ candidateId, mapName, baselineId: recordedBaseline, createdAt: report.createdAt, summary,
+        applyFileCount: applyFiles.length, referenceFiles: report.datasetFilesCopied, sameBaseline: recordedBaseline === baselineId, reviewAvailable: review !== null });
+    } catch { result.skipped++; }
+  }
+  result.candidates.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.candidateId.localeCompare(b.candidateId));
+  result.candidates = result.candidates.slice(0, 100);
+  return result;
+}
+function packageFailure(message, review) {
+  const error = new Error(message); error.name = 'GameSyncError'; error.code = 'CANDIDATE_BLOCKED'; error.status = 409;
+  if (review?.status === 'blocked') error.review = review;
+  throw error;
+}
+function packageCandidate(input, options) {
+  const { MAX_ZIP_BYTES, createStoredZip } = require('./zip.cjs');
+  const { candidateId, mapName, baselineId } = input || {};
+  validMapName(mapName);
+  if (!REVIEW_UUID.test(candidateId || '') || !REVIEW_UUID.test(baselineId || '')) fail('INVALID_CANDIDATE', '후보와 동기화 기준 ID가 올바르지 않습니다.');
+  const root = gamePath(options.gameRoot), output = outsideGame(options.outputRoot, root), storage = outsideGame(options.baselineRoot, root);
+  if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
+  const state = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId } }, options);
+  validMapName(state.manifest.mapFileName);
+  const dir = candidateChild(output, state.manifest.mapFileName + '-' + candidateId, root);
+  // Check sizes before review reads candidate data; do not allocate unbounded local files.
+  let total = 0;
+  const visit = (base, relative = '') => {
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      const child = relative ? relative + '/' + entry.name : entry.name, file = candidateChild(dir, child, root);
+      if (entry.isDirectory()) visit(file, child);
+      else {
+        const stat = fs.statSync(file);
+        if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size > MAX_ZIP_BYTES || (total += stat.size) > MAX_ZIP_BYTES) packageFailure('후보 파일의 합계가 다운로드 한도 128 MiB를 넘거나 일반 파일이 아닙니다.');
+      }
+    }
+  };
+  try { visit(dir); } catch (error) { if (error.code === 'ENOENT') packageFailure('후보 폴더가 없어졌습니다. 후보를 다시 구워 주세요.'); throw error; }
+  let metadataBytes;
+  try { metadataBytes = readLimitedCandidate(dir, 'review-manifest.json', root, 2 * 1024 * 1024); }
+  catch (error) { if (error.code === 'ENOENT') packageFailure('검토 기록이 없어 ZIP을 받을 수 없습니다. 후보를 다시 구워 주세요.', reviewCandidate(input, options)); throw error; }
+  let metadata;
+  try { metadata = JSON.parse(metadataBytes); } catch { packageFailure('후보 검토 기록을 읽을 수 없습니다. 후보를 다시 구워 주세요.'); }
+  const applyWalk = state.manifest.datasetFiles.filter(relative => path.basename(relative) === 'DT_Walk.csv' && metadata?.applyFiles?.some?.(item => item.path === relative));
+  for (const entry of state.manifest.sourceFiles.filter(f => !state.manifest.datasetFiles.includes(f.relative) || applyWalk.includes(f.relative))) {
+    try { if (fs.statSync(sourceRelative(root, entry.relative)).size > MAX_ZIP_BYTES) packageFailure('게임 원본 파일 크기가 다운로드 검토 한도를 넘었습니다.'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const metadataHash = hash(metadataBytes);
+  const first = reviewCandidate(input, options);
+  if (first.status !== 'ready') packageFailure('후보 검토를 통과해야 ZIP을 받을 수 있습니다. 후보를 다시 확인해 주세요.', first);
+  let applySize = 0;
+  const entries = first.files.map(item => {
+    applySize += item.bytes;
+    if (!Number.isSafeInteger(applySize) || applySize > MAX_ZIP_BYTES) packageFailure('적용 파일이 다운로드 한도 128 MiB를 넘습니다.', first);
+    let bytes;
+    try { bytes = readLimitedCandidate(dir, item.path, root, item.bytes); }
+    catch (error) { packageFailure('ZIP 준비 중 후보 파일을 읽을 수 없습니다. 다시 검토해 주세요: ' + error.message); }
+    if (bytes.length !== item.bytes || hash(bytes) !== item.candidateSha256) packageFailure('ZIP 준비 중 후보 파일이 바뀌었습니다. 다시 검토해 주세요.');
+    return { name: item.path, bytes };
+  });
+  const final = reviewCandidate(input, options);
+  if (final.status !== 'ready') packageFailure('ZIP 준비 중 후보 또는 게임 원본이 바뀌었습니다. 다시 검토해 주세요.', final);
+  const basis = review => ({ candidateId: review.candidateId, mapName: review.mapName, baselineId: review.baselineId, createdAt: review.createdAt,
+    files: review.files, summary: review.summary, referenceFiles: review.referenceFiles });
+  if (metadataHash !== hash(readLimitedCandidate(dir, 'review-manifest.json', root, 2 * 1024 * 1024)) || stable(basis(first)) !== stable(basis(final)) || entries.some((entry, i) => hash(entry.bytes) !== final.files[i]?.candidateSha256)) packageFailure('ZIP 준비 중 후보 검토 기준이 바뀌었습니다. 다시 검토해 주세요.');
+  const lines = ['MAP CANDIDATE REVIEW — 파일 검토 기록', '',
+    '이 ZIP은 게임에 적용되지 않은 후보 파일입니다. 파일 검토 통과는 Maker/실플레이 검증을 뜻하지 않습니다.',
+    '게임 적용 전 별도 테스트 환경에서 확인하고 원본 백업과 복구 절차를 준비하세요.',
+    '참고 CSV, 편집 프로젝트, 동기화 기준과 적용 스크립트는 포함하지 않습니다.', '',
+    'candidateId: ' + final.candidateId, 'mapName: ' + final.mapName, 'baselineId: ' + final.baselineId,
+    'createdAt: ' + final.createdAt, 'checkedAt: ' + final.checkedAt, 'status: ready (file checks only)',
+    'gameApplied: false', 'runtimeVerified: false', '', 'Change summary:',
+    ...Object.entries(final.summary).map(([key, value]) => key + ': ' + value), '', 'Apply files (game-relative paths):',
+    ...final.files.flatMap(item => [item.path, '  bytes: ' + item.bytes, '  sourceSha256: ' + item.sourceSha256, '  candidateSha256: ' + item.candidateSha256]), ''];
+  entries.push({ name: 'REVIEW.txt', bytes: Buffer.from(lines.join('\r\n'), 'utf8') });
+  return { filename: mapName + '-' + candidateId + '.zip', bytes: createStoredZip(entries, new Date(final.createdAt)), review: final };
+}
+
 function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   const { candidateId, mapName, baselineId } = input || {};
   validMapName(mapName);
@@ -715,14 +847,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   if (!manifestBytes) { check('후보 검토 기록', false, '검토 기록이 없는 이전 후보이거나 후보 폴더가 없습니다. 현재 작업에서 후보 맵을 다시 구워 주세요.'); return result; }
   let review;
   if (!attempt('후보 검토 기록', () => { try { review = JSON.parse(manifestBytes.toString('utf8')); } catch { throw new Error('후보 검토 기록을 읽을 수 없습니다. 현재 작업에서 후보 맵을 다시 구워 주세요.'); } })) return result;
-  const sized = item => !!item && typeof item.path === 'string' && Number.isSafeInteger(item.bytes) && item.bytes >= 0;
-  const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
-  const valid = !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === candidateId && review.mapName === mapName && review.baselineId === baselineId &&
-    typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 2 &&
-    review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
-    Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
-    artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
+  const valid = validReviewManifest(review, { candidateId, mapName, baselineId });
   if (!check('후보 식별 정보', valid, valid ? undefined : '후보 기록 형식 또는 맵·기준 ID가 일치하지 않습니다. 후보를 다시 구워 주세요.')) return result;
   result.createdAt = review.createdAt; result.referenceFiles = review.referenceFiles.length;
   check('기준 연결 기록', hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) === review.baselineManifestSha256, '후보를 만든 동기화 기준 기록과 현재 기준 기록이 일치하지 않습니다.');
@@ -793,6 +918,6 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   result.checkedAt = new Date().toISOString(); result.status = result.issues.length ? 'blocked' : 'ready';
   return result;
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, validateStorageRoot,
+module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

@@ -1027,3 +1027,16 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .candidate-location code { display:block; }
 .candidate-dialog-actions { position:sticky; bottom:0; display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px; padding:12px 18px; background:#202e3b; border-top:1px solid #3b5062; }
 .candidate-dialog-actions p { flex:1 1 260px; margin:0; color:#aebfce; font-size:11px; line-height:1.5; }
+
+/* Candidate history stays independent of the current editor draft. */
+.candidate-history-dialog { width:min(880px, calc(100vw - 32px)); }
+.candidate-history-list { display:flex; flex-direction:column; gap:10px; list-style:none; padding:0; margin:12px 0 0; }
+.game-candidate-dialog .candidate-history-item { display:flex; flex-direction:column; gap:7px; width:100%; padding:12px; text-align:left; font-size:12px; line-height:1.45; }
+.game-candidate-dialog .candidate-history-item:disabled { cursor:default; opacity:.7; }
+.candidate-history-top, .candidate-history-bottom { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; }
+.candidate-history-current, .candidate-history-previous { border-radius:4px; padding:2px 6px; font-size:11px; }
+.candidate-history-current { color:#c3e7f4; background:#284c61; }
+.candidate-history-previous { color:#dbcbaa; background:#4a4030; }
+.candidate-history-id { color:#a5bacb; font-size:10px; overflow-wrap:anywhere; }
+.candidate-history-bottom { margin-top:3px; color:#b2c4d1; font-size:11px; }
+.candidate-history-bottom strong { color:#c2e4f4; }
