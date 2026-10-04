@@ -204,7 +204,32 @@ function readSnapshotSet(root, relatives) {
     return { relative, exists, sha256: bytes ? hash(bytes) : null, bytes };
   });
 }
-function verifySources(root, manifest, { includeDatasets = false } = {}) {
+// Accept inventory refreshes only when every old resource and the tile catalog remain
+// identical. Baseline snapshots stay immutable; imports still require byte-exact capture.
+function compatibleInventory(before, after) {
+  const records = lock => {
+    if (!lock || !Array.isArray(lock.resources) ||
+        (lock.count !== undefined && lock.count !== lock.resources.length)) return null;
+    const byId = new Map();
+    for (const resource of lock.resources) {
+      if (!resource || typeof resource.ruid !== 'string' || !resource.ruid ||
+          typeof resource.name !== 'string' || byId.has(resource.ruid)) return null;
+      byId.set(resource.ruid, resource);
+    }
+    return byId;
+  };
+  const oldRecords = records(before), newRecords = records(after);
+  if (!oldRecords || !newRecords) return false;
+  const metadata = lock => Object.fromEntries(Object.entries(lock).filter(([k]) => !['resources', 'generatedAt', 'count'].includes(k)));
+  if (stable(metadata(before)) !== stable(metadata(after))) return false;
+  for (const [id, resource] of oldRecords) if (stable(resource) !== stable(newRecords.get(id))) return false;
+  const oldNames = new Set([...oldRecords.values()].map(r => r.name));
+  for (const [id, resource] of newRecords) if (!oldRecords.has(id) && oldNames.has(resource.name)) return false;
+  try { return stable(catalogFromLock(before)) === stable(catalogFromLock(after)); }
+  catch { return false; }
+}
+function verifySources(root, manifest, { includeDatasets = false, baselineDir } = {}) {
+  let strictSourceFilesUnchangedSinceBaseline = true;
   const referenceFiles = new Set(manifest.datasetFiles);
   if (includeDatasets && stable(datasetFiles(root)) !== stable(manifest.datasetFiles)) fail('STALE_SOURCE', '게임 DataSet 파일 목록이 기준 시점과 달라졌습니다. 다시 동기화하세요.');
   for (const f of manifest.sourceFiles) {
@@ -213,10 +238,19 @@ function verifySources(root, manifest, { includeDatasets = false } = {}) {
     if (!includeDatasets && referenceFiles.has(f.relative)) continue;
     const absolute = sourceRelative(root, f.relative);
     const exists = fs.existsSync(absolute);
-    if (exists !== f.exists || (exists && hash(fs.readFileSync(absolute)) !== f.sha256)) {
+    const bytes = exists ? fs.readFileSync(absolute) : null;
+    if (exists !== f.exists || (exists && hash(bytes) !== f.sha256)) {
+      if (!includeDatasets && baselineDir && exists && f.exists && f.relative === 'scripts/storage-inventory.lock.json') {
+        const snapshot = fs.readFileSync(safeChild(baselineDir, 'snapshot/' + f.relative, root));
+        if (hash(snapshot) !== f.sha256) fail('BASELINE_CORRUPT', '기준 리소스 목록이 변경되었습니다. 다시 동기화하세요.');
+        let compatible = false;
+        try { compatible = compatibleInventory(JSON.parse(snapshot.toString('utf8')), JSON.parse(bytes.toString('utf8'))); } catch { /* Invalid inventory stays blocked. */ }
+        if (compatible) { strictSourceFilesUnchangedSinceBaseline = false; continue; }
+      }
       fail('STALE_SOURCE', '게임 원본이 기준 시점과 달라졌습니다: ' + f.relative + '. 다시 동기화하세요.');
     }
   }
+  return { strictSourceFilesUnchangedSinceBaseline };
 }
 function referenceChanged() {
   fail('REFERENCE_CHANGED_DURING_EXPORT', '내보내는 동안 CSV 참고 원본이 변경되었습니다. 편집 상태를 유지하고 후보 내보내기를 다시 시도하세요.');
@@ -529,7 +563,7 @@ function inspectSyncProject(project, options) {
 }
 function inspectLoadedProject(project, state) {
   const { root, manifest, baseline } = state;
-  verifySources(root, manifest);
+  const sourceStatus = verifySources(root, manifest, { baselineDir: state.dir });
   if (stable(protectedState(project)) !== stable(protectedState(baseline))) {
     const a = protectedState(baseline), b = protectedState(project);
     const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => stable(a[k]) !== stable(b[k]));
@@ -590,7 +624,7 @@ function inspectLoadedProject(project, state) {
       walkEditingSupported: walk.supported, walkEditingReasons: walk.reasons, walkChangedCells: walk.changed,
       changedCells: changed.length, affectedCells: dirty.size, removedGroundEntities: affected.length,
       generatedGroundEntities: replacements.length,
-      groundEditingSupported: manifest.groundEditingSupported, strictSourceFilesUnchangedSinceBaseline: true,
+      groundEditingSupported: manifest.groundEditingSupported, ...sourceStatus,
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
@@ -693,7 +727,7 @@ function previewEditedProject(project, options) {
 }
 function previewFromChecked(project, checked) {
   const { mb, deps } = buildCandidateMap(project, checked);
-  const { root, manifest, affected, replacements, report } = checked;
+  const { root, dir, manifest, affected, replacements, report } = checked;
   const blocks = manifest.blocks.filter(b => !affected.includes(b)).concat(replacements);
   const scene = previewMapSprites(mb, blocks);
   const nativeObjects = objectEdits.objectScene(mb, checked.objectProfile, checked.objects);
@@ -712,7 +746,7 @@ function previewFromChecked(project, checked) {
       flipX: false, flipY: false, sortingLayer: null, orderInLayer: 0, sourceOrder: scene.sprites.length, color: [1, 1, 1, 1] });
   }
   applyActorDepth(scene, mb, root, { npcs: checked.npcs.descriptors, monsters: checked.runtime.scene.monsters, portals: checked.runtime.scene.portals });
-  verifySources(root, manifest);
+  verifySources(root, manifest, { baselineDir: dir });
   return {
     version: VERSION, baselineId: manifest.baselineId, mapName: manifest.mapName,
     constants: { ...manifest.constants, PPU: deps.ppu }, groundOrigin: clone(project.groundOrigin),
@@ -818,14 +852,14 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     writeFile(candidateDir, 'reference/' + reference.relative, reference.bytes, root);
   }
   writeFile(candidateDir, 'editor-project.json', jsonBytes(project), root);
-  verifySources(root, manifest);
+  const sourceStatus = verifySources(root, manifest, { baselineDir: dir });
   verifyDatasetCapture(root, references.captured);
   if (references.changes.length) report.warnings.push('기준 이후 CSV ' + references.changes.length + '개가 변경되어 최신 참고 사본을 보관했습니다. 게임에는 적용하지 않습니다.');
   Object.assign(report, {
     candidateId, createdAt,
     sourceMapSha256: hash(originalBytes), candidateMapSha256: hash(fs.readFileSync(mapPath)),
-    exactMapBytes: originalBytes.equals(fs.readFileSync(mapPath)), sourceFilesUnchanged: true,
-    strictSourceFilesUnchangedSinceBaseline: true,
+    exactMapBytes: originalBytes.equals(fs.readFileSync(mapPath)), sourceFilesUnchanged: sourceStatus.strictSourceFilesUnchangedSinceBaseline,
+    ...sourceStatus,
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
@@ -1132,14 +1166,14 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
     if (!bytes || bytes.length !== item.bytes || hash(bytes) !== item.sha256) { referenceExact = false; result.issues.push(item.path + ': 참고 사본이 변경되었거나 없어졌습니다.'); }
   }
   check('참고 사본 무결성', referenceExact, referenceExact ? undefined : '참고 사본을 포함한 후보 파일을 다시 구워 주세요.');
-  attempt('현재 게임의 맵·프로젝트·변환 기준', () => verifySources(root, manifest));
+  attempt('현재 게임의 맵·프로젝트·변환 기준', () => verifySources(root, manifest, { baselineDir: dir }));
   attempt('검토 중 파일 불변', () => {
     for (const [relative, expected] of captured) { const bytes = read(relative); if (!bytes || hash(bytes) !== expected) throw new Error('검토 도중 후보 파일이 바뀌었습니다. 다시 검토해 주세요: ' + relative); }
     for (const item of result.files) {
       let bytes = null; try { bytes = fs.readFileSync(sourceRelative(root, item.path)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
       if ((bytes ? hash(bytes) : null) !== item.currentSourceSha256) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
     }
-    verifySources(root, manifest);
+    verifySources(root, manifest, { baselineDir: dir });
     if (runtimeChanged && project) { const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []); if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited).length) throw new Error('검토 도중 런타임 원본이 변경되었습니다. 다시 검토해 주세요.'); }
     if (runtimeUsesNpcOccupancy(report) && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).includes(profile.spawnRelative)) throw new Error('검토 도중 NPC 배치 원본이 변경되었습니다.'); }
     if (npcChanged && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).length) throw new Error('검토 도중 NPC 원본이 변경되었습니다. 다시 검토해 주세요.'); }

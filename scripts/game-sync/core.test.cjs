@@ -205,8 +205,8 @@ test('CSV additions and deletions since baseline copy only the current reference
   assert.equal(changes[1].currentSha256, null);
   assert.deepEqual(result.report.applyFiles, ['map/fixture.map']);
 });
-test('map, project, catalog, constants and builder changes remain strictly stale', fixtureOptions, t => {
-  for (const relative of ['map/fixture.map', 'map/fixture.json', 'scripts/storage-inventory.lock.json',
+test('map, project, constants and builder changes remain strictly stale', fixtureOptions, t => {
+  for (const relative of ['map/fixture.map', 'map/fixture.json',
     'scripts/build_map.cjs', '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs']) {
     const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
     fs.appendFileSync(path.join(f.root, relative), ' ');
@@ -776,7 +776,10 @@ test('review strictly checks current native map, project, catalog, constants and
   const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
   const output = exportEditedProject(project, f.options), input = reviewInput(output, project);
   for (const relative of ['map/fixture.map', 'map/fixture.json', 'scripts/storage-inventory.lock.json', 'scripts/build_map.cjs', '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs']) {
-    const file = path.join(f.root, relative), original = fs.readFileSync(file); fs.appendFileSync(file, ' ');
+    const file = path.join(f.root, relative), original = fs.readFileSync(file);
+    if (relative === 'scripts/storage-inventory.lock.json') {
+      const lock = JSON.parse(original); lock.resources[0].name = 'changed-resource'; fs.writeFileSync(file, JSON.stringify(lock));
+    } else fs.appendFileSync(file, ' ');
     const review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked', relative);
     assert.ok(review.issues.some(issue => issue.includes(relative))); fs.writeFileSync(file, original);
   }
@@ -1170,4 +1173,90 @@ test('runtime CSV surgical patch preserves reordered headers and refuses duplica
  const profile=runtime.analyzeRuntime(files,'fixture'),edit=runtime.inspectRuntime({blocked:[],gameMonsterEdits:runtimePatch([{entityId:'M1',count:2}])},profile,{TILE_W:2.56,TILE_H:1.28,ORIGIN_X:15,ORIGIN_Y:15,DEPTH_SCALE:.21875});
  const output=runtime.buildCandidates(edit,files)[0].bytes.toString();assert.ok(output.startsWith('\ufeffEnabled,#Note'));assert.ok(output.includes('True,"quoted, note",fixture,M1,201,1,1,2,0,3,0,0,0.5,True'));assert.ok(output.endsWith('False,last,other,M2,201,3,3,1,0,0,0,0,,'));
  const duplicate={...files,DT_MonsterSpawn:{...table,bytes:Buffer.from(bytes.toString()+'\nFalse,new,other,M2,201,4,4,1,0,0,0,0,,\n')}};assert.throws(()=>runtime.buildCandidates(edit,duplicate),e=>e.code==='UNSUPPORTED_RUNTIME');
+});
+
+// Catalog refreshes must not discard a saved draft or weaken genuine source checks.
+test('unrelated inventory additions preserve previews, drafts, exact output and candidate review', fixtureOptions, t => {
+  const f = fixture(t), imported = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const project = imported.project, lockPath = path.join(f.root, 'scripts/storage-inventory.lock.json');
+  const savedProject = JSON.stringify(project), baselineBefore = fileTreeHashes(imported.baselineDir);
+  const previous = exportEditedProject(project, f.options);
+  const inventory = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  inventory.resources.reverse();
+  inventory.resources.push({ ruid: 'new-ui-resource', name: '디스코드_닫기_기본', category: 'sprite' });
+  inventory.count = inventory.resources.length; inventory.generatedAt = '2026-10-04T00:00:00Z';
+  fs.writeFileSync(lockPath, JSON.stringify(inventory, null, 2));
+  const gameBefore = fileTreeHashes(f.root);
+  const scene = previewEditedProject(project, f.options);
+  assert.ok(scene.sprites.length > 0);
+  assert.equal(scene.report.strictSourceFilesUnchangedSinceBaseline, false);
+  assert.equal(compareEditedProject(project, f.options).scene.report.changedCells, 0);
+  const out = exportEditedProject(project, f.options);
+  assert.equal(out.report.exactMapBytes, true);
+  assert.equal(out.report.sourceFilesUnchanged, false);
+  assert.equal(out.report.strictSourceFilesUnchangedSinceBaseline, false);
+  for (const candidate of [previous, out]) {
+    const input = { candidateId: candidate.candidateId, mapName: 'fixture', baselineId: project.gameSync.baselineId };
+    const review = reviewCandidate(input, f.options);
+    assert.equal(review.status, 'ready', review.issues.join('\n'));
+    assert.ok(packageCandidate(input, f.options).bytes.length > 0);
+  }
+  assert.equal(JSON.stringify(project), savedProject);
+  assert.deepEqual(fileTreeHashes(imported.baselineDir), baselineBefore);
+  assert.deepEqual(fileTreeHashes(f.root), gameBefore);
+  project.ground.find(c => c[0] === 1 && c[1] === 1)[2] = project.palette.findIndex(p => p.ruid === tile('물').ruid);
+  assert.equal(exportEditedProject(project, f.options).report.changedCells, 1);
+});
+test('resource edits, removals, ambiguous names, new tiles and invalid inventories still block', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const lockPath = path.join(f.root, 'scripts/storage-inventory.lock.json');
+  const original = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  const out = exportEditedProject(project, f.options);
+  const mutations = [
+    lock => { lock.resources[0].name = 'renamed'; },
+    lock => { lock.resources[0].category = 'changed'; },
+    lock => { lock.resources.pop(); },
+    lock => { lock.resources.push({ ...lock.resources[0], ruid: 'conflicting-id' }); },
+    lock => { lock.resources.push({ ...lock.resources[0] }); },
+    lock => { lock.resources.push({ ruid: 'new-tile', name: '페른델_1x1_새타일_01' }); },
+    lock => { lock.resources.push({ name: 'missing-id' }); },
+    lock => { lock.groupCode = 'different-group'; },
+    lock => { lock.count = 99999; },
+  ];
+  for (const mutate of mutations) {
+    const lock = structuredClone(original); mutate(lock); fs.writeFileSync(lockPath, JSON.stringify(lock));
+    assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+    assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+    assert.equal(reviewCandidate({ candidateId: out.candidateId, mapName: 'fixture', baselineId: project.gameSync.baselineId }, f.options).status, 'blocked');
+  }
+  for (const invalid of ['{', '{"resources":null}']) {
+    fs.writeFileSync(lockPath, invalid);
+    assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+  }
+  fs.unlinkSync(lockPath);
+  assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+});
+
+test('inventory changes during capture or export are still checked at the final boundary', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const file = path.join(f.root, 'scripts/storage-inventory.lock.json'), original = fs.readFileSync(file);
+  for (const phase of ['import', 'export']) {
+    fs.writeFileSync(file, original);
+    const write = fs.writeFileSync; let changed = false;
+    fs.writeFileSync = function (destination, ...args) {
+      const result = write.call(this, destination, ...args);
+      if (!changed && String(destination).startsWith(phase === 'import' ? f.options.baselineRoot : f.options.outputRoot)) {
+        changed = true;
+        const lock = JSON.parse(original);
+        if (phase === 'import') lock.resources.push({ ruid: 'ui-new', name: 'UI addition' });
+        else lock.resources[0].name = 'changed-resource';
+        write.call(this, file, JSON.stringify(lock));
+      }
+      return result;
+    };
+    try {
+      assert.throws(() => phase === 'import' ? createSyncProject({ ...f.options, mapName: 'fixture' }) : exportEditedProject(project, f.options), e => e.code === 'STALE_SOURCE');
+      assert.equal(changed, true);
+    } finally { fs.writeFileSync = write; }
+  }
 });
