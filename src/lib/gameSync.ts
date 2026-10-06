@@ -16,6 +16,7 @@ export interface GameSyncReport {
   before?: GameGroundCounts;
   groundEditingSupported?: boolean;
   objectEditingSupported?: boolean;
+  objectSortingChanged?: number;
   objectChanges?: { moved: number; removed: number; added: number };
   editableObjects?: number;
   protectedObjects?: number;

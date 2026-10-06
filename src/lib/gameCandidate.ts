@@ -16,7 +16,7 @@ export interface GameCandidateReview extends CandidateIdentity {
   issues: string[];
   summary: {
     groundChangedCells: number; groundRepackedCells: number;
-    objectsMoved: number; objectsAdded: number; objectsRemoved: number;
+    objectsMoved: number; objectsAdded: number; objectsRemoved: number; objectsSorted?: number;
     walkChangedCells: number; blockedAdded?: number; blockedRemoved?: number;
     npcsMoved?: number; npcsAdded?: number; npcsRemoved?: number; npcsUpdated?: number;
     monstersMoved?: number; monstersAdded?: number; monstersRemoved?: number; monstersUpdated?: number;
@@ -29,7 +29,7 @@ export interface GameCandidateReview extends CandidateIdentity {
 
 const npcSummaryCounts = ["npcsMoved", "npcsAdded", "npcsRemoved", "npcsUpdated"] as const;
 const runtimeSummaryCounts = ["monstersMoved", "monstersAdded", "monstersRemoved", "monstersUpdated", "portalsMoved", "portalsAdded", "portalsRemoved", "portalsUpdated", "spawnChanged"] as const;
-const optionalSummaryCounts = ["blockedAdded", "blockedRemoved", ...npcSummaryCounts, ...runtimeSummaryCounts] as const;
+const optionalSummaryCounts = ["objectsSorted", "blockedAdded", "blockedRemoved", ...npcSummaryCounts, ...runtimeSummaryCounts] as const;
 
 /** Do not show another map's or an internally contradictory receipt as a successful check. */
 export function validateCandidateReview(review: GameCandidateReview, expected: CandidateIdentity): void {
@@ -98,7 +98,7 @@ export function formatCandidateReview(review: GameCandidateReview): string {
     "검토 결과: " + (review.status === "ready" ? "파일 검토 통과" : "다시 확인 필요"),
     "게임 적용: 안 함 / Maker 실행 검증: 안 함", "후보 폴더: " + review.candidateDir, "",
     "변경 요약", "바닥 직접 수정 " + s.groundChangedCells + "칸 / 주변 재구성 " + s.groundRepackedCells + "칸",
-    "오브젝트 이동 " + s.objectsMoved + " / 추가 " + s.objectsAdded + " / 삭제 " + s.objectsRemoved,
+    "오브젝트 이동 " + s.objectsMoved + " / 추가 " + s.objectsAdded + " / 삭제 " + s.objectsRemoved + " / 정렬 " + (s.objectsSorted ?? 0),
     "이동불가 변경 " + s.walkChangedCells + "칸", ...(npcSummary === null ? [] : ["NPC " + npcSummary]), ...formatCandidateRuntimeSummary(s).map(row => row.label + " " + row.text), "", "적용 대상 파일 (참고 사본 제외)",
   ];
   for (const file of review.files) lines.push(

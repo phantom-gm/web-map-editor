@@ -213,3 +213,39 @@ describe("native object project history", () => {
     expect(saved()).toEqual(before);
   });
 });
+
+describe("server resource placement history", () => {
+  it("preserves library, size and position through save, reopen, undo, redo and delete", () => {
+    state().loadProject(project(), [tile]);
+    const original = saved(), resource = "a".repeat(64);
+    state().addGameResourceReferences([resource]);
+    const library = saved();
+    const id = state().addGameObject("resource_" + resource, [1.28, -0.64])!;
+    state().scaleGameResource(id, 0.75);
+    const resized = saved();
+    state().depthGameResource(id, -0.4);
+    const depth = saved();
+    state().moveGameObjectTo(id, [2.567, -1.289]);
+    const moved = saved();
+    state().undo(); expect(saved()).toEqual(depth);
+    state().undo(); expect(saved()).toEqual(resized);
+    state().redo(); expect(saved()).toEqual(depth);
+    state().redo(); expect(saved()).toEqual(moved);
+    state().loadProject(moved, [tile]); expect(saved()).toEqual(moved);
+    state().removeGameObject(id); expect(saved()).toEqual(library);
+    state().undo(); expect(saved()).toEqual(moved);
+    state().loadProject(original, [tile]);
+    state().addGameResourceReferences([resource]); state().undo(); expect(saved()).toEqual(original);
+  });
+  it("rejects forged references and invalid scale without losing edits", () => {
+    expect(() => parseGameObjectEdits({ ...edits(), resources: ["../bad"] })).toThrow();
+    expect(() => parseGameObjectEdits({ ...edits(), added: [{ entityId: "x", prototypeId: "native-house", position: [0, 0], scale: 2 }] })).toThrow();
+    state().loadProject(project(), [tile]);
+    const resource = "a".repeat(64); state().addGameResourceReferences([resource]);
+    const id = state().addGameObject("resource_" + resource, [0, 0])!;
+    const before = saved(); state().scaleGameResource(id, 0);
+    expect(saved()).toEqual(before); expect(state().gameSelectionError).toBeTruthy();
+    state().depthGameResource(id, Infinity);
+    expect(saved()).toEqual(before); expect(state().gameSelectionError).toBeTruthy();
+  });
+});

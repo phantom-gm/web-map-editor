@@ -365,3 +365,19 @@ describe("all-or-nothing group prevalidation", () => {
     expect(saved()).toEqual(before);
   });
 });
+
+it("duplicates resized server resources and ignores unplaced library prototypes", () => {
+  const resource = "a".repeat(64), prototypeId = "resource_" + resource;
+  const patch: GameObjectEdits = { version: 1, resources: [resource], moved: [], removed: [], added: [{ entityId: copyId, prototypeId, position: [0.123, 0.456], scale: 0.75, depthOffset: -0.4 }] };
+  load(patch);
+  const scene = sceneFor({ version: 1, moved: [], removed: [], added: [] });
+  const prototype = { ...object(prototypeId, [0, 0, 0]), libraryOnly: true, resourceId: resource, scale: 1 };
+  scene.objectPrototypes = [...prototypes, prototype];
+  scene.objects = [...structuredClone(prototypes), { ...prototype, entityId: copyId, libraryOnly: false, position: [0.123, 0.456, 0.456 * 0.21875 - 0.4], scale: 0.75, depthOffset: -0.4 }];
+  state().selectGameObjects([copyId]);
+  expect(state().transformGameSelection("duplicate", scene, [1, 0])).toBe(true);
+  expect(saved().gameObjectEdits?.added[1].scale).toBe(0.75);
+  expect(saved().gameObjectEdits?.added[1].depthOffset).toBe(-0.4);
+  expect(saved().gameObjectEdits?.added[1].position).toEqual([1.403, -0.184]);
+  expect(saved().gameObjectEdits?.resources).toEqual([resource]);
+});

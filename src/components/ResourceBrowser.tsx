@@ -1,3 +1,5 @@
+import { useGamePreviewStore } from "../store/gamePreviewStore";
+import { gameRequest } from "../lib/gameWorkspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
 import { fetchSpriteAssets, listResources, type ResourceItem } from "../lib/apiClient";
@@ -15,13 +17,14 @@ const validRuid = (ruid: string) => /^[a-f0-9]{32}$/i.test(ruid);
 type Query = { category: string; search: string; revision: number };
 
 /** Read-only MSW catalog. Adding only copies verified server resource references into this project. */
-export function ResourceBrowser({ onClose }: { onClose: () => void }) {
+export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () => void; gameObjects?: boolean }) {
   const inPalette = useEditorStore(state=>state.palette);
-  const havePalette = useMemo(()=>new Set(inPalette.map(tile=>tile.ruid).filter(Boolean)),[inPalette]);
+  const prototypes = useGamePreviewStore(state=>state.scene?.objectPrototypes);
+  const havePalette = useMemo(()=>new Set(gameObjects ? (prototypes ?? []).filter(item=>item.resourceId).map(item=>item.ruid) : inPalette.map(tile=>tile.ruid).filter(Boolean)),[inPalette,prototypes,gameObjects]);
   const dialog = useRef<HTMLDialogElement>(null);
   const generation = useRef(0), addingGeneration = useRef(0);
   const imageRequest = useRef<AbortController | null>(null);
-  const [query,setQuery] = useState<Query>({category:"foothold",search:"",revision:0});
+  const [query,setQuery] = useState<Query>({category:gameObjects?"background":"foothold",search:"",revision:0});
   const [search,setSearch] = useState("");
   const [items,setItems] = useState<ResourceItem[]>([]);
   const [cursor,setCursor] = useState<string | null>(null);
@@ -85,6 +88,16 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
     const before=useEditorStore.getState(),projectIdentity=[before.mapName,before.gameSync?.baselineId,before.resetNonce].join(":");
     setAdding(true);setAddError("");
     try{
+      if(gameObjects){
+        if(!before.gameSync)throw new Error("게임 맵을 먼저 열어 주세요.");
+        const result = await gameRequest<{resourceIds:string[]}>({ action:"register-object-resources", mapName:before.gameSync.mapName, baselineId:before.gameSync.baselineId, resources:pending.map(item=>({ruid:item.ruid,name:item.name})) });
+        if(token!==addingGeneration.current||controller.signal.aborted)return;
+        const current=useEditorStore.getState();
+        if([current.mapName,current.gameSync?.baselineId,current.resetNonce].join(":")!==projectIdentity)throw new Error("편집 중인 맵이 바뀌었습니다. 다시 선택해 주세요.");
+        current.addGameResourceReferences(result.resourceIds);
+        useGamePreviewStore.getState().setShowObjects(true);
+        close();return;
+      }
       const assets=await fetchSpriteAssets(pending.map(item=>item.ruid),controller.signal);
       if(token!==addingGeneration.current||controller.signal.aborted)return;
       const missing=pending.filter(item=>!assets.images[item.ruid]);
@@ -104,7 +117,7 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
     onKeyDown={event=>{event.stopPropagation();if(event.key==="Escape"){event.preventDefault();close();}}}
     onKeyUp={event=>event.stopPropagation()}>
     <header className="resource-dialog-header">
-      <div><p className="resource-eyebrow">MSW 서버 리소스</p><h2 id="resource-dialog-title">라이브러리에서 소재 선택</h2><p>선택한 서버 이미지를 팔레트에 추가합니다.</p></div>
+      <div><p className="resource-eyebrow">MSW 서버 리소스</p><h2 id="resource-dialog-title">라이브러리에서 소재 선택</h2><p>{gameObjects?"선택한 이미지를 이 맵의 건물·장식 소재로 추가합니다. 바닥 브러시와 NPC·몬스터 배치는 기존 전용 도구를 이용하세요.":"선택한 서버 이미지를 팔레트에 추가합니다."}</p></div>
       <button type="button" className="resource-close" onClick={close} aria-label="리소스 라이브러리 닫기">닫기 <kbd>Esc</kbd></button>
     </header>
     <div className="resource-search-area">
@@ -127,7 +140,7 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
         {items.map((item,index)=>{
           const already=havePalette.has(item.ruid),chosen=selected.has(item.ruid)&&!already;
           return <button key={item.ruid} type="button" className={"resource-card"+(chosen?" chosen":"")+(already?" present":"")}
-            disabled={already||adding} aria-pressed={chosen} aria-label={item.name+(already?" · 이미 팔레트에 있음":chosen?" · 선택됨":"")}
+            disabled={already||adding} aria-pressed={chosen} aria-label={item.name+(already?(gameObjects?" · 이 맵에 추가된 소재":" · 이미 팔레트에 있음"):chosen?" · 선택됨":"")}
             title={item.name+"\n"+resourceCategoryName(item.subcategory)+"\n"+item.ruid} onClick={event=>toggle(index,event.shiftKey)}>
             <span className="resource-card-image">{item.imageUrl&&!failedThumbnails.has(item.ruid)?<img src={item.imageUrl} alt="" loading="lazy" onError={()=>setFailedThumbnails(previous=>new Set([...previous,item.ruid]))}/>:<span className="resource-image-fallback">미리보기 없음</span>}
               {(chosen||already)&&<span className="resource-card-check">{already?"추가됨":"✓ 선택"}</span>}</span>
@@ -140,7 +153,7 @@ export function ResourceBrowser({ onClose }: { onClose: () => void }) {
     <footer className="resource-dialog-footer">
       {addError&&<div className="resource-message resource-error" role="alert">{addError}</div>}
       <div className="resource-selection-summary"><div><strong>{pending.length}개 선택</strong><span>{pending.length>visibleSelected?"다른 검색에서 선택한 "+(pending.length-visibleSelected)+"개 포함 · ":""}Shift+클릭으로 여러 개 선택</span></div><button disabled={!pending.length||adding} onClick={()=>{setSelected(new Map());setAnchor(null);setAddError("");}}>선택 해제</button>
-        <button className="resource-primary" disabled={!pending.length||adding} onClick={()=>void addSelected()}>{adding?"서버 이미지 확인 중…":pending.length+"개 팔레트에 추가"}</button></div>
+        <button className="resource-primary" disabled={!pending.length||adding} onClick={()=>void addSelected()}>{adding?"서버 이미지 확인 중…":pending.length+(gameObjects?"개 소재 추가":"개 팔레트에 추가")}</button></div>
     </footer>
   </dialog>;
 }

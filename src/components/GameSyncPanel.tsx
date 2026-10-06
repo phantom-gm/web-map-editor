@@ -201,6 +201,7 @@ export function GameSyncPanel() {
           {currentPreview && preview.scene?.portals && " · 포털 " + preview.scene.portals.length + "개"}
           {currentReport?.unchanged === false && <>
             {" · 바닥 수정 " + (currentReport.changedCells ?? 0) + "칸 / 재구성 " + (currentReport.affectedCells ?? 0) + "칸"}
+            {!!currentReport.objectSortingChanged && " · 정렬 설정 " + currentReport.objectSortingChanged + "개"}
             {currentReport.objectChanges && " · 오브젝트 이동 " + currentReport.objectChanges.moved + " / 추가 " + currentReport.objectChanges.added + " / 삭제 " + currentReport.objectChanges.removed}
             {" · 이동불가 변경 " + (currentReport.walkChangedCells ?? 0) + "칸"}
           </>}

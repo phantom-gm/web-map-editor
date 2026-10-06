@@ -114,7 +114,7 @@ export function PalettePanel() {
   if(gameSync&&showObjects)return <aside className="palette" aria-label="건물·장식 라이브러리"><GameObjectLibrary/></aside>;
   return <aside className="palette server-palette" aria-label={gameSync?"바닥 소재 라이브러리":"MSW 소재 팔레트"}>
     <header className="server-palette-heading"><div><p className="resource-eyebrow">{gameSync?"이 맵의 MSW 소재":"MSW 서버 리소스"}</p><h2>{gameSync?"바닥 소재":"소재 팔레트"} <span>{eligible.length}</span></h2></div>
-      {!gameSync&&<button className="resource-primary" onClick={()=>setBrowseOpen(true)}>＋ 리소스 찾기</button>}
+      <button className="resource-primary" disabled={!!gameSync && (preview.status!=="ready" || preview.scene?.baselineId!==gameSync.baselineId)} onClick={()=>setBrowseOpen(true)}>{gameSync?"＋ 서버 소재 추가":"＋ 리소스 찾기"}</button>
     </header>
     {gameSync?<div className="palette-library-links"><button onClick={()=>{useGamePreviewStore.getState().setShowObjects(true);useEditorStore.getState().clearGameSelection();useEditorStore.getState().setTool("cursor");}}>건물·장식</button><button onClick={openNpcPanel}>NPC 목록</button><p>큰 타일 묶음은 저장할 때 자동으로 유지합니다.</p></div>:<p className="server-palette-help">서버 라이브러리에서 소재를 가져온 뒤 선택해 배치하세요.</p>}
     <div className="server-palette-filter"><label><span>팔레트 검색</span><input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="이름 또는 리소스 ID 검색"/></label>
@@ -144,6 +144,6 @@ export function PalettePanel() {
       <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={e=>void loadMetadata(e,"registry")}/>
       <input ref={npcRef} type="file" accept="application/json,.json,text/csv,.csv" multiple hidden onChange={e=>void loadMetadata(e,"catalog")}/>
     </div></details>}
-    {!gameSync&&browseOpen&&<ResourceBrowser key={resetNonce} onClose={()=>setBrowseOpen(false)}/>}
+    {browseOpen&&<ResourceBrowser key={resetNonce} gameObjects={!!gameSync} onClose={()=>setBrowseOpen(false)}/>}
   </aside>;
 }

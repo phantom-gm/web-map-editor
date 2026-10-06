@@ -61,6 +61,7 @@ export function GameComparisonSidebar() {
     ...(comparison.npcs?.added ?? []).map(item => ({ key: "npc-add-" + item.entityId, label: "NPC 추가 · " + (currentNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position })),
     ...(comparison.npcs?.removed ?? []).map(item => ({ key: "npc-remove-" + item.entityId, label: "NPC 삭제 · " + (originalNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position })),
     ...(comparison.npcs?.updated ?? []).map(item => ({ key: "npc-update-" + item.entityId, label: "NPC 설정 · " + (currentNpcs.get(item.entityId)?.name || item.entityId), kind: "npcs" as const, position: item.position, originalPosition: originalNpcs.get(item.entityId)?.position })),
+    ...(comparison.objects.sorted ?? []).map(item => ({ key: "sort-" + item.entityId, label: "정렬 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
     ...comparison.objects.moved.map(item => ({ key: "move-" + item.entityId, label: "이동 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.to, originalPosition: item.from })),
     ...comparison.objects.added.map(item => ({ key: "add-" + item.entityId, label: "추가 · " + (currentObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
     ...comparison.objects.removed.map(item => ({ key: "remove-" + item.entityId, label: "삭제 · " + (originalObjects.get(item.entityId)?.name || item.entityId), kind: "objects" as const, position: item.position })),
@@ -85,7 +86,7 @@ export function GameComparisonSidebar() {
       <label><input type="checkbox" checked={view.comparisonFilters.ground} onChange={e => view.setComparisonFilter("ground", e.target.checked)} />바닥 수정 {counts.groundChangedCells}칸</label>
       <small>주변 타일 재구성 {counts.groundRepackedCells}칸</small>
       <label><input type="checkbox" checked={view.comparisonFilters.objects} onChange={e => view.setComparisonFilter("objects", e.target.checked)} />오브젝트</label>
-      <small>이동 {counts.objectsMoved} · 추가 {counts.objectsAdded} · 삭제 {counts.objectsRemoved}</small>
+      <small>이동 {counts.objectsMoved} · 추가 {counts.objectsAdded} · 삭제 {counts.objectsRemoved} · 정렬 {counts.objectsSorted ?? 0}</small>
       <label><input type="checkbox" checked={view.comparisonFilters.npcs} onChange={e => view.setComparisonFilter("npcs", e.target.checked)} />NPC</label>
       <small>이동 {counts.npcsMoved} · 추가 {counts.npcsAdded} · 삭제 {counts.npcsRemoved} · 설정 {counts.npcsUpdated}</small>
       {([["monsters", "몬스터 출현", counts.monstersMoved, counts.monstersAdded, counts.monstersRemoved, counts.monstersUpdated], ["portals", "포털", counts.portalsMoved, counts.portalsAdded, counts.portalsRemoved, counts.portalsUpdated]] as const).map(([kind,label,moved,added,removed,updated]) => <div key={kind}><label><input type="checkbox" checked={!!view.comparisonFilters[kind]} onChange={e=>view.setComparisonFilter(kind,e.target.checked)} />{label}</label><small>이동 {moved} · 추가 {added} · 삭제 {removed} · 설정 {updated}</small></div>)}

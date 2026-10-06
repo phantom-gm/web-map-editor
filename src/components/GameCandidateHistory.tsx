@@ -92,7 +92,7 @@ export function GameCandidateHistory({ mapName, baselineId, disabled = false }:
                   <span className={item.sameBaseline ? "candidate-history-current" : "candidate-history-previous"}>{item.sameBaseline ? "현재 기준" : "이전 기준"}</span></span>
                 <code className="candidate-history-id">{item.candidateId}</code>
                 <span>바닥 수정 {item.summary.groundChangedCells}칸 · 주변 재구성 {item.summary.groundRepackedCells}칸</span>
-                <span>오브젝트 이동 {item.summary.objectsMoved} · 추가 {item.summary.objectsAdded} · 삭제 {item.summary.objectsRemoved} / 이동불가 변경 {item.summary.walkChangedCells}칸</span>
+                <span>오브젝트 이동 {item.summary.objectsMoved} · 추가 {item.summary.objectsAdded} · 삭제 {item.summary.objectsRemoved} · 정렬 {item.summary.objectsSorted ?? 0} / 이동불가 변경 {item.summary.walkChangedCells}칸</span>
                 {formatCandidateNpcSummary(item.summary) !== null && <span>NPC {formatCandidateNpcSummary(item.summary)}</span>}
                 {formatCandidateRuntimeSummary(item.summary).map(row => <Fragment key={row.label}><span>{row.label} {row.text}</span></Fragment>)}
                 <span className="candidate-history-bottom">대상 파일 {item.applyFileCount}개 · 참고 사본 {item.referenceFiles}개

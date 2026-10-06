@@ -1,6 +1,7 @@
+import { SURFACE_EPSILON } from "./objectSorting.cjs";
 import { cellKey, parseCellKey, type CellKey } from "./cell";
 import {
-  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit,
+  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting,
   type GameObjectDescriptor, type GameObjectEdits, type GameObjectPosition,
 } from "./gameObjects";
 import type { GamePreviewScene } from "./gamePreview";
@@ -59,7 +60,7 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
   const added = new Map((input.gameObjectEdits?.added ?? []).map(item => [item.entityId, item]));
   const moved = new Map((input.gameObjectEdits?.moved ?? []).map(item => [item.entityId, item]));
   const removed = new Set(input.gameObjectEdits?.removed ?? []);
-  const expectedIds = new Set([...prototypes.keys()].filter(id => !removed.has(id)));
+  const expectedIds = new Set([...prototypes.keys()].filter(id => !prototypes.get(id)?.libraryOnly && !removed.has(id)));
   for (const id of added.keys()) {
     if (expectedIds.has(id)) throw stale();
     expectedIds.add(id);
@@ -73,8 +74,16 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
     const prototype = prototypes.get(prototypeId);
     if (!prototype || object.prototypeId !== prototypeId || !near(object.sourcePosition, prototype.sourcePosition)) throw stale();
     const target = addition?.position ?? moved.get(id)?.position ?? prototype.sourcePosition.slice(0, 2);
-    const expected = [target[0], target[1], prototype.sourcePosition[2] + (target[1] - prototype.sourcePosition[1]) * DEPTH_SCALE];
+    const expected = [target[0], target[1], prototype.sourcePosition[2] + (target[1] - prototype.sourcePosition[1]) * DEPTH_SCALE + (addition?.depthOffset ?? 0)];
+    const setting = input.gameObjectEdits?.sorting?.find(row => row.entityId === id)?.setting;
+    if (JSON.stringify(setting) !== JSON.stringify(object.sortSetting)) throw stale();
+    if (setting?.mode === "surface") {
+      const support = objects.get(setting.supportId);
+      if (!support || support.sortSetting?.mode === "surface") throw stale();
+      expected[2] = support.position[2] - SURFACE_EPSILON;
+    }
     if (!near(object.position, expected)) throw stale();
+    if (prototype.resourceId && object.scale !== (addition?.scale ?? 1)) throw stale();
     if (object.canMove !== prototype.canMove || object.canDelete !== prototype.canDelete || object.canDuplicate !== prototype.canDuplicate) throw stale();
   }
   return objects;
@@ -152,14 +161,25 @@ export function planGameSelectionTransform(
       occupied.add(id); copyIds.push(id);
     }
   }
+  if (operation === "delete" && input.gameObjectEdits?.sorting?.some(row => row.setting.mode === "surface" && ids.includes(row.setting.supportId) && !ids.includes(row.entityId))) {
+    throw new Error("가구 위 소품이 연결되어 있습니다. 소품도 함께 선택하거나 먼저 정렬 연결을 해제하세요.");
+  }
   let gameObjectEdits = input.gameObjectEdits;
   for (let i = 0; i < objects.length; i++) {
     const object = objects[i];
     gameObjectEdits = operation === "move"
       ? moveGameObjectEdit(gameObjectEdits, object.entityId, positions[i])
       : operation === "duplicate"
-        ? addGameObjectEdit(gameObjectEdits, copyIds[i], object.prototypeId, positions[i])
+        ? addGameObjectEdit(gameObjectEdits, copyIds[i], object.prototypeId, positions[i], object.resourceId ? object.scale : undefined, object.resourceId ? object.depthOffset : undefined)
         : removeGameObjectEdit(gameObjectEdits, object.entityId);
+  }
+  if (operation === "duplicate") for (let i = 0; i < objects.length; i++) {
+    const setting = objects[i].sortSetting;
+    if (setting) {
+      const index = setting.mode === "surface" ? ids.indexOf(setting.supportId) : -1;
+      const copied = setting.mode === "surface" && index >= 0 ? { ...setting, supportId: copyIds[index] } : setting;
+      gameObjectEdits = setGameObjectSorting(gameObjectEdits, copyIds[i], copied);
+    }
   }
   const blocked = cells.length ? new Set(input.blocked) : input.blocked;
   if (operation !== "duplicate") for (const key of cells) blocked.delete(key);

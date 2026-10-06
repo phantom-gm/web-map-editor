@@ -44,6 +44,7 @@ export interface GameComparison {
     replacementBlocks: GameComparisonGroundBlock[];
   };
   objects: {
+    sorted?: { entityId: string; position: [number, number, number] }[];
     moved: { entityId: string; from: [number, number, number]; to: [number, number, number] }[];
     added: { entityId: string; prototypeId: string; position: [number, number, number] }[];
     removed: { entityId: string; position: [number, number, number] }[];
@@ -63,6 +64,7 @@ export interface GameComparisonFilters { ground: boolean; objects: boolean; bloc
 export interface GameComparisonCounts {
   groundChangedCells: number;
   groundRepackedCells: number;
+  objectsSorted?: number;
   objectsMoved: number;
   objectsAdded: number;
   objectsRemoved: number;
@@ -87,6 +89,7 @@ export function getComparisonCounts(comparison: GameComparison): GameComparisonC
   return {
     groundChangedCells: comparison.ground.changedCells.length,
     groundRepackedCells: comparison.ground.repackedCells.length,
+    ...(comparison.objects.sorted ? { objectsSorted: comparison.objects.sorted.length } : {}),
     objectsMoved: comparison.objects.moved.length,
     objectsAdded: comparison.objects.added.length,
     objectsRemoved: comparison.objects.removed.length,
@@ -171,6 +174,12 @@ export function validateComparisonPair(
   for (const item of [...comparison.objects.added, ...comparison.objects.removed]) {
     addId(item.entityId);
     if (!finiteVector(item.position, 3)) invalidComparison();
+  }
+  const sortedIds = new Set<string>();
+  for (const item of comparison.objects.sorted ?? []) {
+    const object = current.objects?.find(o => o.entityId === item.entityId);
+    if (sortedIds.has(item.entityId) || !object || !finiteVector(item.position, 3) || !equalNumbers(item.position, object.position)) invalidComparison();
+    sortedIds.add(item.entityId);
   }
   if (comparison.npcs) {
     const oldNpcs = new Map((baseline.scene.npcs ?? []).map(item => [item.entityId, item]));
@@ -329,6 +338,7 @@ export function drawGameComparison(
       outlineObject(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.objectMoved);
       drawConnector(ctx, previewWorldToScreen(item.from, baseline.scene, camera), previewWorldToScreen(item.to, currentScene, camera));
     }
+    for (const item of comparison.objects.sorted ?? []) outlineObject(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.npcUpdated);
     for (const item of comparison.objects.added) outlineObject(ctx, item.entityId, currentScene, images, camera, GAME_COMPARISON_COLORS.added);
   }
   for (const kind of ["npcs", "monsters", "portals"] as const) {

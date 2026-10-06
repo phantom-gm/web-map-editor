@@ -1,3 +1,4 @@
+import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset } from "./mswMcp";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35,6 +36,7 @@ export function gameSyncPaths() {
 
 type SyncReport = Record<string, unknown>;
 interface SyncCore {
+  registerObjectResources(input: unknown, options: ReturnType<typeof gameSyncPaths>): { resourceIds: string[] };
   validateStorageRoot(target: string, gameRoot: string): string;
   previewEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
   previewBaselineProject(input: { mapName: string; baselineId: string; npcSourceId?: string; runtimeSourceId?: string }, options: ReturnType<typeof gameSyncPaths>): unknown;
@@ -87,7 +89,7 @@ export async function downloadGameCandidate(body: unknown): Promise<{ filename: 
 
 export async function runGameSync(body: unknown) {
   if (!body || typeof body !== "object") throw new GameSyncError("요청 형식을 확인해 주세요.");
-  const input = body as { action?: unknown; mapName?: unknown; baselineId?: unknown; candidateId?: unknown; npcSourceId?: unknown; runtimeSourceId?: unknown; project?: unknown; expectedRevision?: unknown };
+  const input = body as { action?: unknown; mapName?: unknown; baselineId?: unknown; candidateId?: unknown; npcSourceId?: unknown; runtimeSourceId?: unknown; project?: unknown; expectedRevision?: unknown; resources?: unknown };
   const paths = gameSyncPaths();
   const compiler = await core();
   const workspace = { ...paths, validateStorageRoot: compiler.validateStorageRoot };
@@ -102,6 +104,21 @@ export async function runGameSync(body: unknown) {
     const imported = compiler.createSyncProject({ ...paths, mapName: input.mapName });
     const written = saveWorkspace(imported.project, saved?.revision ?? null, workspace);
     return { action: input.action, resumed: false, ...imported, ...written };
+  }
+  if (input.action === "register-object-resources") {
+    if (typeof input.mapName !== "string" || typeof input.baselineId !== "string" || !Array.isArray(input.resources) || !input.resources.length || input.resources.length > 100) throw new GameSyncError("소재 1~100개와 현재 맵 정보가 필요합니다.");
+    const items = input.resources as Array<{ ruid?: unknown; name?: unknown }>;
+    if (items.some(item => !item || typeof item.ruid !== "string" || !/^[a-f0-9]{32}$/.test(item.ruid) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 256) || new Set(items.map(item => item.ruid)).size !== items.length) throw new GameSyncError("소재 이름과 리소스 ID를 확인하세요.");
+    const metadata = await withMcpClient(client => getGroupResourceMetadata(client, items.map(item => item.ruid as string)));
+    const resources = [];
+    for (const item of items) {
+      const resource = metadata.get(item.ruid as string);
+      if (!resource || resource.resourceType !== "sprite") throw new GameSyncError("건물·장식에는 MSW 서버의 정적 이미지를 선택하세요.");
+      const asset = await fetchSpriteAsset(resource);
+      if (!asset.imageUrl || !asset.metadata) throw new GameSyncError("소재의 이미지·크기·기준점을 확인하지 못했습니다. 다시 시도하세요.");
+      resources.push({ ruid: item.ruid, name: item.name, metadata: asset.metadata });
+    }
+    return compiler.registerObjectResources({ mapName: input.mapName, baselineId: input.baselineId, resources }, paths);
   }
   if (input.action === "save") {
     const saved = saveWorkspace(input.project, (input.expectedRevision ?? null) as string | null, workspace);

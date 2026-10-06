@@ -12,8 +12,9 @@ import { exportEntities } from "../lib/entityExport";
 import { exportDrift, type DriftItem } from "../lib/exportDrift";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
 import type { GamePreviewScene } from "../lib/gamePreview";
-import { mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
-import { addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
+import { currentGameObjects, mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
+import type { ObjectSortSetting } from "../lib/objectSorting.cjs";
+import { setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
 import { addGameNpcEdit, updateGameNpcEdit, removeGameNpcEdit, parseGameNpcEdits, parseGameNpcSync, npcEditsKey, npcCellInBounds, type GameNpcEdits, type GameNpcSync, type GameNpcPatch, type GameNpcCell } from "../lib/gameNpc";
 import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
@@ -262,7 +263,11 @@ export interface EditorState extends RuntimeProjectFields {
   clearGameSelection: () => void;
   transformGameSelection: (operation: GameSelectionOperation, scene: GamePreviewScene, delta?: [number, number]) => boolean;
   moveGameObjectTo: (entityId: string, position: GameObjectPosition, commit?: boolean) => void;
-  addGameObject: (prototypeId: string, position: GameObjectPosition) => string | null;
+  addGameResourceReferences: (ids: string[]) => void;
+  scaleGameResource: (entityId: string, scale: number) => void;
+  sortGameObject: (entityId: string, setting: ObjectSortSetting | undefined, scene: GamePreviewScene) => void;
+  depthGameResource: (entityId: string, depthOffset: number) => void;
+  addGameObject: (prototypeId: string, position: GameObjectPosition, scale?: number) => string | null;
   removeGameObject: (entityId: string) => void;
   autoFixSortOffsets: () => SortOffsetResult; // 겹치는 멀티셀 오브젝트에 방향 맞는 sortOffset 부여(순환은 경고만)
 
@@ -965,11 +970,55 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ...(before ? { undoStack: [...s.undoStack, before].slice(-UNDO_CAP), redoStack: [] } : {}),
       };
     }),
-  addGameObject: (prototypeId, position) => {
+  addGameResourceReferences: ids => set(s => {
+    if (!s.gameSync) return {};
+    const gameObjectEdits = addGameResourceReferences(s.gameObjectEdits, ids);
+    if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+    return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true,
+      undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+  }),
+  scaleGameResource: (entityId, scale) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const gameObjectEdits = scaleGameResourceEdit(s.gameObjectEdits, entityId, scale);
+      if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+      return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
+  }),
+  sortGameObject: (entityId, setting, scene) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const objects = currentGameObjects(s, scene), object = objects.get(entityId);
+      if (!object?.canMove) throw new Error("보호된 오브젝트의 정렬은 바꿀 수 없습니다.");
+      if (setting?.mode === "surface") {
+        const support = objects.get(setting.supportId);
+        if (!support?.canMove || support.sortInfo?.order !== 0 || support.sortSetting?.mode === "surface") throw new Error("받치는 대상은 바닥 가구여야 합니다.");
+      }
+      const prototype = scene.objectPrototypes?.find(o => o.entityId === object.prototypeId);
+      if (setting?.mode === "wall" || setting?.mode === "surface" || !setting && (prototype?.sortInfo?.order ?? 0) !== 0) {
+        if (s.gameObjectEdits?.sorting?.some(row => row.setting.mode === "surface" && row.setting.supportId === entityId)) throw new Error("가구 위 소품이 연결되어 있습니다. 먼저 소품의 정렬 연결을 해제하세요.");
+      }
+      const gameObjectEdits = setGameObjectSorting(s.gameObjectEdits, entityId, setting);
+      if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+      return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
+  }),
+  depthGameResource: (entityId, depthOffset) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const gameObjectEdits = depthGameResourceEdit(s.gameObjectEdits, entityId, depthOffset);
+      if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+      return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
+  }),
+  addGameObject: (prototypeId, position, scale) => {
     if (!get().gameSync) return null;
     const entityId = newEntityId();
     set((s) => ({
-      gameObjectEdits: addGameObjectEdit(s.gameObjectEdits, entityId, prototypeId, position),
+      gameObjectEdits: addGameObjectEdit(s.gameObjectEdits, entityId, prototypeId, position, scale),
       gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
       selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
       selectedGameObjectId: entityId, selectedGameObjectIds: [entityId], selectedBlockedCells: [], selectedEntityId: null, activeTool: "cursor",
@@ -980,6 +1029,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removeGameObject: (entityId) =>
     set((s) => {
       if (!s.gameSync) return {};
+      if (s.gameObjectEdits?.sorting?.some(row => row.setting.mode === "surface" && row.setting.supportId === entityId)) {
+        return { gameSelectionError: "가구 위 소품이 연결되어 있습니다. 소품도 함께 선택하거나 먼저 정렬 연결을 해제하세요." };
+      }
       const gameObjectEdits = removeGameObjectEdit(s.gameObjectEdits, entityId);
       if (gameObjectEdits === s.gameObjectEdits) return { gameSelectionError: null };
       const selectedGameObjectIds = s.selectedGameObjectIds.filter(id => id !== entityId);

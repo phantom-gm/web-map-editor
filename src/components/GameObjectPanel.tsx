@@ -1,3 +1,5 @@
+import { ObjectSortingPanel } from "./ObjectSortingPanel";
+import { ResourceBrowser } from "./ResourceBrowser";
 import { activateEditorTool } from "../lib/editorCommands";
 import { useState } from "react";
 import { useEditorStore } from "../store/editorStore";
@@ -33,6 +35,7 @@ function focusObject(object: GameObjectDescriptor) {
 export function GameObjectLibrary() {
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const preview = useGamePreviewStore();
   const linked = useEditorStore(s => s.gameSync);
   const selected = useEditorStore(s => s.selectedGameObjectIds);
@@ -41,7 +44,7 @@ export function GameObjectLibrary() {
   const objects = current ? preview.scene?.objects ?? [] : [];
   const prototypes = current ? preview.scene?.objectPrototypes ?? [] : [];
   const unique = new Map<string, GameObjectDescriptor>();
-  for (const object of prototypes) if (object.canDuplicate && !unique.has(object.ruid + object.name)) unique.set(object.ruid + object.name, object);
+  for (const object of prototypes) if (object.canDuplicate && (object.resourceId || !unique.has(object.ruid + object.name))) unique.set(object.ruid + object.name, object);
   const items = (adding ? [...unique.values()] : objects).filter(object => !search ||
     object.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()) || object.entityId.includes(search));
   const ready = current && preview.status === "ready" && !loading;
@@ -49,12 +52,14 @@ export function GameObjectLibrary() {
     <div className="palette-head"><strong>건물·장식·오브젝트 바닥</strong>
       <button onClick={() => activateEditorTool("brush")}>바닥 소재</button>
     </div>
+    <button className="resource-primary" disabled={!ready} onClick={() => setBrowseOpen(true)}>＋ 서버 소재 추가</button>
+    {browseOpen && <ResourceBrowser gameObjects onClose={() => { setBrowseOpen(false); setAdding(true); }} />}
     <div className="object-tabs">
       <button aria-pressed={!adding} onClick={() => setAdding(false)}>배치된 오브젝트 {objects.length}</button>
-      <button aria-pressed={adding} onClick={() => setAdding(true)}>원본 소재로 추가</button>
+      <button aria-pressed={adding} onClick={() => setAdding(true)}>소재 골라 배치</button>
     </div>
     <input className="object-search" aria-label="오브젝트 검색" placeholder="건물·나무·광산바닥 검색" value={search} onChange={e => setSearch(e.target.value)} />
-    <p className="object-help">{adding ? "원본 모양을 선택한 뒤 맵을 클릭하면 추가합니다." : "Ctrl·Shift+클릭으로 여러 개를 선택합니다. Shift+빈 곳 드래그로 범위를 추가하고, 선택한 대상을 잡아 함께 옮깁니다."}</p>
+    <p className="object-help">{adding ? "소재를 선택한 뒤 맵을 클릭하세요. 새 서버 소재는 배치 후 크기도 조절할 수 있습니다." : "Ctrl·Shift+클릭으로 여러 개를 선택합니다. Shift+빈 곳 드래그로 범위를 추가하고, 선택한 대상을 잡아 함께 옮깁니다."}</p>
     {!adding && <div className="object-selection-tools">
       <button aria-pressed={preview.multiSelect} onClick={() => {
         preview.setMultiSelect(!preview.multiSelect); preview.setSelectionMode("objects");
@@ -118,6 +123,7 @@ export function GameObjectInspector() {
     </div>
     <p className="selection-count" role="status">오브젝트 {selected.length}개 · 이동불가 {cells.length}칸 선택</p>
     {error && <div className="selection-error" role="alert">{error}</div>}
+    {objects.length === 1 && <ObjectSortingPanel key={object.entityId} object={object} scene={scene} disabled={locked} cells={cells} />}
     <div className="object-tabs" aria-label="묶음에 넣을 대상">
       <button aria-pressed={!pickingCells} onClick={() => { preview.setSelectionMode("objects"); useEditorStore.getState().setTool("cursor"); }}>오브젝트 선택</button>
       <button aria-pressed={pickingCells} disabled={locked || !canEditCells} onClick={selectBlockedMode}>이동불가 칸 선택</button>
@@ -125,9 +131,16 @@ export function GameObjectInspector() {
     {!canEditCells && <p className="object-help">현재 맵의 이동불가 원본 연결을 확인할 수 없어 칸 묶음 편집이 잠겨 있습니다.</p>}
     {pickingCells ? <p className="object-help selection-help">빨간 칸을 클릭하면 선택·해제됩니다. 드래그한 범위의 이동불가 칸을 묶음에 추가합니다. 선택 후 「오브젝트 선택」으로 돌아가 함께 옮기세요.</p>
       : <p className="object-help">선택한 대상을 드래그하거나 아래 버튼으로 옮기세요. 원본 모양·배율·깊이 설정을 유지하며, Ctrl+Z 한 번으로 함께 되돌립니다.</p>}
+    {single && object.resourceId && <label className="ei-row"><span>크기 (%)</span><NumberField value={Number(((object.scale ?? 1) * 100).toFixed(4))} float step={0.1} min={1} max={10000} disabled={locked} onCommit={n => useEditorStore.getState().scaleGameResource(object.entityId, n / 100)} /></label>}
+    {single && object.resourceId && <>
+      <label className="ei-row"><span>가로 위치</span><NumberField value={object.position[0]} float step={0.01} disabled={locked} onCommit={n => useEditorStore.getState().moveGameObjectTo(object.entityId, [n, object.position[1]])} /></label>
+      <label className="ei-row"><span>세로 위치</span><NumberField value={object.position[1]} float step={0.01} disabled={locked} onCommit={n => useEditorStore.getState().moveGameObjectTo(object.entityId, [object.position[0], n])} /></label>
+      <label className="ei-row"><span>앞뒤 보정</span><NumberField value={object.depthOffset ?? 0} float step={0.01} min={-100} max={100} disabled={locked || !!object.sortSetting} onCommit={n => useEditorStore.getState().depthGameResource(object.entityId, n)} /></label>
+      <p className="object-help">위치 0.01은 게임 기준 1픽셀입니다. 앞뒤 보정은 작을수록 앞에 표시됩니다.</p>
+    </>}
     {!!cells.length && <button className="ei-fit" onClick={() => useEditorStore.getState().selectBlockedCells([])}>이동불가 선택 비우기</button>}
     {object && <button className="ei-fit" onClick={() => focusObject(object)}>선택 위치 보기</button>}
-    {single && <div className="ei-grid2">
+    {single && !object.resourceId && <div className="ei-grid2">
       <label className="ei-row"><span>원본에서 X칸</span><NumberField value={gx} disabled={!canMove} onCommit={n => transform("move", n - gx, 0)} /></label>
       <label className="ei-row"><span>원본에서 Y칸</span><NumberField value={gy} disabled={!canMove} onCommit={n => transform("move", 0, n - gy)} /></label>
     </div>}
@@ -152,7 +165,7 @@ export function GameObjectInspector() {
     {single && <button className="ei-fit" disabled={!canCopy} onClick={() => {
       preview.setShowScene(true); preview.setShowObjects(true); preview.setSelectionMode("objects");
       preview.setPlacementPrototype(object.prototypeId); useEditorStore.getState().setTool("object");
-    }}>같은 모양 추가 배치</button>}
+    }}>{object.resourceId ? "이 소재 원래 크기로 배치" : "같은 모양 추가 배치"}</button>}
     <button className="ei-delete" disabled={!canDelete} onClick={() => transform("delete")}>선택한 대상 모두 삭제 (Del)</button>
     <p className="object-help">방향키: 한 칸 이동 · Ctrl+D: X 방향 한 칸 옆에 복제 · Esc: 선택 해제</p>
   </section>;

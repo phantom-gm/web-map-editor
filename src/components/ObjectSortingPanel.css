@@ -1,0 +1,9 @@
+.object-sorting { margin: 12px 0; padding: 12px; border: 1px solid #786748; border-radius: 8px; background: #252923; }
+.object-sorting > strong { display: block; color: #f4d798; margin-bottom: 10px; }
+.sort-field { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.sort-field select { width: 100%; min-width: 0; min-height: 36px; padding: 6px; color: #e4edf2; background: #18232b; border: 1px solid #62717a; border-radius: 5px; }
+.sort-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; margin: 10px 0; }
+.sort-grid label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: #c6d1d6; }
+.sort-grid input { width: 100%; box-sizing: border-box; min-height: 32px; padding: 6px 8px; color: #e4edf2; background: #101c26; border: 1px solid #62717a; border-radius: 5px; }
+.object-sorting .object-help { line-height: 1.5; margin: 9px 0; }
+.object-sorting button { white-space: normal; }

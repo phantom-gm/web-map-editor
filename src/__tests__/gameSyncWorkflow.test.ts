@@ -5,6 +5,8 @@ import os from "node:os";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { runGameSync, listGameMaps, gameSyncPaths } from "../server/gameSync";
+import { getGroupResourceMetadata, fetchSpriteAsset } from "../server/mswMcp";
+vi.mock("../server/mswMcp", () => ({ withMcpClient: (fn: (client: object) => unknown) => fn({}), getGroupResourceMetadata: vi.fn(), fetchSpriteAsset: vi.fn() }));
 import type { ProjectFile } from "../lib/projectIO";
 
 interface Builder {
@@ -41,6 +43,7 @@ function fixture() {
     const relative = "scripts/game-sync/" + name;
     put(localEditor, relative, fs.readFileSync(path.join(editorRoot, relative)));
   }
+  put(localEditor, "src/lib/objectSorting.cjs", fs.readFileSync(path.join(editorRoot, "src/lib/objectSorting.cjs")));
   const builder = put(gameRoot, ".agents/skills/msw-general/scripts/map/msw_map_builder.cjs", fs.readFileSync(sourceBuilder));
   put(gameRoot, "scripts/build_map.cjs", "module.exports={TILE_W:2.56,TILE_H:1.28,ORIGIN_X:0,ORIGIN_Y:0,DEPTH_SCALE:0.21875,GROUND_ORDER:-1000,PPU:100};");
   const resources = [
@@ -128,4 +131,24 @@ describe.skipIf(!available)("direct API workflow in isolated editor/game fixture
     await expect(request({ action: "export", project: reopened.project })).rejects.toMatchObject({ code: "STALE_SOURCE" });
     expect(fs.existsSync(path.join(f.localEditor, ".game-sync/candidates"))).toBe(false);
   }, 30_000);
+});
+
+it.skipIf(!available)("server art registration uses verified metadata and round-trips through API save, reopen and export", async () => {
+  const f = fixture(), before = hash(f.mapPath);
+  const opened = await request<Opened>({ action: "open", mapName: "fixture" });
+  const ruid = "b".repeat(32);
+  vi.mocked(getGroupResourceMetadata).mockResolvedValue(new Map([[ruid, { resourceType: "sprite" }]]) as never);
+  vi.mocked(fetchSpriteAsset).mockResolvedValue({ imageUrl: "data:image/png;base64,test", metadata: { width: 300, height: 500, pixelsPerUnit: 100, pivot: [0.5, 0] } } as never);
+  const result = await request<{ resourceIds: string[] }>({ action: "register-object-resources", ...opened.project.gameSync, resources: [{ ruid, name: "나무", metadata: { width: 1 } }] });
+  const p = opened.project;
+  p.gameObjectEdits = { version: 1, resources: result.resourceIds, moved: [], removed: [], added: [{ entityId: "11111111-2222-4333-8444-555555555555", prototypeId: "resource_" + result.resourceIds[0], position: [1.28, -0.64], scale: 0.5 }] };
+  await request({ action: "save", project: p, expectedRevision: opened.revision });
+  const reopened = await request<Opened>({ action: "open", mapName: "fixture" });
+  expect(reopened.project.gameObjectEdits).toEqual(p.gameObjectEdits);
+  const preview = await request<Preview>({ action: "preview", project: reopened.project });
+  expect(preview.scene.sprites).toHaveLength(3);
+  const output = await request<Candidate>({ action: "export", project: reopened.project });
+  expect(output.report.changedCells).toBe(0); expect(hash(f.mapPath)).toBe(before);
+  vi.mocked(getGroupResourceMetadata).mockResolvedValue(new Map([[ruid, { resourceType: "animationclip" }]]) as never);
+  await expect(request({ action: "register-object-resources", ...p.gameSync, resources: [{ ruid, name: "애니메이션" }] })).rejects.toThrow("정적 이미지");
 });

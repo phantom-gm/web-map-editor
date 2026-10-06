@@ -1,3 +1,4 @@
+import { SURFACE_EPSILON } from "./objectSorting.cjs";
 import {
   previewSpriteGeometry, previewWorldToScreen, sortPreviewSprites, validPreviewAsset,
   type GamePreviewAsset, type GamePreviewImages, type GamePreviewScene, type GamePreviewSprite,
@@ -70,9 +71,18 @@ function spriteWithDraftPosition(sprite: GamePreviewSprite, position: GameObject
     ...sprite, position: [position[0], position[1], sprite.position[2] + (position[1] - sprite.position[1]) * scene.constants.DEPTH_SCALE],
   };
 }
+function resolveDraftSurfaces(scene: GamePreviewScene, sprites: GamePreviewSprite[]): GamePreviewSprite[] {
+  const byId = new Map(sprites.filter(s => s.objectEntityId).map(s => [s.objectEntityId, s]));
+  const settings = new Map((scene.objects ?? []).map(o => [o.entityId, o.sortSetting]));
+  return sprites.map(sprite => {
+    const setting = sprite.objectEntityId ? settings.get(sprite.objectEntityId) : undefined;
+    const support = setting?.mode === "surface" ? byId.get(setting.supportId) : undefined;
+    return support ? { ...sprite, position: [sprite.position[0], sprite.position[1], support.position[2] - SURFACE_EPSILON] } : sprite;
+  });
+}
 export function sceneWithObjectDraft(scene: GamePreviewScene, entityId: string, position: GameObjectPosition): GamePreviewScene {
-  return { ...scene, sprites: scene.sprites.map(sprite => sprite.objectEntityId === entityId
-    ? spriteWithDraftPosition(sprite, position, scene) : sprite) };
+  return { ...scene, sprites: resolveDraftSurfaces(scene, scene.sprites.map(sprite => sprite.objectEntityId === entityId
+    ? spriteWithDraftPosition(sprite, position, scene) : sprite)) };
 }
 export function drawGameObjectSelection(
   ctx: CanvasRenderingContext2D, entityId: string, scene: GamePreviewScene, images: GamePreviewImages, camera: Camera,
@@ -91,6 +101,24 @@ export function drawGameObjectSelection(
   for (const [x, y] of corners.slice(1)) ctx.lineTo(x, y);
   ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle = color; ctx.beginPath(); ctx.arc(...geometry.anchor, 4, 0, Math.PI * 2); ctx.fill();
+  const object = scene.objects?.find(o => o.entityId === entityId);
+  const supportId = object?.sortSetting?.mode === "surface" ? object.sortSetting.supportId : null;
+  const support = supportId ? scene.objects?.find(o => o.entityId === supportId) : object;
+  const footprint = support?.sortInfo?.order === 0 ? support.sortInfo.footprint : null;
+  if (footprint) {
+    const [gx, gy, w, h] = footprint;
+    const c = scene.constants;
+    const shift = support?.entityId === entityId ? objectCellOffset(sprite.position, object!.position, scene) : [0, 0];
+    const points = [[gx - .5, gy - .5], [gx + w - .5, gy - .5], [gx + w - .5, gy + h - .5], [gx - .5, gy + h - .5]]
+      .map(([x, y]) => {
+        const a = x + shift[0] - c.ORIGIN_X, b = y + shift[1] - c.ORIGIN_Y;
+        return previewWorldToScreen([(a - b) * c.TILE_W / 2, -(a + b) * c.TILE_H / 2], scene, camera);
+      });
+    ctx.fillStyle = "rgba(255, 209, 102, .18)"; ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.moveTo(...points[0]);
+    for (const p of points.slice(1)) ctx.lineTo(...p);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -107,7 +135,7 @@ export function sceneWithGameObjectGroupDraft(
     const position = offsetObjectPosition(sprite.position, delta[0], delta[1], scene);
     return spriteWithDraftPosition(sprite, position, scene);
   });
-  return changed ? { ...scene, sprites } : scene;
+  return changed ? { ...scene, sprites: resolveDraftSurfaces(scene, sprites) } : scene;
 }
 
 /** Marquee selection intersects native transformed bounds, in front-to-back draw order.

@@ -558,6 +558,40 @@ function refreshRuntimeProject(project, options) {
   return { project: next, scene: previewEditedProject(next, options) };
 }
 
+// Verified server sprite metadata is stored separately from immutable game baselines.
+// Projects contain content-addressed references only; image bytes never enter saved work.
+function registerObjectResources(input, options) {
+  const state = loadBaseline({ map: input.mapName, gameSync: { version: VERSION, mapName: input.mapName, baselineId: input.baselineId } }, options);
+  verifySources(state.root, state.manifest, { baselineDir: state.dir });
+  if (!Array.isArray(input.resources) || !input.resources.length || input.resources.length > 100) fail('INVALID_OBJECT_RESOURCE', '한 번에 소재 1~100개를 선택하세요.');
+  const resources = input.resources.map(resource => {
+    objectEdits.validateResource(resource);
+    return { version: 1, baselineId: state.manifest.baselineId, mapName: state.manifest.mapName, resource };
+  });
+  const storage = outsideGame(options.baselineRoot, state.root);
+  return { resourceIds: resources.map(value => {
+    const bytes = jsonBytes(value), id = hash(bytes), relative = 'resource-' + id + '.json';
+    const file = safeChild(storage, relative, state.root);
+    if (fs.existsSync(file)) { if (hash(fs.readFileSync(file)) !== id) fail('RESOURCE_CORRUPT', '보관된 소재 정보가 변경되었습니다.'); }
+    else writeFile(storage, relative, bytes, state.root);
+    return id;
+  }) };
+}
+function loadObjectResources(project, state) {
+  const ids = project.gameObjectEdits?.resources;
+  if (ids === undefined) return [];
+  if (!Array.isArray(ids) || ids.length > 500 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) fail('INVALID_OBJECT_RESOURCE', '추가 소재 목록이 유효하지 않습니다.');
+  return ids.map(id => {
+    const file = safeChild(path.dirname(state.dir), 'resource-' + id + '.json', state.root);
+    if (!fs.existsSync(file)) fail('RESOURCE_NOT_FOUND', '보관된 서버 소재가 없습니다. 소재를 다시 추가하세요.');
+    const bytes = fs.readFileSync(file);
+    if (hash(bytes) !== id) fail('RESOURCE_CORRUPT', '보관된 서버 소재가 변경되었습니다.');
+    const value = JSON.parse(bytes.toString('utf8'));
+    if (value.version !== 1 || value.baselineId !== state.manifest.baselineId || value.mapName !== state.manifest.mapName) fail('RESOURCE_MISMATCH', '다른 맵의 추가 소재 정보입니다.');
+    objectEdits.validateResource(value.resource);
+    return { id, ...value.resource };
+  });
+}
 function inspectSyncProject(project, options) {
   return inspectLoadedProject(project, loadBaseline(project, options));
 }
@@ -575,6 +609,11 @@ function inspectLoadedProject(project, state) {
   catch { /* Opaque native maps still permit exact unchanged output. */ }
   const objectProfile = original ? objectEdits.analyzeObjects(original, baseline, previewMapSprites(original, manifest.blocks))
     : { records: new Map(), entities: [] };
+  const resources = loadObjectResources(project, state);
+  if (resources.length) {
+    if (!original || original.getTileMapMode() !== 1) fail('UNSUPPORTED_RESOURCE_MAP', '새 소재 배치는 RectTile 게임 맵에서 지원합니다.');
+    objectEdits.addResourcePrototypes(original, objectProfile, resources, manifest.constants);
+  }
   const objects = objectEdits.inspectObjectEdits(project.gameObjectEdits, objectProfile, manifest.constants);
   const walkFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
   const walkRelative = walkFiles.length === 1 ? walkFiles[0] : null;
@@ -618,6 +657,7 @@ function inspectLoadedProject(project, state) {
       ...(runtimeProfile.supported.spawn ? { spawnChanged: runtime.spawnChanged } : {}),
       runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
       objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
+      ...(objects.sorting.length ? { objectSortingChanged: objects.sorting.length } : {}),
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
       protectedObjects: [...objectProfile.records.values()].filter(r => !r.descriptor.canMove).length,
@@ -628,7 +668,7 @@ function inspectLoadedProject(project, state) {
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
-      preservedEntities: manifest.totalEntities - affected.length - objects.moved.length - objects.removed.length,
+      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added)].map(e => e.entityId)).size,
       warnings } };
 }
 // Shared in-memory map construction keeps preview and export on the same packing path.
@@ -638,7 +678,7 @@ function buildCandidateMap(project, checked) {
   if (stable(deps.constants) !== stable(manifest.constants)) fail('STALE_SOURCE', '게임 좌표 상수가 변경되었습니다.');
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mb = deps.MapBuilder.read(originalPath);
-  const changedPaths = new Set([...objects.moved, ...objects.removed].map(e => e.record.item.path));
+  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added)].map(e => e.record.item.path));
   const removedNames = new Set(affected.map(b => b.name));
   const preserved = mb.listEntities().filter(e => !removedNames.has(e.name) && !changedPaths.has(e.path)).map(e => [e.path, stable(mb.find(e.path))]);
   if (report.changedCells > 0) {
@@ -777,7 +817,7 @@ function previewBaselineProject({ mapName, baselineId, npcSourceId, runtimeSourc
     blocked: sortedKeys(checked.walk.before).map(coord)
   };
 }
-function comparisonFromChecked(checked) {
+function comparisonFromChecked(checked, scene) {
   const { manifest, before, after, affected, replacements, dirty, objects, walk } = checked;
   const changed = new Set(changesBetween(before, after));
   const block = b => ({ name: b.name || 'Tile_' + b.gx + '_' + b.gy, gx: b.gx, gy: b.gy, size: b.n, ruid: b.ruid });
@@ -791,8 +831,9 @@ function comparisonFromChecked(checked) {
     npcs: checked.npcs.comparison, ...checked.runtime.comparison,
     objects: {
       // Editor IDs are stable across requests; generated native GUIDs intentionally are not.
-      moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...e.position] })),
-      added: objects.added.map(e => ({ entityId: e.entityId, prototypeId: e.prototypeId, position: [...e.position] })),
+      moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...scene.objects.find(o => o.entityId === e.entityId).position] })),
+      added: objects.added.map(e => ({ entityId: e.entityId, prototypeId: e.prototypeId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })),
+      ...(objects.sorting.length ? { sorted: objects.sorting.map(e => ({ entityId: e.entityId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })) } : {}),
       removed: objects.removed.map(e => ({ entityId: e.entityId, position: [...e.record.descriptor.sourcePosition] }))
     },
     blocked: {
@@ -803,7 +844,8 @@ function comparisonFromChecked(checked) {
 }
 function compareEditedProject(project, options) {
   const checked = inspectSyncProject(project, options);
-  return { scene: previewFromChecked(project, checked), comparison: comparisonFromChecked(checked) };
+  const scene = previewFromChecked(project, checked);
+  return { scene, comparison: comparisonFromChecked(checked, scene) };
 }
 function validateStorageRoot(target, gameRoot) { return outsideGame(target, gamePath(gameRoot)); }
 
@@ -904,6 +946,7 @@ function candidateSummary(report) {
     groundRepackedCells: Math.max(0, (report.affectedCells ?? 0) - (report.changedCells ?? 0)),
     objectsMoved: report.objectChanges?.moved ?? 0, objectsAdded: report.objectChanges?.added ?? 0,
     objectsRemoved: report.objectChanges?.removed ?? 0,
+    ...(report.objectSortingChanged ? { objectsSorted: report.objectSortingChanged } : {}),
     blockedAdded: report.walkComparison?.addedRows ?? 0, blockedRemoved: report.walkComparison?.removedRows ?? 0,
     walkChangedCells: report.walkChangedCells ?? 0,
     ...(report.monsterChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['monsters' + k[0].toUpperCase() + k.slice(1), report.monsterChanges[k] ?? 0])) : {}),
@@ -1166,6 +1209,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
     if (!bytes || bytes.length !== item.bytes || hash(bytes) !== item.sha256) { referenceExact = false; result.issues.push(item.path + ': 참고 사본이 변경되었거나 없어졌습니다.'); }
   }
   check('참고 사본 무결성', referenceExact, referenceExact ? undefined : '참고 사본을 포함한 후보 파일을 다시 구워 주세요.');
+  if (project) attempt('추가 서버 소재 무결성', () => loadObjectResources(project, state));
   attempt('현재 게임의 맵·프로젝트·변환 기준', () => verifySources(root, manifest, { baselineDir: dir }));
   attempt('검토 중 파일 불변', () => {
     for (const [relative, expected] of captured) { const bytes = read(relative); if (!bytes || hash(bytes) !== expected) throw new Error('검토 도중 후보 파일이 바뀌었습니다. 다시 검토해 주세요: ' + relative); }
@@ -1181,6 +1225,6 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   result.checkedAt = new Date().toISOString(); result.status = result.issues.length ? 'blocked' : 'ready';
   return result;
 }
-module.exports = { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot,
+module.exports = { registerObjectResources, createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot,
   // Small pure helpers are exported for boundary and packing tests.
   _test: { prospectiveRealPath, outsideGame, packCells, blockPos, catalogFromLock, stable, groundMap, previewMapSprites } };

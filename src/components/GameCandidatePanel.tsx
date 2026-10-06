@@ -133,7 +133,7 @@ export function GameCandidateReviewDialog({ candidateId, mapName, baselineId, on
             <h3>변경 요약</h3>
             <dl className="candidate-summary">
               <dt>바닥</dt><dd>직접 수정 {review.summary.groundChangedCells}칸 · 주변 재구성 {review.summary.groundRepackedCells}칸</dd>
-              <dt>오브젝트</dt><dd>이동 {review.summary.objectsMoved} · 추가 {review.summary.objectsAdded} · 삭제 {review.summary.objectsRemoved}</dd>
+              <dt>오브젝트</dt><dd>이동 {review.summary.objectsMoved} · 추가 {review.summary.objectsAdded} · 삭제 {review.summary.objectsRemoved} · 정렬 {review.summary.objectsSorted ?? 0}</dd>
               <dt>이동불가</dt><dd>변경 {review.summary.walkChangedCells}칸{review.summary.blockedAdded !== undefined && review.summary.blockedRemoved !== undefined
                 ? " · 추가 " + review.summary.blockedAdded + " · 해제 " + review.summary.blockedRemoved : ""}</dd>
               {formatCandidateNpcSummary(review.summary) !== null && <><dt>NPC</dt><dd>{formatCandidateNpcSummary(review.summary)}</dd></>}

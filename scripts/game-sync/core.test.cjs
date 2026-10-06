@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot, _test } = require('./core.cjs');
+const { registerObjectResources, createSyncProject, inspectSyncProject, exportEditedProject, previewEditedProject, previewBaselineProject, compareEditedProject, reviewCandidate, listCandidates, packageCandidate, refreshNpcProject, refreshRuntimeProject, validateStorageRoot, _test } = require('./core.cjs');
 
 function resources() {
   const out = [];
@@ -386,6 +386,58 @@ function objectFixture(t, options) {
   return { ...f, mapPath, walkRelative, walkPath };
 }
 const objectPatch = (moved = [], removed = [], added = []) => ({ version: 1, moved, removed, added });
+test('sorting roles compile through MapBuilder, preserve unrelated fields, and preview matches exported metadata', fixtureOptions, t => {
+  const f = objectFixture(t), before = fileTreeHashes(f.root);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), table = base.objects.find(o => o.name === 'Obj_editable'), wall = base.objects.find(o => o.name === 'Obj_floor');
+  const floor = { mode: 'floor', offset: [-1, -2], size: [3, 2], bounds: [7, 5], padX: .3 };
+  project.gameObjectEdits = { ...objectPatch(), sorting: [{ entityId: table.entityId, setting: floor }, { entityId: wall.entityId, setting: { mode: 'wall' } }] };
+  const scene = previewEditedProject(project, f.options), output = exportEditedProject(project, f.options), mb = f.MapBuilder.read(output.mapPath);
+  assert.equal(output.report.objectSortingChanged, 2); assert.equal(output.report.mapUnchanged, false);
+  const meta = mb.component('Obj_editable', 'script.IsoDepthMetaComponent');
+  const anchor = require('../../src/lib/objectSorting.cjs').objectAnchor(table.position, scene.constants);
+  assert.deepEqual([meta.GX, meta.GY, meta.W, meta.H], [anchor[0]-1, anchor[1]-2, 3, 2]);
+  assert.equal(meta.Fade, true); assert.equal(meta.ScaleX, 1.4); assert.equal(meta.StaticZ, table.position[2]);
+  assert.equal(mb.component('Obj_floor', 'MOD.Core.SpriteRendererComponent').OrderInLayer, -998);
+  assert.equal(mb.component('Obj_floor', 'script.IsoDepthMetaComponent').W, 1);
+  assert.deepEqual(scene.objects.find(o => o.entityId === table.entityId).sortSetting, floor);
+  for (const object of scene.objects) {
+    const sprite = scene.sprites.find(s => s.objectEntityId === object.entityId);
+    assert.deepEqual(sprite.position, object.position);
+  }
+  assert.deepEqual(fileTreeHashes(f.root), before);
+  delete project.gameObjectEdits;
+  assert.equal(exportEditedProject(project, f.options).report.unchanged, true);
+});
+test('surface sorting follows moved supports for both native and newly added objects', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), table = base.objects.find(o => o.name === 'Obj_editable'), prop = base.objects.find(o => o.name === 'Obj_floor');
+  const addedId = crypto.randomUUID();
+  project.gameObjectEdits = { ...objectPatch([{ entityId: table.entityId, position: [8.28, 7.36] }], [], [{ entityId: addedId, prototypeId: prop.entityId, position: [-1, 1] }]),
+    sorting: [prop.entityId, addedId].map(entityId => ({ entityId, setting: { mode: 'surface', supportId: table.entityId } })) };
+  const scene = previewEditedProject(project, f.options), out = exportEditedProject(project, f.options), mb = f.MapBuilder.read(out.mapPath);
+  const z = scene.objects.find(o => o.entityId === table.entityId).position[2] - .0001;
+  for (const id of [prop.entityId, addedId]) {
+    const object = scene.objects.find(o => o.entityId === id), sprite = scene.sprites.find(s => s.objectEntityId === id);
+    assert.equal(object.position[2], z); assert.equal(sprite.position[2], z); assert.equal(sprite.orderInLayer, 0);
+    const meta = mb.component(sprite.path, 'script.IsoDepthMetaComponent');
+    assert.equal(meta.W, 1); assert.equal(meta.H, 1); assert.equal(meta.StaticZ, z);
+  }
+});
+test('sorting rejects protected targets, dangling links, self links, chains and invalid footprints', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), a = base.objects.find(o => o.name === 'Obj_editable').entityId, b = base.objects.find(o => o.name === 'Obj_floor').entityId;
+  const surface = (entityId,supportId) => ({ entityId, setting: {mode:'surface',supportId} });
+  for (const sorting of [
+    [surface(a,a)], [surface(a,'missing')], [surface(a,b)], [surface(a,b),surface(b,a)],
+    [{ entityId: base.objects.find(o => !o.canMove).entityId, setting: { mode:'wall' } }],
+    [{ entityId:a, setting:{mode:'floor',offset:[0,0],size:[0,2],bounds:[7,5],padX:0} }],
+  ]) {
+    project.gameObjectEdits = {...objectPatch(),sorting}; assert.throws(() => previewEditedProject(project,f.options));
+  }
+  project.gameObjectEdits = {...objectPatch([], [a]), sorting:[surface(b,a)]};
+  assert.throws(() => exportEditedProject(project,f.options), e => e.code === 'INVALID_OBJECT_SORTING');
+});
 test('native object move preserves GUID, every unrelated field and source files while updating depth metadata', fixtureOptions, t => {
   const f = objectFixture(t), before = f.hashes(), walkBefore = fs.readFileSync(f.walkPath);
   const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -1259,4 +1311,73 @@ test('inventory changes during capture or export are still checked at the final 
       assert.equal(changed, true);
     } finally { fs.writeFileSync = write; }
   }
+});
+
+function registerTestResource(f, project) {
+  return registerObjectResources({ ...project.gameSync, resources: [{ ruid: 'a'.repeat(32), name: '서버 나무', metadata: { width: 300, height: 500, pixelsPerUnit: 100, pivot: [0.5, 0] } }] }, f.options).resourceIds[0];
+}
+test('registered server library alone is a byte no-op; placed, scaled and reopened sprites match candidate and preserve game', fixtureOptions, t => {
+  const f = objectFixture(t), before = fileTreeHashes(f.root);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const resource = registerTestResource(f, project);
+  project.gameObjectEdits = { ...objectPatch(), resources: [resource] };
+  const library = previewEditedProject(project, f.options);
+  assert.equal(library.objectPrototypes.filter(p => p.libraryOnly).length, 1);
+  assert.equal(library.objects.some(p => p.libraryOnly), false);
+  assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  const entityId = crypto.randomUUID();
+  project.gameObjectEdits.added.push({ entityId, prototypeId: 'resource_' + resource, position: [1.28, -0.64], scale: 0.75 });
+  const reopened = JSON.parse(JSON.stringify(project));
+  const scene = previewEditedProject(reopened, f.options), out = exportEditedProject(reopened, f.options);
+  const candidate = f.MapBuilder.read(out.mapPath), original = f.MapBuilder.read(f.mapPath);
+  for (const e of original.listEntities()) assert.deepEqual(candidate.find(e.path), original.find(e.path));
+  const native = candidate.find('Obj_Editor_' + entityId);
+  assert.deepEqual(candidate.component(native.path, 'MOD.Core.TransformComponent').Scale, { x: 0.75, y: 0.75, z: 1 });
+  assert.equal(candidate.component(native.path, 'MOD.Core.SpriteRendererComponent').SpriteRUID, 'a'.repeat(32));
+  const shown = scene.sprites.find(s => s.objectEntityId === entityId), baked = _test.previewMapSprites(candidate, []).sprites.find(s => s.name === native.jsonString.name);
+  const visual = s => Object.fromEntries(Object.entries(s).filter(([k]) => !['id', 'objectEntityId'].includes(k)));
+  assert.deepEqual(visual(shown), visual(baked));
+  assert.equal(scene.objects.find(o => o.entityId === entityId).scale, 0.75);
+  assert.equal(out.report.changedCells, 0);
+  assert.deepEqual(fileTreeHashes(f.root), before);
+  reopened.gameObjectEdits.added = [];
+  assert.equal(exportEditedProject(reopened, f.options).report.exactMapBytes, true);
+});
+test('server resource references reject changed bytes, foreign baselines and unsafe sizes', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const resource = registerTestResource(f, project);
+  project.gameObjectEdits = { ...objectPatch(), resources: [resource] };
+  for (const scale of [0, -1, 101, NaN]) {
+    project.gameObjectEdits.added = [{ entityId: crypto.randomUUID(), prototypeId: 'resource_' + resource, position: [0, 0], scale }];
+    assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'INVALID_OBJECT_SCALE');
+  }
+  project.gameObjectEdits.added = [];
+  const foreign = createSyncProject({ ...f.options, mapName: 'fixture' }).project;
+  foreign.gameObjectEdits = project.gameObjectEdits;
+  assert.throws(() => previewEditedProject(foreign, f.options));
+  const resourcePath = path.join(f.options.baselineRoot, 'resource-' + resource + '.json');
+  fs.appendFileSync(resourcePath, ' ');
+  assert.throws(() => previewEditedProject(project, f.options));
+});
+
+test('resource precision and depth survive export without changing any original entity', fixtureOptions, t => {
+  const f = objectFixture(t), before = fileTreeHashes(f.root);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const resource = registerTestResource(f, project), entityId = crypto.randomUUID();
+  project.gameObjectEdits = { ...objectPatch(), resources: [resource], added: [{ entityId, prototypeId: 'resource_' + resource, position: [1.237, 4.567], scale: 2.5, depthOffset: -0.4 }] };
+  const scene = previewEditedProject(JSON.parse(JSON.stringify(project)), f.options);
+  const object = scene.objects.find(o => o.entityId === entityId);
+  assert.ok(Math.abs(object.position[0] - 1.237) < 1e-8);
+  assert.equal(object.depthOffset, -0.4);
+  const candidate = f.MapBuilder.read(exportEditedProject(project, f.options).mapPath);
+  const original = f.MapBuilder.read(f.mapPath);
+  for (const e of original.listEntities()) assert.deepEqual(candidate.find(e.path), original.find(e.path));
+  const tf = candidate.component('Obj_Editor_' + entityId, 'MOD.Core.TransformComponent');
+  assert.equal(tf.Position.z, object.position[2]);
+  assert.equal(candidate.component('Obj_Editor_' + entityId, 'script.IsoDepthMetaComponent').StaticZ, tf.Position.z);
+  for (const depthOffset of [Infinity, NaN, 101, -101]) {
+    project.gameObjectEdits.added[0].depthOffset = depthOffset;
+    assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'INVALID_OBJECT_DEPTH');
+  }
+  assert.deepEqual(fileTreeHashes(f.root), before);
 });
