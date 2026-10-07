@@ -48,7 +48,7 @@ export function GameComparisonSidebar() {
   const currentNpcs = new Map(scene.npcs?.map(npc => [npc.entityId, npc]));
   const originalNpcs = new Map(baseline.scene.npcs?.map(npc => [npc.entityId, npc]));
   const runtimeRows: ChangeRow[] = [];
-  for (const [kind, label] of [["monsters", "몬스터 출현"], ["portals", "포털"]] as const) {
+  for (const [kind, label] of [["monsters", "몬스터 출현"], ["portals", "포털"], ["traps", "함정 영역"]] as const) {
     const diff = comparison[kind]; if (!diff) continue;
     const name = (id: string) => { const item = (scene[kind] ?? []).find(value => value.entityId === id) ?? (baseline.scene[kind] ?? []).find(value => value.entityId === id); return item && "name" in item ? item.name : id; };
     for (const item of diff.moved) runtimeRows.push({key:kind+"-move-"+item.entityId,label:label+" 이동 · "+name(item.entityId),kind,position:item.to,originalPosition:item.from});
@@ -91,6 +91,8 @@ export function GameComparisonSidebar() {
       <small>이동 {counts.npcsMoved} · 추가 {counts.npcsAdded} · 삭제 {counts.npcsRemoved} · 설정 {counts.npcsUpdated}</small>
       {([["monsters", "몬스터 출현", counts.monstersMoved, counts.monstersAdded, counts.monstersRemoved, counts.monstersUpdated], ["portals", "포털", counts.portalsMoved, counts.portalsAdded, counts.portalsRemoved, counts.portalsUpdated]] as const).map(([kind,label,moved,added,removed,updated]) => <div key={kind}><label><input type="checkbox" checked={!!view.comparisonFilters[kind]} onChange={e=>view.setComparisonFilter(kind,e.target.checked)} />{label}</label><small>이동 {moved} · 추가 {added} · 삭제 {removed} · 설정 {updated}</small></div>)}
       <label><input type="checkbox" checked={!!view.comparisonFilters.spawn} onChange={e=>view.setComparisonFilter("spawn",e.target.checked)} />시작 위치 {counts.spawnChanged ? "이동" : "변경 없음"}</label>
+      <label><input type="checkbox" checked={!!view.comparisonFilters.traps} onChange={e=>view.setComparisonFilter("traps",e.target.checked)} />함정 영역</label>
+      <small>이동 {counts.trapsMoved??0} · 추가 {counts.trapsAdded??0} · 삭제 {counts.trapsRemoved??0} · 범위·효과 {counts.trapsUpdated??0}</small>
       <label><input type="checkbox" checked={view.comparisonFilters.blocked} onChange={e => view.setComparisonFilter("blocked", e.target.checked)} />이동불가</label>
       <small>추가 {counts.blockedAdded} · 해제 {counts.blockedRemoved}</small>
     </div>

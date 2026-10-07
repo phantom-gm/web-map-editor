@@ -16,7 +16,7 @@ export function activateEditorTool(tool: Tool): void {
   view.setRuntimePlacement(null); view.setPlacementNpc(null); view.setPlacementPrototype(null);
   view.setSelectionMode("objects"); view.setMultiSelect(false);
   if (!editor.gameSync) { editor.setTool(tool); return; }
-  if (tool === "monster" || tool === "portal" || tool === "spawn") {
+  if (tool === "monster" || tool === "portal" || tool === "spawn" || tool === "trap") {
     view.setRuntimePanel(tool); editor.setTool("cursor"); return;
   }
   if (tool === "npc") { view.setShowNpcs(true); editor.setTool("cursor"); return; }

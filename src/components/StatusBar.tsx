@@ -4,6 +4,7 @@ import { selectSouthCounts } from "../store/southSelectors";
 
 const TOOL_LABEL: Record<Tool, string> = {
   spawn: "시작점",
+  trap: "함정",
   cursor: "선택",
   brush: "바닥 칠하기",
   rect: "사각 채우기",

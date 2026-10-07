@@ -181,14 +181,14 @@ function projectDefaults(raw, mapName) {
   p.ground = p.ground || []; p.blocked = p.blocked || []; p.entities = p.entities || [];
   p.palette = (p.palette || []).map(t => { const v = { ...t }; delete v.url; delete v.img; return v; });
   delete p.gameNpcEdits; delete p.gameNpcSync;
-  for (const k of ['gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits']) delete p[k];
+  for (const k of ['gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits', 'gameTrapEdits']) delete p[k];
   delete p.gameObjectEdits; // The actual native map, not an old editor overlay, is the baseline.
   p.staticLayer = p.staticLayer || emptyLayer(); p.attributeBase = p.attributeBase || emptyLayer();
   return p;
 }
 function protectedState(p) {
   const out = { ...p };
-  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked', 'gameNpcEdits', 'gameNpcSync', 'gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits']) delete out[k];
+  for (const k of ['ground', 'palette', 'gameSync', 'gameObjectEdits', 'blocked', 'gameNpcEdits', 'gameNpcSync', 'gameRuntimeSync', 'gameMonsterEdits', 'gamePortalEdits', 'gameSpawnEdits', 'gameTrapEdits']) delete out[k];
   return out;
 }
 function counts(blocks, groundCells, groundEntities = blocks.length) {
@@ -312,6 +312,13 @@ function createSyncProject({ gameRoot, mapName, baselineRoot }) {
     }
     project.groundOrigin = [0, 0];
     project.ground = sortedKeys(analysis.coverage).map(k => { const [x, y] = coord(k); return [x, y, index.get(analysis.coverage.get(k).leafRuid)]; });
+  }
+  // Authoring JSON can lag behind an applied editor candidate. Import the
+  // validated runtime walk table so a fresh baseline reflects actual collision.
+  const importedRuntime = runtimeEdits.analyzeRuntime(readRuntimeFiles(root, ds), mapName);
+  if (importedRuntime.files.DT_Walk && Object.values(importedRuntime.supported).some(Boolean)) {
+    project.blocked = importedRuntime.walk.filter(row => row.map === mapName).map(row => clone(row.cell));
+    walkEdits.blockedSet(project);
   }
   const baselineId = crypto.randomUUID();
   project.gameSync = { version: VERSION, baselineId, mapName: project.map };
@@ -540,7 +547,7 @@ function currentRuntimeFiles(root, profile) {
 }
 function refreshRuntimeProject(project, options) {
   const state = loadBaseline(project, options), { root, dir, manifest } = state;
-  const next = clone(project); delete next.gameMonsterEdits; delete next.gamePortalEdits; delete next.gameSpawnEdits; delete next.gameRuntimeSync;
+  const next = clone(project); delete next.gameMonsterEdits; delete next.gamePortalEdits; delete next.gameSpawnEdits; delete next.gameTrapEdits; delete next.gameRuntimeSync;
   // Keep every existing ground, object, blocked and legacy field; refresh only RUNTIME inputs.
   inspectLoadedProject(next, state);
   const files = readRuntimeFiles(root, datasetFiles(root)), profile = runtimeEdits.analyzeRuntime(files, manifest.mapName);
@@ -655,6 +662,7 @@ function inspectLoadedProject(project, state) {
       ...(runtimeProfile.supported.monsters ? { monsterChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.monsters[k].length])) } : {}),
       ...(runtimeProfile.supported.portals ? { portalChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.portals[k].length])) } : {}),
       ...(runtimeProfile.supported.spawn ? { spawnChanged: runtime.spawnChanged } : {}),
+      ...(runtimeProfile.supported.traps ? {trapChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.traps[k].length]))} : {}),
       runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
       objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
       ...(objects.sorting.length ? { objectSortingChanged: objects.sorting.length } : {}),
@@ -934,7 +942,7 @@ function runtimeUsesNpcOccupancy(report) { return report?.spawnChanged === true 
 function runtimeNpcDependency(profile) { const file = profile.files.DT_NpcSpawn; return file ? { relative: file.relative, sha256: hash(file.bytes) } : null; }
 function runtimeApplyPaths(report, manifest) {
   const result = [];
-  for (const [name, changed] of [['DT_MonsterSpawn.csv', Object.values(report?.monsterChanges || {}).some(n => n > 0)], ['DT_Portal.csv', Object.values(report?.portalChanges || {}).some(n => n > 0)], ['DT_Bounds.csv', report?.spawnChanged === true]]) {
+  for (const [name, changed] of [['DT_MonsterSpawn.csv', Object.values(report?.monsterChanges || {}).some(n => n > 0)], ['DT_Portal.csv', Object.values(report?.portalChanges || {}).some(n => n > 0)], ['DT_Bounds.csv', report?.spawnChanged === true], ['DT_MapTrap.csv', Object.values(report?.trapChanges || {}).some(n => n > 0)]]) {
     const files = manifest.datasetFiles.filter(p => path.basename(p) === name);
     if (changed && files.length === 1) result.push(files[0]);
   }
@@ -952,6 +960,7 @@ function candidateSummary(report) {
     ...(report.monsterChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['monsters' + k[0].toUpperCase() + k.slice(1), report.monsterChanges[k] ?? 0])) : {}),
     ...(report.portalChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['portals' + k[0].toUpperCase() + k.slice(1), report.portalChanges[k] ?? 0])) : {}),
     ...(report.spawnChanged !== undefined ? { spawnChanged: Number(report.spawnChanged) } : {}),
+    ...(report.trapChanges ? Object.fromEntries(['moved','added','removed','updated'].map(k => ['traps' + k[0].toUpperCase() + k.slice(1), report.trapChanges[k] ?? 0])) : {}),
     ...(report.npcChanges ? { npcsMoved: report.npcChanges.moved ?? 0, npcsAdded: report.npcChanges.added ?? 0, npcsRemoved: report.npcChanges.removed ?? 0, npcsUpdated: report.npcChanges.updated ?? 0 } : {})
   };
 }
@@ -975,7 +984,7 @@ function validReviewManifest(review, identity) {
   const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
   return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
     typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 6 &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 7 &&
     review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
     Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
     artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
@@ -1068,7 +1077,7 @@ function packageCandidate(input, options) {
   catch (error) { if (error.code === 'ENOENT') packageFailure('검토 기록이 없어 ZIP을 받을 수 없습니다. 후보를 다시 구워 주세요.', reviewCandidate(input, options)); throw error; }
   let metadata;
   try { metadata = JSON.parse(metadataBytes); } catch { packageFailure('후보 검토 기록을 읽을 수 없습니다. 후보를 다시 구워 주세요.'); }
-  const applyWalk = state.manifest.datasetFiles.filter(relative => ['DT_Walk.csv', 'DT_NpcSpawn.csv', 'DT_MonsterSpawn.csv', 'DT_Portal.csv', 'DT_Bounds.csv'].includes(path.basename(relative)) && metadata?.applyFiles?.some?.(item => item.path === relative));
+  const applyWalk = state.manifest.datasetFiles.filter(relative => ['DT_Walk.csv', 'DT_NpcSpawn.csv', 'DT_MonsterSpawn.csv', 'DT_Portal.csv', 'DT_Bounds.csv', 'DT_MapTrap.csv'].includes(path.basename(relative)) && metadata?.applyFiles?.some?.(item => item.path === relative));
   for (const entry of state.manifest.sourceFiles.filter(f => !state.manifest.datasetFiles.includes(f.relative) || applyWalk.includes(f.relative))) {
     try { if (fs.statSync(sourceRelative(root, entry.relative)).size > MAX_ZIP_BYTES) packageFailure('게임 원본 파일 크기가 다운로드 검토 한도를 넘었습니다.'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }

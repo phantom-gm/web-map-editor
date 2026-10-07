@@ -15,6 +15,7 @@ const GUIDES: Record<Tool, [string, string]> = {
   monster: ["몬스터", "왼쪽 목록에서 몬스터를 선택한 뒤 놓을 칸 클릭"],
   portal: ["포털", "도착할 맵과 위치를 설정한 뒤 놓을 칸 클릭"],
   spawn: ["시작점", "플레이어가 시작할 칸 클릭"],
+  trap: ["함정", "시작 칸 클릭 → 속성에서 끝 칸·상태이상 지정"],
 };
 
 export function CanvasChrome({ onZoom }: { onZoom: (factor: number) => void }) {

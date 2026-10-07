@@ -2,6 +2,7 @@ import type { GameMonsterDescriptor, GamePortalDescriptor, GameSpawnDescriptor, 
 import type { GameNpcDescriptor, GameNpcClass, GameNpcEdits, GameNpcSource } from "./gameNpc";
 import type { GameSyncReport } from "./gameSync";
 import type { GameObjectDescriptor } from "./gameObjects";
+import type { GameTrapDescriptor, GameTrapEffect } from "./gameRuntime";
 import { TH, TW, type Camera, type Dims } from "./grid";
 
 export interface GamePreviewConstants {
@@ -51,6 +52,10 @@ export interface GamePreviewScene {
   npcDialogGroupsAvailable?: boolean;
   monsters?: GameMonsterDescriptor[];
   portals?: GamePortalDescriptor[];
+  traps?: GameTrapDescriptor[];
+  trapCatalog?: GameTrapEffect[];
+  trapEditingSupported?: boolean;
+  trapEditingReasons?: string[];
   spawn?: GameSpawnDescriptor | null;
   monsterCatalog?: GameMonsterClass[];
   mapDestinations?: GameMapDestination[];

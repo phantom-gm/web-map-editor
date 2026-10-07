@@ -1,4 +1,5 @@
 import { parseRuntimeProject, parseGameRuntimeSync, parseMonsterPatch, parsePortalPatch, parseGameMonsterEdits, parseGamePortalEdits, parseGameSpawnEdits, runtimeEditsKey, runtimeSourceKey, runtimeCellInBounds, updateRuntimeEdit, removeRuntimeEdit, type RuntimeProjectFields, type RuntimeSelection, type RuntimeCell, type MonsterFields, type PortalFields, type GameRuntimeSync } from "../lib/gameRuntime";
+import {parseTrapPatch,parseGameTrapEdits,type TrapFields} from "../lib/gameRuntime";
 import { create } from "zustand";
 import { TW, type Camera } from "../lib/grid";
 import { toStoredTile, type PaletteTile } from "../lib/palette";
@@ -108,7 +109,7 @@ const MAX_ZOOM = 6;
 const UNDO_CAP = 100;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | "spawn" | EntityKind;
+export type Tool = "cursor" | "brush" | "eraser" | "rect" | "eyedropper" | "block" | "spawn" | "trap" | EntityKind;
 
 // 팔레트 타일의 category(스토리지 subcategory)로 선택 시 활성화할 도구 결정.
 //   foothold → 브러시(바닥 타일), npc/monster → 해당 배치, 그 외 전부 → 오브젝트 배치.
@@ -251,6 +252,9 @@ export interface EditorState extends RuntimeProjectFields {
   addGamePortal: (fields: PortalFields, scene: GamePreviewScene) => string | null;
   removeGamePortal: (id: string, scene: GamePreviewScene) => boolean;
   setGameSpawn: (cell: RuntimeCell, scene: GamePreviewScene) => boolean;
+  updateGameTrap: (id: string, patch: Partial<TrapFields>, scene: GamePreviewScene) => boolean;
+  addGameTrap: (fields: TrapFields, scene: GamePreviewScene) => string | null;
+  removeGameTrap: (id: string, scene: GamePreviewScene) => boolean;
   replaceGameRuntimeSource: (sync: GameRuntimeSync, baselineId: string, expectedKey: string) => boolean;
   selectGameNpc: (id: string | null) => void;
   updateGameNpc: (id: string, patch: GameNpcPatch, scene: GamePreviewScene) => boolean;
@@ -304,7 +308,7 @@ function assertRuntimeScene(state: EditorState, scene: GamePreviewScene): void {
   if (!state.gameSync || scene.baselineId !== state.gameSync.baselineId || scene.mapName !== state.mapName ||
       !scene.monsters || !scene.portals || !scene.runtimeSource ||
       (scene.runtimeSource.sourceId ?? null) !== (state.gameRuntimeSync?.sourceId ?? null) ||
-      runtimeEditsKey({gameMonsterEdits:echo?.monsters??undefined,gamePortalEdits:echo?.portals??undefined,gameSpawnEdits:echo?.spawn??undefined}) !== runtimeEditsKey(state)) {
+      runtimeEditsKey({gameMonsterEdits:echo?.monsters??undefined,gamePortalEdits:echo?.portals??undefined,gameSpawnEdits:echo?.spawn??undefined,gameTrapEdits:echo?.traps??undefined}) !== runtimeEditsKey(state)) {
     throw new Error("몬스터·포털·시작점 미리보기를 갱신한 뒤 다시 편집하세요.");
   }
   if (scene.npcs && (npcEditsKey(scene.npcEdits??undefined)!==npcEditsKey(state.gameNpcEdits) || (scene.npcSource?.sourceId??null)!==(state.gameNpcSync?.sourceId??null))) throw new Error("NPC 미리보기를 갱신한 뒤 배치를 편집하세요.");
@@ -346,6 +350,11 @@ function assertPortal(state: EditorState, scene: GamePreviewScene, fields: Porta
   }
 }
 const runtimeFailure = (error: unknown) => ({gameRuntimeError:error instanceof Error ? error.message : String(error)});
+function assertTrap(state:EditorState,scene:GamePreviewScene,fields:TrapFields):void {
+  assertRuntimeCell(state,scene,fields.cell);assertRuntimeCell(state,scene,fields.maxCell);
+  if(fields.maxCell.some((n,i)=>n<fields.cell[i]))throw new Error("함정 끝 칸은 시작 칸보다 작을 수 없습니다.");
+  if(!scene.trapEditingSupported||!scene.trapCatalog?.some(a=>a.abnormalityId===fields.abnormalityId&&a.canAdd))throw new Error("함정 원본과 플레이어용 상태이상을 확인하세요.");
+}
 const runtimeCommit = (s: EditorState, fields: RuntimeProjectFields, selection: RuntimeSelection | null): Partial<EditorState> => ({
   ...fields, selectedGameRuntime:selection, selectedGameNpcId:null, selectedEntityId:null,
   selectedGameObjectId:null,selectedGameObjectIds:[],selectedBlockedCells:[], gameRuntimeError:null,
@@ -754,6 +763,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     selectedGameRuntime:selection,gameRuntimeError:null,selectedGameNpcId:null,selectedEntityId:null,
     selectedGameObjectId:null,selectedGameObjectIds:[],selectedBlockedCells:[],
   }),
+  updateGameTrap:(id,input,scene)=>{
+    let ok=false;set(s=>{try{assertRuntimeScene(s,scene);const current=scene.traps?.find(t=>t.entityId===id);if(!current?.canEdit)throw new Error("편집할 함정을 확인하세요.");const patch=parseTrapPatch(input),fields={...current,...patch};assertTrap(s,scene,fields);
+      if(Object.entries(patch).every(([k,v])=>JSON.stringify(current[k as keyof TrapFields])===JSON.stringify(v))){ok=true;return{gameRuntimeError:null};}
+      const gameTrapEdits=parseGameTrapEdits(updateRuntimeEdit(s.gameTrapEdits,id,patch));ok=true;return runtimeCommit(s,{gameTrapEdits},{kind:"trap",entityId:id});
+    }catch(e){return runtimeFailure(e);}});return ok;
+  },
+  addGameTrap:(fields,scene)=>{
+    let id:string|null=null;set(s=>{try{assertRuntimeScene(s,scene);assertTrap(s,scene,fields);const entityId=newEntityId(),edits=s.gameTrapEdits??{version:1,updated:[],removed:[],added:[]};const gameTrapEdits=parseGameTrapEdits({...edits,added:[...edits.added,{entityId,...fields}]});id=entityId;return runtimeCommit(s,{gameTrapEdits},{kind:"trap",entityId});}catch(e){return runtimeFailure(e);}});return id;
+  },
+  removeGameTrap:(id,scene)=>{
+    let ok=false;set(s=>{try{assertRuntimeScene(s,scene);if(!scene.traps?.find(t=>t.entityId===id)?.canEdit)throw new Error("삭제할 함정을 확인하세요.");const gameTrapEdits=removeRuntimeEdit(s.gameTrapEdits,id);ok=true;return runtimeCommit(s,{gameTrapEdits},null);}catch(e){return runtimeFailure(e);}});return ok;
+  },
   updateGameMonster: (id,input,scene) => {
     let ok=false;
     set(s=>{try{
@@ -834,7 +855,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set(s=>{try{
       const gameRuntimeSync=parseGameRuntimeSync(sync);
       if(!gameRuntimeSync || s.gameSync?.baselineId!==baselineId || runtimeSourceKey(s)!==expectedKey)throw new Error("작업이 바뀌어 원본 다시 읽기를 취소했습니다.");
-      ok=true;return runtimeCommit(s,{gameRuntimeSync,gameMonsterEdits:undefined,gamePortalEdits:undefined,gameSpawnEdits:undefined},null);
+      ok=true;return runtimeCommit(s,{gameRuntimeSync,gameMonsterEdits:undefined,gamePortalEdits:undefined,gameSpawnEdits:undefined,gameTrapEdits:undefined},null);
     }catch(e){return runtimeFailure(e);}});return ok;
   },
 

@@ -9,6 +9,7 @@ export const TOOL_SHORTCUTS: Partial<Record<Tool, string>> = {
   monster: "M",
   npc: "N",
   object: "O",
+  trap: "T",
 };
 
 // KeyboardEvent.code(물리 키: "KeyV" 등) → 도구. e.key 는 한글 IME/레이아웃에 따라

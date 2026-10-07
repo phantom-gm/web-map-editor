@@ -8,8 +8,9 @@ import { runtimeDescriptor } from "../lib/gameRuntimePreview";
 import { previewWorldToScreen, type GamePreviewScene } from "../lib/gamePreview";
 import type { ProjectFile } from "../lib/projectIO";
 import { NumberField } from "./NumberField";
+import {GameTrapLibrary,GameTrapInspector} from "./GameTrapPanel";
 
-const names = {monster:"몬스터 스포너",portal:"포털",spawn:"시작점"};
+const names = {monster:"몬스터 스포너",portal:"포털",spawn:"시작점",trap:"함정"};
 export function openRuntimePanel(kind:RuntimeKind):void {
   useGamePreviewStore.getState().setRuntimePanel(kind);
   useEditorStore.getState().clearGameSelection();useEditorStore.getState().setTool("cursor");
@@ -35,7 +36,8 @@ function PortalTarget({fields,onChange,scene,disabled=false}:{fields:Omit<Portal
     </select></label>
   </>;
 }
-export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {
+export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {return kind==="trap"?<GameTrapLibrary/>:<ActorRuntimeLibrary kind={kind}/>;}
+function ActorRuntimeLibrary({kind}:{kind:Exclude<RuntimeKind,"trap">}) {
   const [search,setSearch]=useState(""),[adding,setAdding]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
   const [portalFields,setPortalFields]=useState<Omit<PortalFields,"cell">>({destMap:"",destCell:[0,0],destFacing:"SE",enabled:true});
   const request=useRef<AbortController|null>(null);useEffect(()=>()=>request.current?.abort(),[]);
@@ -50,7 +52,7 @@ export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {
   const classes=(scene?.monsterCatalog??[]).filter(m=>(m.name+" "+m.monsterClassId).toLocaleLowerCase().includes(query));
   async function refreshSource(){
     const st=useEditorStore.getState();if(!st.gameSync)return;
-    if((st.gameMonsterEdits||st.gamePortalEdits||st.gameSpawnEdits)&&!window.confirm("몬스터·포털·시작점 수정 사항을 지우고 최신 원본을 불러옵니다. NPC와 다른 작업은 유지하고 Ctrl+Z로 되돌릴 수 있습니다. 계속할까요?"))return;
+    if((st.gameMonsterEdits||st.gamePortalEdits||st.gameSpawnEdits||st.gameTrapEdits)&&!window.confirm("몬스터·포털·시작점·함정 수정 사항을 지우고 최신 원본을 불러옵니다. NPC와 다른 작업은 유지하고 Ctrl+Z로 되돌릴 수 있습니다. 계속할까요?"))return;
     request.current?.abort();const controller=new AbortController();request.current=controller;
     const baselineId=st.gameSync.baselineId,expected=runtimeSourceKey(st);setBusy(true);setError(null);
     try{
@@ -66,7 +68,7 @@ export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {
   const choose=(selected:RuntimeSelection)=>{if(!scene)return;view.setRuntimePlacement(null);useEditorStore.getState().setTool("cursor");useEditorStore.getState().selectGameRuntime(selected);focusRuntime(selected,scene);};
   return <section className="game-runtime-library" aria-label={names[kind]+" 목록"}>
     <div className="palette-head"><strong>{names[kind]}</strong><button onClick={()=>activateEditorTool("brush")}>바닥 소재</button></div>
-    <div className="object-tabs">{(["monster","portal","spawn"] as const).map(k=><button key={k} aria-pressed={k===kind} onClick={()=>openRuntimePanel(k)}>{names[k]}</button>)}</div>
+    <div className="object-tabs">{(["monster","portal","spawn","trap"] as const).map(k=><button key={k} aria-pressed={k===kind} onClick={()=>openRuntimePanel(k)}>{names[k]}</button>)}</div>
     {kind!=="spawn"&&<div className="object-tabs"><button aria-pressed={!adding} onClick={()=>setAdding(false)}>현재 배치</button><button aria-pressed={adding} onClick={()=>setAdding(true)}>{names[kind]} 추가</button></div>}
     {kind!=="spawn"&&<input className="object-search" aria-label={names[kind]+" 검색"} value={search} placeholder="이름·번호·맵 검색" onChange={e=>setSearch(e.target.value)}/>}
     <p className="object-help">{kind==="monster"?"그림은 스포너 기준 위치입니다. 실제 몬스터는 수량·범위와 이동 가능 칸에 따라 등장하며 고정 위치가 아닙니다.":kind==="portal"?"포털은 한 방향 연결입니다. 반대편 포털은 따로 편집합니다.":"맵별 기본 시작 위치입니다. 이동·재지정만 가능하며 삭제하지 않습니다."}</p>
@@ -83,16 +85,17 @@ export function GameRuntimeLibrary({kind}:{kind:RuntimeKind}) {
       {kind==="spawn"&&scene?.spawn&&<><button className="game-object-item" disabled={!ready} onClick={()=>choose({kind:"spawn",entityId:scene.mapName})}><span>시작점 {scene.spawn.cell.join(", ")}<small>현재 위치 선택·보기</small></span></button><button disabled={!editable||!scene.spawn.canEdit} onClick={()=>{view.setRuntimePlacement({kind:"spawn"});useEditorStore.getState().clearGameSelection();useEditorStore.getState().setTool("spawn");}}>맵에서 시작점 지정</button></>}
       {kind==="spawn"&&ready&&!scene?.spawn&&<p className="object-help">시작점 원본이 없는 맵입니다.</p>}
     </div>
-    <div className="npc-source-actions"><button disabled={!ready||!scene?.runtimeSource?.refreshAvailable} onClick={()=>void refreshSource()}>{busy?"불러오는 중…":"몬스터·포털·시작점 원본 다시 읽기"}</button><small>세 배치 원본만 함께 갱신합니다. 게임 파일은 바뀌지 않습니다.</small></div>
+    <div className="npc-source-actions"><button disabled={!ready||!scene?.runtimeSource?.refreshAvailable} onClick={()=>void refreshSource()}>{busy?"불러오는 중…":"배치·함정 원본 다시 읽기"}</button><small>몬스터·포털·시작점·함정 원본을 함께 갱신합니다. 게임 파일은 바뀌지 않습니다.</small></div>
   </section>;
 }
 export function GameRuntimeInspector(){
   const selection=useEditorStore(s=>s.selectedGameRuntime),link=useEditorStore(s=>s.gameSync),view=useGamePreviewStore();
   const scene=view.scene?.baselineId===link?.baselineId?view.scene:null;
   if(!selection||!scene||view.comparisonEnabled||!runtimeDescriptor(scene,selection))return null;
-  return <RuntimeProperties key={selection.kind+selection.entityId} selection={selection} scene={scene}/>;
+  if(selection.kind==="trap")return <GameTrapInspector scene={scene} entityId={selection.entityId}/>;
+  return <RuntimeProperties key={selection.kind+selection.entityId} selection={{...selection,kind:selection.kind}} scene={scene}/>;
 }
-function RuntimeProperties({selection,scene}:{selection:RuntimeSelection;scene:GamePreviewScene}){
+function RuntimeProperties({selection,scene}:{selection:RuntimeSelection & {kind:Exclude<RuntimeKind,"trap">};scene:GamePreviewScene}){
   const view=useGamePreviewStore(),loading=useWorkspaceSession(s=>s.loading),error=useEditorStore(s=>s.gameRuntimeError),item=runtimeDescriptor(scene,selection)!;
   const locked=loading||view.status!=="ready"||view.comparisonEnabled||!item.canEdit||!!scene.runtimeSource?.stale;
   const update=(patch:Partial<PortalFields>&Partial<Pick<GameMonsterDescriptor,"monsterClassId"|"count"|"spread"|"respawnMinSec"|"respawnMaxSec"|"firstSpawnSec">>)=>{

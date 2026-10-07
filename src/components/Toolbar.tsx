@@ -94,6 +94,7 @@ export function Toolbar() {
     {id: "monster", name: "몬스터", marker: "M", active: preview.runtimePanel === "monster"},
     {id: "portal", name: "포털", marker: "P", active: preview.runtimePanel === "portal"},
     {id: "spawn", name: "시작점", marker: "S", active: preview.runtimePanel === "spawn"},
+    {id: "trap", name: "함정", marker: "T", active: preview.runtimePanel === "trap"},
   ];
   const toolNames: Partial<Record<Tool, string>> = { cursor: "선택", brush: "바닥", rect: "사각 채우기", eraser: "지우개", block: "이동불가", eyedropper: "스포이드" };
   const clear = () => {
@@ -114,7 +115,7 @@ export function Toolbar() {
     </div>
     <div className="tool-group placement-tools" aria-label="배치 종류">
       <span className="tool-group-label">배치</span>
-      {(gameSync ? panels : panels.filter(p => p.id !== "spawn")).map(p => <button key={p.id}
+      {(gameSync ? panels : panels.filter(p => p.id !== "spawn" && p.id !== "trap")).map(p => <button key={p.id}
         className={"tool-btn ent-btn" + ((gameSync ? p.active : tool === p.id) ? " sel" : "")}
         aria-label={p.name + (gameSync ? " 목록·편집" : " 배치")} aria-pressed={gameSync ? p.active : tool === p.id}
         title={withShortcut(p.name, p.id)} disabled={locked} onClick={() => activateEditorTool(p.id)}>

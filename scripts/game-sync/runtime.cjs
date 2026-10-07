@@ -2,7 +2,8 @@
 // Runtime spawn tables only. All filesystem access and candidate paths remain in core.cjs.
 const crypto = require('node:crypto');
 const { parseCsv, world } = require('./npcs.cjs');
-const FILES = ['DT_MonsterSpawn.csv','DT_MonsterClass.csv','DT_MonsterAppearance.csv','ST_MonsterName.csv','DT_Portal.csv','DT_Bounds.csv','DT_Walk.csv','DT_GameConfig.csv'];
+const traps = require('./traps.cjs');
+const FILES = ['DT_MonsterSpawn.csv','DT_MonsterClass.csv','DT_MonsterAppearance.csv','ST_MonsterName.csv','DT_Portal.csv','DT_Bounds.csv','DT_Walk.csv','DT_GameConfig.csv','DT_MapTrap.csv','DT_Abnormality.csv','ST_ABNName.csv'];
 const ID = /^[A-Za-z0-9_-]{1,128}$/, UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const M_FIELDS = ['monsterClassId','cell','count','spread','respawnMinSec','respawnMaxSec','firstSpawnSec','enabled'];
 const P_FIELDS = ['cell','destMap','destCell','destFacing','enabled'];
@@ -34,6 +35,7 @@ function analyzeRuntime(files,mapName,sourceId=null) {
   let placementReady=false;
   try { out.bounds=boundsRows(files); out.walk=walkRows(files); placementReady=true; } catch(e) { if(e.name!=='GameSyncError')throw e; for(const k of Object.keys(out.reasons))out.reasons[k].push(e.message); }
   const mapBounds=out.bounds.find(r=>r.map===mapName);
+  out.traps=traps.analyze(files,mapName);out.supported.traps=out.traps.supported;out.reasons.traps=out.traps.reasons;
   tryKind('monsters',()=>{
     if(!placementReady||!mapBounds)fail('UNSUPPORTED_RUNTIME','현재 맵 경계가 없습니다.');
     const appearances=table(files,'DT_MonsterAppearance',['MonsterAppearanceID','Action','BaseDir','Ruid']).rows;
@@ -91,14 +93,17 @@ function inspectRuntime(project,profile,constants,npcs=[]) {
   if(project.gameSpawnEdits!==undefined&&project.gameSpawnEdits!==null){const raw=project.gameSpawnEdits;if(!exact(raw,['version','cell'])||raw.version!==1||!inBounds(raw.cell,bounds)||!spawn)fail('INVALID_RUNTIME_EDIT','시작점은 현재 맵 안의 정수 셀이어야 합니다.');echoes.spawn={version:1,cell:[...raw.cell]};spawnChanged=!same(raw.cell,spawn.sourceCell);if(spawnChanged){if(currentBlocked.has(key(raw.cell)))fail('BLOCKED_SPAWN','시작점은 이동 가능한 셀이어야 합니다.');if(npcs.some(n=>n.enabled&&same(n.cell,raw.cell)))fail('OCCUPIED_SPAWN','시작점에 NPC가 있습니다.');spawn={...spawn,cell:[...raw.cell],position:world(raw.cell,constants)};}}
   if(monsterDescriptors.length)warnings.push('몬스터 이미지는 스포너 중심을 나타냅니다. 실제 개체는 범위 안에서 무작위로 배치되며 런타임 깊이·AI·전투는 별도 검증 대상입니다.');
   if(portalDescriptors.length)warnings.push('포탈은 정적 위치 표시입니다. 런타임 깊이 보정과 실제 맵 이동은 별도 게임 검증이 필요합니다.');
-  return {profile,monsters,portals,spawn,spawnChanged,edited:monsters.edited+portals.edited+Number(spawnChanged),warnings,echoes,
-    scene:{monsters:monsterDescriptors,monsterCatalog:profile.catalog,portals:portalDescriptors,spawn,mapDestinations:profile.bounds.map(r=>({mapName:r.map,bounds:clone(r.bounds),spawnCell:[...r.cell],blocked:[...blockedFor(r.map)].map(k=>k.split(',').map(Number)),canTarget:r.bounds.minX<=r.bounds.maxX&&r.bounds.minY<=r.bounds.maxY}))},
-    comparison:{monsters:monsters.comparison,portals:portals.comparison,spawn:spawnChanged?{from:world(spawn.sourceCell,constants),to:world(spawn.cell,constants)}:null}};
+  const trapEdit=traps.inspect(project.gameTrapEdits,profile.traps,constants,project.size,portalDescriptors,profile.portals);warnings.push(...trapEdit.warnings);echoes.traps=trapEdit.echo;
+  return {profile,monsters,portals,traps:trapEdit,spawn,spawnChanged,edited:monsters.edited+portals.edited+Number(spawnChanged)+trapEdit.edited,warnings,echoes,
+    scene:{traps:trapEdit.descriptors,trapCatalog:profile.traps.catalog,trapEditingSupported:profile.traps.supported,trapEditingReasons:profile.traps.reasons,monsters:monsterDescriptors,monsterCatalog:profile.catalog,portals:portalDescriptors,spawn,mapDestinations:profile.bounds.map(r=>({mapName:r.map,bounds:clone(r.bounds),spawnCell:[...r.cell],blocked:[...blockedFor(r.map)].map(k=>k.split(',').map(Number)),canTarget:r.bounds.minX<=r.bounds.maxX&&r.bounds.minY<=r.bounds.maxY}))},
+    comparison:{monsters:monsters.comparison,portals:portals.comparison,spawn:spawnChanged?{from:world(spawn.sourceCell,constants),to:world(spawn.cell,constants)}:null,
+      ...(profile.traps.supported?{traps:{moved:trapEdit.moved.map(r=>({entityId:r.entityId,from:world(r.source.cell,constants),to:world(r.values.cell,constants)})),added:trapEdit.added.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)})),removed:trapEdit.removed.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)})),updated:trapEdit.updated.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)}))}}:{})}};
 }
 function signature(files,name,mapName,maps){
   const file=files[name];if(!file)return null;const parsed=parseCsv(file.bytes);
   let rows;
   if(name==='DT_MonsterSpawn'||name==='DT_Portal')rows=parsed.rows.filter(r=>r.data[name==='DT_Portal'?'SrcMap':'MapName']===mapName).map(r=>r.data);
+  else if(name==='DT_MapTrap')return JSON.stringify({header:parsed.header,rows:parsed.rows.filter(r=>r.data.MapName===mapName).map(r=>r.data)});
   else if(name==='DT_Bounds')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>{const d={...r.data};if(d.MapName!==mapName){delete d.SpawnX;delete d.SpawnY;}return d;});
   else if(name==='DT_Walk')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>r.data);
   else if(name==='DT_GameConfig')rows=parsed.rows.filter(r=>r.data.ConfigKey==='PortalSpriteRuid').map(r=>r.data);
@@ -121,6 +126,7 @@ function buildCandidates(edit,currentFiles){const {profile}=edit;if(sourceDrift(
     for(const k of fields){if(original&&same(v[k],r.source[k]))continue;if(k==='cell'){data[kind==='monsters'?'CellX':'SrcX']=String(v.cell[0]);data[kind==='monsters'?'CellY':'SrcY']=String(v.cell[1]);}else if(k==='destCell'){data.DestX=String(v.destCell[0]);data.DestY=String(v.destCell[1]);}else data[columns[k]]=typeof v[k]==='boolean'?(v[k]?'True':'False'):String(v[k]);}return data;};
   for(const [kind,name,idColumn,mapColumn]of [['monsters','DT_MonsterSpawn','MonsterSpawnID','MapName'],['portals','DT_Portal','PortalID','SrcMap']])if(edit[kind].edited){const file=currentFiles[name],e=edit[kind],bytes=patchTable(file.bytes,profile.mapName,idColumn,mapColumn,e.changed,e.added,e.removed,render(kind));result.push({name,relative:file.relative,sourceBytes:file.bytes,bytes,comparison:{sourceSha256:hash(file.bytes),candidateSha256:hash(bytes),unchangedRowsExact:true}});}
   if(edit.spawnChanged){const file=currentFiles.DT_Bounds,record={id:profile.mapName,cell:edit.spawn.cell};const bytes=patchTable(file.bytes,profile.mapName,'MapName','MapName',[record],[],[],(r,original)=>({...original,SpawnX:String(r.cell[0]),SpawnY:String(r.cell[1])}));result.push({name:'DT_Bounds',relative:file.relative,sourceBytes:file.bytes,bytes,comparison:{sourceSha256:hash(file.bytes),candidateSha256:hash(bytes),unchangedRowsExact:true}});}
+  result.push(...traps.build(edit.traps,currentFiles));
   return result;
 }
 module.exports={FILES,analyzeRuntime,inspectRuntime,sourceDrift,buildCandidates,inBounds};

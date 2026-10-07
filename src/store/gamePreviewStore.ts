@@ -25,7 +25,7 @@ export interface GamePreviewState {
   showOverlays: boolean;
   refreshNonce: number;
   runtimePanel: RuntimeKind | null;
-  runtimePlacement: {kind:"monster";monsterClassId:number} | {kind:"portal";fields:Omit<PortalFields,"cell">} | {kind:"spawn"} | null;
+  runtimePlacement: {kind:"monster";monsterClassId:number} | {kind:"portal";fields:Omit<PortalFields,"cell">} | {kind:"spawn"} | {kind:"trap";abnormalityId:number} | null;
   setRuntimePanel: (kind: RuntimeKind | null) => void;
   setRuntimePlacement: (placement: GamePreviewState["runtimePlacement"]) => void;
   showNpcs: boolean;
@@ -46,7 +46,7 @@ export interface GamePreviewState {
 }
 export const useGamePreviewStore = create<GamePreviewState>((set) => ({
   comparisonEnabled: false, comparisonMode: "changes", comparisonBaseline: null, comparison: null,
-  comparisonFilters: { ground: true, objects: true, blocked: true, npcs: true, monsters: true, portals: true, spawn: true },
+  comparisonFilters: { ground: true, objects: true, blocked: true, npcs: true, monsters: true, portals: true, spawn: true, traps:true },
   setComparisonEnabled: (comparisonEnabled) => set({ comparisonEnabled, runtimePlacement: null, showScene: true, placementPrototypeId: null, placementNpcClassId: null }),
   setComparisonMode: (comparisonMode) => set({ comparisonMode }),
   setComparisonFilter: (key, enabled) => set(state => ({ comparisonFilters: { ...state.comparisonFilters, [key]: enabled } })),

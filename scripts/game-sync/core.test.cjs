@@ -1155,7 +1155,50 @@ function runtimeFixture(t) {
   for(const [relative,raw] of Object.entries(files)){const file=path.join(f.root,'RootDesk/MyDesk/DataSet',relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,raw.replaceAll('\\r','\r').replaceAll('\\n','\n').replaceAll('\\ufeff','\ufeff'));}
   return {...f,runtimeFile:name=>path.join(f.root,'RootDesk/MyDesk/DataSet',Object.keys(files).find(k=>k.endsWith('/'+name+'.csv')))};
 }
+test('fresh synchronization uses runtime walk cells when authoring JSON lags behind', fixtureOptions, t => {
+  const f = runtimeFixture(t);
+  const walkPath = path.join(f.root, 'RootDesk/MyDesk/DataSet/world/DT_Walk.csv');
+  fs.writeFileSync(walkPath, 'MapName,CellX,CellY\r\nfixture,6,1\r\nother,2,3\r\n');
+  const before = fileTreeHashes(f.root);
+  const imported = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(imported.project.blocked, [[6, 1]]);
+  const refreshed = refreshRuntimeProject(imported.project, f.options);
+  assert.deepEqual(refreshed.project.blocked, [[6, 1]]);
+  const candidate = exportEditedProject(imported.project, f.options);
+  assert.equal(candidate.report.exactMapBytes, true);
+  assert.deepEqual(fileTreeHashes(f.root), before);
+});
 const runtimePatch=(updated=[],removed=[],added=[])=>({version:1,updated,removed,added});
+function trapFixture(t){
+ const f=runtimeFixture(t),put=(name,text)=>{const file=path.join(f.root,'RootDesk/MyDesk/DataSet/world',name+'.csv');fs.writeFileSync(file,text);return file;};
+ const trapFile=put('DT_MapTrap','\ufeffTrapID,MapName,MinX,MinY,MaxX,MaxY,AbnormalityID,#Memo\r\nT1,fixture,2,3,4,4,1011,"keep, note"\r\nT2,fixture,5,0,6,0,1002,second\nT_other,other,1,1,2,2,1011,last');
+ put('DT_Abnormality','AbnormalityID,AbnormalityName,Duration,ApplyTarget,ValueTarget\n1011,COMA,25000,Pc,COMA\n1002,STUN,3000,"Pc,Monster",STUN\n');
+ put('ST_ABNName','Key,Source,ko\nCOMA,Coma,코마\nSTUN,Stun,기절\n');return{...f,trapFile};
+}
+test('traps import inclusive rectangles and no-op export preserves map and original CSV bytes',fixtureOptions,t=>{
+ const f=trapFixture(t),before=fileTreeHashes(f.root),{project}=createSyncProject({...f.options,mapName:'fixture'}),scene=previewEditedProject(project,f.options);
+ assert.equal(scene.traps.length,2);assert.deepEqual(scene.traps[0].cell,[2,3]);assert.deepEqual(scene.traps[0].maxCell,[4,4]);assert.equal(scene.traps[0].name,'코마');
+ const c=exportEditedProject(project,f.options);assert(c.report.exactMapBytes);assert.deepEqual(c.report.applyFiles,['map/fixture.map']);assert.deepEqual(fileTreeHashes(f.root),before);
+});
+test('trap edit candidates preserve unknown columns, other rows, row priority and ZIP review',fixtureOptions,t=>{
+ const f=trapFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'}),before=fileTreeHashes(f.root),id=crypto.randomUUID();
+ project.gameTrapEdits=runtimePatch([{entityId:'T1',cell:[3,3],maxCell:[5,4]}],['T2'],[{entityId:id,cell:[6,6],maxCell:[7,7],abnormalityId:1002}]);
+ const scene=previewEditedProject(project,f.options);assert.deepEqual(scene.traps.map(t=>t.entityId),['T1',id]);
+ const c=exportEditedProject(project,f.options),rel='RootDesk/MyDesk/DataSet/world/DT_MapTrap.csv',text=fs.readFileSync(path.join(c.candidateDir,rel),'utf8');
+ assert.deepEqual(c.report.applyFiles,['map/fixture.map',rel]);assert(text.includes('T1,fixture,3,3,5,4,1011,"keep, note"\r\n'));assert(text.includes('T_other,other,1,1,2,2,1011,last'));assert(!text.includes('T2,'));assert(text.indexOf('T1,')<text.indexOf('fixture_Editor_'));
+ const identity={candidateId:c.candidateId,mapName:'fixture',baselineId:project.gameSync.baselineId};const review=reviewCandidate(identity,f.options);assert.equal(review.status,'ready',JSON.stringify(review.issues));assert(packageCandidate(identity,f.options).bytes.length>0);assert.deepEqual(fileTreeHashes(f.root),before);
+});
+test('traps reject reversed/outside ranges and stale source while tolerating unrelated-map edits',fixtureOptions,t=>{
+ const f=trapFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});
+ for(const patch of [{cell:[5,5],maxCell:[4,4]},{maxCell:[8,4]},{abnormalityId:99999}])assert.throws(()=>previewEditedProject({...project,gameTrapEdits:runtimePatch([{entityId:'T1',...patch}])},f.options),e=>e.code==='INVALID_TRAP_EDIT');
+ project.gameTrapEdits=runtimePatch([{entityId:'T1',maxCell:[5,4]}]);fs.writeFileSync(f.trapFile,fs.readFileSync(f.trapFile,'utf8').replace('T_other,other,1,1','T_other,other,2,1'));const c=exportEditedProject(project,f.options);assert(fs.readFileSync(path.join(c.candidateDir,'RootDesk/MyDesk/DataSet/world/DT_MapTrap.csv'),'utf8').includes('T_other,other,2,1'));
+ fs.writeFileSync(f.trapFile,fs.readFileSync(f.trapFile,'utf8').replace('T1,fixture,2,3','T1,fixture,1,3'));assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='STALE_RUNTIME_SOURCE'||e.code==='STALE_TRAP_SOURCE');
+});
+test('adding a trap retains first-row priority when the original CSV has no final newline',fixtureOptions,t=>{
+ const f=trapFixture(t);fs.writeFileSync(f.trapFile,'TrapID,MapName,MinX,MinY,MaxX,MaxY,AbnormalityID,#Memo\nT1,fixture,2,3,4,4,1011,"keep, note"');
+ const {project}=createSyncProject({...f.options,mapName:'fixture'}),id=crypto.randomUUID();project.gameTrapEdits=runtimePatch([],[],[{entityId:id,cell:[3,3],maxCell:[4,4],abnormalityId:1002}]);
+ const c=exportEditedProject(project,f.options),text=fs.readFileSync(path.join(c.candidateDir,'RootDesk/MyDesk/DataSet/world/DT_MapTrap.csv'),'utf8');assert(text.includes('T1,fixture,2,3,4,4,1011,"keep, note"\nfixture_Editor_'));assert.equal(previewEditedProject(project,f.options).traps[0].trapId,'T1');
+});
 function mixedRuntime(project){
   project.gameMonsterEdits=runtimePatch([{entityId:'M1',cell:[4,3],count:3,respawnMinSec:5}],['M2'],[{entityId:crypto.randomUUID(),monsterClassId:201,cell:[4,4],count:1,spread:0,respawnMinSec:0,respawnMaxSec:0,firstSpawnSec:0,enabled:true}]);
   project.gamePortalEdits=runtimePatch([{entityId:'P1',cell:[5,6],destFacing:'NE'}],['P2'],[{entityId:crypto.randomUUID(),cell:[6,6],destMap:'other',destCell:[2,3],destFacing:'SW',enabled:true}]);

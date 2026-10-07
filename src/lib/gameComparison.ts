@@ -3,6 +3,7 @@ import {
   type GamePreviewImages, type GamePreviewScene,
 } from "./gamePreview";
 import { drawGameObjectSelection } from "./gameObjectPreview";
+import {trapPolygon} from "./gameRuntimePreview";
 import { cellToScreen, type Camera } from "./grid";
 
 export interface GameBaselinePreview {
@@ -52,6 +53,7 @@ export interface GameComparison {
   blocked: { added: [number, number][]; removed: [number, number][] };
   monsters?: RuntimePlacementChanges;
   portals?: RuntimePlacementChanges;
+  traps?: RuntimePlacementChanges;
   spawn?: { from: [number, number, number]; to: [number, number, number] } | null;
   npcs?: {
     moved: { entityId: string; from: [number, number, number]; to: [number, number, number] }[];
@@ -60,7 +62,7 @@ export interface GameComparison {
     updated: { entityId: string; position: [number, number, number] }[];
   };
 }
-export interface GameComparisonFilters { ground: boolean; objects: boolean; blocked: boolean; npcs: boolean; monsters?: boolean; portals?: boolean; spawn?: boolean }
+export interface GameComparisonFilters { ground: boolean; objects: boolean; blocked: boolean; npcs: boolean; monsters?: boolean; portals?: boolean; spawn?: boolean; traps?: boolean }
 export interface GameComparisonCounts {
   groundChangedCells: number;
   groundRepackedCells: number;
@@ -74,6 +76,7 @@ export interface GameComparisonCounts {
   monstersMoved: number; monstersAdded: number; monstersRemoved: number; monstersUpdated: number;
   portalsMoved: number; portalsAdded: number; portalsRemoved: number; portalsUpdated: number;
   spawnChanged: number;
+  trapsMoved?: number; trapsAdded?: number; trapsRemoved?: number; trapsUpdated?: number;
 }
 /** Shared legend: blue direct ground edits, amber repack/move, green additions, red removals. */
 export const GAME_COMPARISON_COLORS = {
@@ -102,6 +105,7 @@ export function getComparisonCounts(comparison: GameComparison): GameComparisonC
     portalsMoved: comparison.portals?.moved.length ?? 0, portalsAdded: comparison.portals?.added.length ?? 0,
     portalsRemoved: comparison.portals?.removed.length ?? 0, portalsUpdated: comparison.portals?.updated.length ?? 0,
     spawnChanged: comparison.spawn ? 1 : 0,
+    ...(comparison.traps?{trapsMoved:comparison.traps.moved.length,trapsAdded:comparison.traps.added.length,trapsRemoved:comparison.traps.removed.length,trapsUpdated:comparison.traps.updated.length}:{}),
   };
 }
 const finiteVector = (value: unknown, length: number): value is number[] =>
@@ -210,7 +214,7 @@ export function validateComparisonPair(
         (previous.flipX === next.flipX && previous.dialogId === next.dialogId)) invalidComparison();
     }
   }
-  for (const kind of ["monsters", "portals"] as const) {
+  for (const kind of ["monsters", "portals", "traps"] as const) {
     const diff = comparison[kind];
     if (!diff) continue;
     const before = new Map((baseline.scene[kind] ?? []).map(item => [item.entityId, item]));
@@ -229,7 +233,7 @@ export function validateComparisonPair(
       const previous = before.get(item.entityId), next = after.get(item.entityId);
       if (!previous || !next || !matches(item.position, next.position)) invalidComparison();
       const settings = kind === "monsters" ? ["monsterClassId","count","spread","respawnMinSec","respawnMaxSec","firstSpawnSec","enabled"]
-        : ["destMap","destCell","destFacing","enabled"];
+        : kind === "traps" ? ["maxCell","abnormalityId"] : ["destMap","destCell","destFacing","enabled"];
       if (settings.every(key => JSON.stringify(Reflect.get(previous, key)) === JSON.stringify(Reflect.get(next, key)))) invalidComparison();
     }
   }
@@ -372,7 +376,12 @@ export function drawGameComparison(
     ctx.restore();
   }
   if (filters.blocked) {
+    // Blocked cells remain separate from trap zones.
     for (const cell of comparison.blocked.removed) drawCell(ctx, cell, camera, GAME_COMPARISON_COLORS.removed, true);
     for (const cell of comparison.blocked.added) drawCell(ctx, cell, camera, GAME_COMPARISON_COLORS.added, true);
+  }
+  if(filters.traps&&comparison.traps){
+    const outline=(id:string,scene:GamePreviewScene,color:string)=>{const t=scene.traps?.find(t=>t.entityId===id);if(!t)return;ctx.save();ctx.strokeStyle=color;ctx.fillStyle=color+"22";ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.beginPath();trapPolygon(t.cell,t.maxCell,scene,camera).forEach(([x,y],i)=>ctx[i?"lineTo":"moveTo"](x,y));ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();};
+    const changes=comparison.traps;for(const r of [...changes.removed,...changes.moved,...changes.updated])outline(r.entityId,baseline.scene,GAME_COMPARISON_COLORS.removed);for(const r of changes.added)outline(r.entityId,currentScene,GAME_COMPARISON_COLORS.added);for(const r of [...changes.moved,...changes.updated])outline(r.entityId,currentScene,GAME_COMPARISON_COLORS.objectMoved);
   }
 }

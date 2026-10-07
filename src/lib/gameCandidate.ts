@@ -22,13 +22,14 @@ export interface GameCandidateReview extends CandidateIdentity {
     monstersMoved?: number; monstersAdded?: number; monstersRemoved?: number; monstersUpdated?: number;
     portalsMoved?: number; portalsAdded?: number; portalsRemoved?: number; portalsUpdated?: number;
     spawnChanged?: number;
+    trapsMoved?: number; trapsAdded?: number; trapsRemoved?: number; trapsUpdated?: number;
   };
   gameApplied: false;
   runtimeVerified: false;
 }
 
 const npcSummaryCounts = ["npcsMoved", "npcsAdded", "npcsRemoved", "npcsUpdated"] as const;
-const runtimeSummaryCounts = ["monstersMoved", "monstersAdded", "monstersRemoved", "monstersUpdated", "portalsMoved", "portalsAdded", "portalsRemoved", "portalsUpdated", "spawnChanged"] as const;
+const runtimeSummaryCounts = ["monstersMoved", "monstersAdded", "monstersRemoved", "monstersUpdated", "portalsMoved", "portalsAdded", "portalsRemoved", "portalsUpdated", "spawnChanged", "trapsMoved", "trapsAdded", "trapsRemoved", "trapsUpdated"] as const;
 const optionalSummaryCounts = ["objectsSorted", "blockedAdded", "blockedRemoved", ...npcSummaryCounts, ...runtimeSummaryCounts] as const;
 
 /** Do not show another map's or an internally contradictory receipt as a successful check. */
@@ -79,7 +80,7 @@ export function formatCandidateNpcSummary(summary: GameCandidateSummary): string
 
 export function formatCandidateRuntimeSummary(summary: GameCandidateSummary): Array<{label: string; text: string}> {
   const rows: Array<{label: string; text: string}> = [];
-  for (const [key, label] of [["monsters","몬스터 출현"],["portals","포털"]] as const) {
+  for (const [key, label] of [["monsters","몬스터 출현"],["portals","포털"],["traps","함정 영역"]] as const) {
     if (!runtimeSummaryCounts.some(field => field.startsWith(key) && summary[field] !== undefined)) continue;
     rows.push({label, text: "이동 " + (summary[key + "Moved" as keyof GameCandidateSummary] ?? 0) +
       " / 추가 " + (summary[key + "Added" as keyof GameCandidateSummary] ?? 0) +

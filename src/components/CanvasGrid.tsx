@@ -780,10 +780,12 @@ export function CanvasGrid() {
         if(e.key==="Delete"||e.key==="Backspace"){
           if(selection.kind==="monster")current.removeGameMonster(selection.entityId,scene);
           else if(selection.kind==="portal")current.removeGamePortal(selection.entityId,scene);
+          else if(selection.kind==="trap")current.removeGameTrap(selection.entityId,scene);
         }else{
           const cell:RuntimeCell=[item.cell[0]+(e.key==="ArrowRight"?1:e.key==="ArrowLeft"?-1:0),item.cell[1]+(e.key==="ArrowDown"?1:e.key==="ArrowUp"?-1:0)];
           if(selection.kind==="monster")current.updateGameMonster(selection.entityId,{cell},scene);
           else if(selection.kind==="portal")current.updateGamePortal(selection.entityId,{cell},scene);
+          else if(selection.kind==="trap"){const t=scene.traps?.find(t=>t.entityId===selection.entityId);if(t)current.updateGameTrap(selection.entityId,{cell,maxCell:[t.maxCell[0]+cell[0]-t.cell[0],t.maxCell[1]+cell[1]-t.cell[1]]},scene);}
           else current.setGameSpawn(cell,scene);
         }
         return;
@@ -921,7 +923,7 @@ export function CanvasGrid() {
         const view = useGamePreviewStore.getState(); view.setShowOverlays(true);
         if (!st.visual.blocked) st.toggleVisual("blocked");
       }
-      if (st.gameSync && ["cursor","monster","portal","spawn"].includes(tool)) {
+      if (st.gameSync && ["cursor","monster","portal","spawn","trap"].includes(tool)) {
         const view=useGamePreviewStore.getState(),scene=view.scene;
         if(view.status!=="ready"||!view.showScene||scene?.baselineId!==st.gameSync.baselineId)return;
         const placement=view.runtimePlacement;
@@ -930,6 +932,7 @@ export function CanvasGrid() {
           if(placement?.kind==="monster")done=!!st.addGameMonster(placement.monsterClassId,[gx,gy],scene);
           else if(placement?.kind==="portal")done=!!st.addGamePortal({...placement.fields,cell:[gx,gy]},scene);
           else if(placement?.kind==="spawn")done=st.setGameSpawn([gx,gy],scene);
+          else if(placement?.kind==="trap")done=!!st.addGameTrap({cell:[gx,gy],maxCell:[gx,gy],abnormalityId:placement.abnormalityId},scene);
           if(done){view.setRuntimePlacement(null);st.setTool("cursor");}
           else if(!placement)view.setRuntimePanel(tool as RuntimeKind);
           return;
@@ -1148,6 +1151,7 @@ export function CanvasGrid() {
           const delta=objectCellOffset(previewScreenToWorld(p.x,p.y,scene,st.camera),move.pointer,scene),cell:RuntimeCell=[move.cell[0]+delta[0],move.cell[1]+delta[1]];
           if(move.selection.kind==="monster")st.updateGameMonster(move.selection.entityId,{cell},scene);
           else if(move.selection.kind==="portal")st.updateGamePortal(move.selection.entityId,{cell},scene);
+          else if(move.selection.kind==="trap"){const t=scene.traps?.find(t=>t.entityId===move.selection.entityId);if(t)st.updateGameTrap(t.entityId,{cell,maxCell:[t.maxCell[0]+delta[0],t.maxCell[1]+delta[1]]},scene);}
           else st.setGameSpawn(cell,scene);
         }
         runtimeDrag.current=null;setRuntimeDraft(null);
