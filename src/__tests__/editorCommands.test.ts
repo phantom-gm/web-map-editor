@@ -40,6 +40,24 @@ beforeEach(() => {
 });
 
 describe("shared editor tool commands", () => {
+  it("allows continuous ground editing while a matching validated preview is refreshing", () => {
+    const ruid = "a".repeat(32);
+    useEditorStore.setState({ palette: [{ name: "grass", ruid }] as PaletteTile[] });
+    useGamePreviewStore.setState({ status: "loading", scene: { ...linkedScene(), groundBrushRuids: [ruid] } });
+    activateEditorTool("brush");
+    expect(editor().activeTool).toBe("brush"); expect(palettePlacementIssue("brush")).toBeNull();
+    useGamePreviewStore.setState({ scene: { ...linkedScene(), baselineId: "other" } });
+    expect(palettePlacementIssue("brush")).toContain("불러오는 중");
+  });
+  it("saving preserves document identity; reopening even the same named project changes it", () => {
+    const nonce = editor().documentNonce, project = editor().exportProject();
+    editor().markSaved(); expect(editor().documentNonce).toBe(nonce);
+    editor().loadProject(project, editor().palette); expect(editor().documentNonce).toBe(nonce + 1);
+  });
+  it("empty undo/redo leave the selection intact and hovering the same cell emits no store update", () => {
+    selectEverything(); const before = editor(); editor().undo(); editor().redo(); expect(editor()).toBe(before);
+    editor().setHover([2, 3]); const hovered = editor(); editor().setHover([2, 3]); expect(editor()).toBe(hovered);
+  });
   it.each<Tool>(["brush", "rect", "eraser", "eyedropper", "block", "cursor"])("clears hidden selections and placement when activating %s, without editing the project", tool => {
     selectEverything();
     useGamePreviewStore.setState({ showObjects: true, showNpcs: true, runtimePanel: "monster" });

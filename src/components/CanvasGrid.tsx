@@ -40,7 +40,7 @@ const GROUND_TOOLS = new Set(["cursor", "brush", "eraser", "rect", "eyedropper",
 interface PreviewFrame { scene: GamePreviewScene | null; images: GamePreviewImages; showOverlays: boolean }
 function linkedGroundReady(baselineId: string): boolean {
   const preview = useGamePreviewStore.getState();
-  return preview.status === "ready" && preview.scene?.baselineId === baselineId &&
+  return preview.status !== "error" && preview.scene?.baselineId === baselineId &&
     preview.scene.report?.groundEditingSupported === true;
 }
 
@@ -638,7 +638,7 @@ export function CanvasGrid() {
 
   const size = useEditorStore((s) => s.size);
   const camera = useEditorStore((s) => s.camera);
-  const hover = useEditorStore((s) => s.hover);
+  const hover = useEditorStore((s) => gameSync && !showOverlays ? null : s.hover);
   const fitNonce = useEditorStore((s) => s.fitNonce);
   const groundVer = useEditorStore((s) => s.groundVer);
   const ground = useEditorStore((s) => s.ground);
@@ -740,9 +740,7 @@ export function CanvasGrid() {
       if (state.runtimePlacement !== previous.runtimePlacement || state.runtimePanel !== previous.runtimePanel || state.selectionMode !== previous.selectionMode || state.showScene !== previous.showScene ||
         state.placementNpcClassId !== previous.placementNpcClassId || state.placementPrototypeId !== previous.placementPrototypeId || state.comparisonEnabled !== previous.comparisonEnabled || state.status === "error") cancel();
     });
-    const blur = () => { spaceDown.current = false; cancelGesture(); };
-    window.addEventListener("blur", blur);
-    return () => { unsubscribe(); window.removeEventListener("blur", blur); };
+    return unsubscribe;
   }, [cancelGesture]);
 
   // 키보드: Space(팬) + undo/redo
@@ -750,6 +748,7 @@ export function CanvasGrid() {
     const kd = (e: KeyboardEvent) => {
       if (useWorkspaceSession.getState().loading) return;
       if (editorShortcutsBlocked(e)) return;
+      if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
       if (e.code === "Space") {
         if ((e.target as Element | null)?.closest?.("button, a, summary, [role=button]")) return;
         e.preventDefault(); spaceDown.current = true;
@@ -772,7 +771,10 @@ export function CanvasGrid() {
       if (mod && e.code === "KeyZ" && !e.shiftKey && (mode.current === "paint" || mode.current === "blockErase" || mode.current === "rect" || mode.current === "moveEntity")) {
         e.preventDefault(); cancelGesture(); return;
       }
-      if (current.gameSync && (runtimeDrag.current || npcDrag.current || nativeDrag.current || selectionStart.current)) cancelGesture();
+      if (current.gameSync && (runtimeDrag.current || npcDrag.current || nativeDrag.current || selectionStart.current)) {
+        if (e.repeat) return;
+        cancelGesture();
+      }
       if(current.gameSync&&current.activeTool==="cursor"&&current.selectedGameRuntime&&((mod&&e.code==="KeyD")||["Delete","Backspace","ArrowRight","ArrowLeft","ArrowUp","ArrowDown"].includes(e.key))){
         e.preventDefault();const view=useGamePreviewStore.getState(),scene=view.scene,selection=current.selectedGameRuntime;
         if(!scene||view.status!=="ready"||mod)return;
@@ -874,17 +876,22 @@ export function CanvasGrid() {
       const r = canvas.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     };
+    let lastPointer: MouseEvent | null = null;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (useWorkspaceSession.getState().loading || !e.deltaY) return;
       const p = local(e);
-      cancelGesture();
-      runtimeDrag.current = null; setRuntimeDraft(null); npcDrag.current = null; setNpcDraft(null); nativeDrag.current = null; setObjectDraft(null); selectionStart.current = null; setSelectionBox(null);
-      if (mode.current === "moveGameRuntime" || mode.current === "moveGameNpc" || mode.current === "moveGameObject" || mode.current === "selectGameRegion") mode.current = null;
+      const oldCamera = useEditorStore.getState().camera;
       fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
       useEditorStore.getState().zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, p.x, p.y);
+      if (selectionStart.current) {
+        const camera = useEditorStore.getState().camera, start = selectionStart.current;
+        start.x = camera.x + (start.x - oldCamera.x) * camera.zoom / oldCamera.zoom;
+        start.y = camera.y + (start.y - oldCamera.y) * camera.zoom / oldCamera.zoom;
+      }
     };
     const onDown = (e: MouseEvent) => {
+      lastPointer = e;
       if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
       const st = useEditorStore.getState();
@@ -938,7 +945,7 @@ export function CanvasGrid() {
           return;
         }
         if(view.selectionMode!=="blocked"){
-          const hit=gameRuntimeHit(p.x,p.y,scene,view.images,st.camera,view.runtimePanel);
+          const hit=gameRuntimeHit(p.x,p.y,scene,view.images,st.camera,view.runtimePanel,view.showOverlays||view.runtimePanel!==null,st.selectedGameRuntime);
           if(hit){
             view.setRuntimePanel(hit.kind);
             if(st.selectedGameRuntime?.kind!==hit.kind||st.selectedGameRuntime.entityId!==hit.entityId)st.selectGameRuntime(hit);
@@ -1081,6 +1088,8 @@ export function CanvasGrid() {
       }
     };
     const onMove = (e: MouseEvent) => {
+      if (!mode.current && e.target !== canvas) return;
+      lastPointer = e;
       if (useWorkspaceSession.getState().loading) return;
       const p = local(e);
       const st = useEditorStore.getState();
@@ -1130,7 +1139,7 @@ export function CanvasGrid() {
       }
       st.setHover([gx, gy]);
     };
-    const onUp = (e: MouseEvent) => {
+    const finishGesture = (e: MouseEvent, interrupted = false) => {
       if (editorShortcutsBlocked({ target: null, isComposing: false, defaultPrevented: false })) { cancelGesture(); return; }
       const st = useEditorStore.getState();
       if (st.gameSync && useGamePreviewStore.getState().comparisonEnabled) {
@@ -1188,7 +1197,7 @@ export function CanvasGrid() {
         if (scene?.baselineId === move.baselineId && st.gameSync?.baselineId === move.baselineId &&
           st.gameObjectsVer === move.version && st.blockedVer === move.blockedVersion &&
           st.selectedGameObjectIds === move.ids && st.selectedBlockedCells === move.cells && preview.status === "ready") {
-          if (still && !preview.multiSelect && move.ids.length === 1 && !move.cells.length && nativeHits.current.length > 1) {
+          if (!interrupted && still && !preview.multiSelect && move.ids.length === 1 && !move.cells.length && nativeHits.current.length > 1) {
             const index = nativeHits.current.findIndex(item => item.entityId === st.selectedGameObjectId);
             st.selectGameObject(nativeHits.current[(index + 1) % nativeHits.current.length].entityId);
           } else if (!still) {
@@ -1204,7 +1213,7 @@ export function CanvasGrid() {
         const p = local(e);
         const still = d && Math.abs(p.x - d.x) <= CLICK_SLOP && Math.abs(p.y - d.y) <= CLICK_SLOP;
         const cands = hitCands.current;
-        if (still && cands.length > 1) {
+        if (!interrupted && still && cands.length > 1) {
           const i = cands.findIndex((c) => c.id === st.selectedEntityId);
           st.selectEntity(cands[(i + 1) % cands.length].id);
         }
@@ -1221,6 +1230,12 @@ export function CanvasGrid() {
       movingId.current = null;
       activeGroundBaseline.current = null;
     };
+    const onUp = (e: MouseEvent) => finishGesture(e);
+    const onBlur = () => {
+      spaceDown.current = false;
+      // Finish at the last observed pointer so painted cells and moved objects keep undo history.
+      if (mode.current && lastPointer) finishGesture(lastPointer, true);
+    };
     const onLeave = () => {
       useEditorStore.getState().setHover(null);
     };
@@ -1229,6 +1244,7 @@ export function CanvasGrid() {
     canvas.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onBlur);
     canvas.addEventListener("mouseleave", onLeave);
     canvas.addEventListener("contextmenu", onContext);
     return () => {
@@ -1236,6 +1252,7 @@ export function CanvasGrid() {
       canvas.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onBlur);
       canvas.removeEventListener("mouseleave", onLeave);
       canvas.removeEventListener("contextmenu", onContext);
     };

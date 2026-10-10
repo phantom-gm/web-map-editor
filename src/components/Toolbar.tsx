@@ -78,8 +78,8 @@ export function Toolbar() {
   const gameSync = useEditorStore(s => s.gameSync);
   const preview = useGamePreviewStore();
   const loading = useWorkspaceSession(s => s.loading);
-  const canPaint = !gameSync || (preview.baselineId === gameSync.baselineId && preview.status === "ready" && preview.scene?.report?.groundEditingSupported === true);
-  const canBlock = !gameSync || (preview.baselineId === gameSync.baselineId && preview.status === "ready" && preview.scene?.report?.walkEditingSupported === true);
+  const canPaint = !gameSync || (preview.scene?.baselineId === gameSync.baselineId && preview.status !== "error" && preview.scene?.report?.groundEditingSupported === true);
+  const canBlock = !gameSync || (preview.scene?.baselineId === gameSync.baselineId && preview.status !== "error" && preview.scene?.report?.walkEditingSupported === true);
   const tool = useEditorStore(s => s.activeTool);
   const canUndo = useEditorStore(s => s.undoStack.length > 0);
   const canRedo = useEditorStore(s => s.redoStack.length > 0);

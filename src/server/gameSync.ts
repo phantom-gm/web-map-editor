@@ -14,7 +14,11 @@ export function assertLocalGameSyncRequest(req: Request): void {
   const url = new URL(req.url);
   const local = new Set(["localhost", "127.0.0.1", "[::1]"]);
   const host = req.headers.get("host");
-  if (!local.has(url.hostname) || !host || !local.has(new URL("http://" + host).hostname)) {
+  // Next's adapter uses http://n for a relative URL when no hostname was supplied.
+  // The actual HTTP Host and Origin must still be loopback and same-origin.
+  let hostUrl: URL | null = null;
+  try { if (host && !/[\s/@?#\\]/.test(host)) hostUrl = new URL("http://" + host); } catch { /* Reject malformed Host. */ }
+  if ((!local.has(url.hostname) && url.hostname !== "n") || !hostUrl || !local.has(hostUrl.hostname)) {
     throw new GameSyncError("게임 동기화는 이 PC의 로컬 에디터에서만 사용할 수 있습니다.", 403);
   }
   const origin = req.headers.get("origin");

@@ -206,6 +206,7 @@ export interface EditorState extends RuntimeProjectFields {
 
   dirty: boolean; // 마지막 저장/불러오기 이후 변경됨 — beforeunload 경고용
   resetNonce: number; // 저장/불러오기/새로만들기 시 증가 → dirty 기준점 리셋 신호
+  documentNonce: number; // 새로 만들기/가져오기에만 증가. 저장은 열린 문서의 정체성을 바꾸지 않는다.
 
   undoStack: Snapshot[];
   redoStack: Snapshot[];
@@ -395,6 +396,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   visual: { grid: true, blocked: true, footprint: true },
   dirty: false,
   resetNonce: 0,
+  documentNonce: 0,
   undoStack: [],
   redoStack: [],
 
@@ -414,7 +416,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const wy = (cy - s.camera.y) / s.camera.zoom;
       return { camera: { x: cx - wx * nz, y: cy - wy * nz, zoom: nz } };
     }),
-  setHover: (cell) => set({ hover: cell }),
+   setHover: (cell) => set(s => s.hover === cell || (s.hover && cell && s.hover[0] === cell[0] && s.hover[1] === cell[1]) ? s : { hover: cell }),
   setCamera: (cam) => set({ camera: cam }),
   requestFit: () => set((s) => ({ fitNonce: s.fitNonce + 1 })),
 
@@ -1099,7 +1101,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   undo: () =>
     set((s) => {
-      if (s.undoStack.length === 0) return { selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
+      if (s.undoStack.length === 0) return s;
       const prev = s.undoStack[s.undoStack.length - 1];
       const cur = captureEditorSnapshot(s);
       s.ground.clear();
@@ -1124,7 +1126,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   redo: () =>
     set((s) => {
-      if (s.redoStack.length === 0) return { selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null, selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [], gameSelectionError: null };
+      if (s.redoStack.length === 0) return s;
       const next = s.redoStack[s.redoStack.length - 1];
       const cur = captureEditorSnapshot(s);
       s.ground.clear();
@@ -1185,6 +1187,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
         dirty: false,
         resetNonce: s.resetNonce + 1,
+        documentNonce: s.documentNonce + 1,
       };
     }),
   exportBlueprint: () => {
@@ -1281,6 +1284,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
         dirty: false,
         resetNonce: s.resetNonce + 1,
+        documentNonce: s.documentNonce + 1,
       };
     }),
 
@@ -1313,6 +1317,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         redoStack: [],
         dirty: false,
         resetNonce: s.resetNonce + 1,
+        documentNonce: s.documentNonce + 1,
       };
     }),
 }));

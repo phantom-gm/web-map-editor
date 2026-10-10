@@ -87,7 +87,7 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 원본의 위치·깊이 메타만 갱신합니다. 함께 옮길 이동불가 셀을 직접 선택하면 오브젝트와
 한 묶음으로 이동·복제·삭제할 수 있습니다.
 
-1. `npm run dev -- --hostname 127.0.0.1 --port 3000` 실행 후 로컬 에디터에 접속합니다.
+1. `npm run dev` 실행 후 `http://127.0.0.1:3000/`에 접속합니다. 실행 스크립트가 로컬 주소로 서버를 시작합니다.
 2. 상단 **게임 맵 열기**에서 맵을 고르고 **맵 열기**를 누릅니다. 저장된 작업이 있으면 이어 열고, 처음이면 실제 게임 배치를 가져옵니다.
 3. 바닥 소재를 고르거나 **건물·장식·오브젝트 바닥**에서 대상을 선택해 수정합니다. **이동불가 칸 선택**으로 함께 옮길 셀을 추가할 수 있고, **이동불가 도구**로 셀 자체를 만들거나 지웁니다.
 4. 1초 뒤 **이 PC에 저장됨**을 확인하거나 **작업 저장 / Ctrl+S**를 누릅니다. 별도 synced 파일 선택은 필요 없습니다.
@@ -98,7 +98,13 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
    - `RootDesk/.../npc/DT_NpcSpawn.csv`: NPC를 바꾼 경우에만 생성하는 적용 검토용 CSV.
    - `report.json`: 원본/후보 SHA-256, 블록 수, 오브젝트 변경 수, 이동불가 변경 셀, 보존 검증과 `applyFiles` 목록.
    - `editor-project.json`: 다시 편집할 프로젝트.
-   - `reference/RootDesk/...`: 비교용 CSV 원본 사본. 게임 반영 파일이 아닙니다.
+   - `reference/RootDesk/...`: NPC·몬스터·포털·이동불가·함정 검증에 필요한 CSV 원본 사본. 게임 반영 파일이 아닙니다. 서버 비밀 설정과 무관한 테이블은 복사하지 않습니다.
+
+현재 게임 배치는 `.map`과 런타임 CSV를 기준으로 유지합니다. 이전 `map/<map>.json`은 현재 배치를 모두 담지 않을 수 있으므로 기존 게임 맵에 `nocode_map --build`·`convert_map --apply`·`build_map`을 다시 실행하는 경로는 기본적으로 차단됩니다. 게임 맵을 수정할 때는 위 후보 출력 경로를 사용하세요. 구형 JSON으로 전체 재생성이 의도된 경우에만 게임 도구의 `--allow-legacy-rebuild`를 명시합니다. `--force`는 이 보호를 우회하지 않습니다.
+
+휠 확대 중에도 스트로크는 이어집니다. 창 포커스를 잃으면 마지막 위치에서 작업을 마쳐 실행 취소 기록에 남기며, `Esc`는 진행 중 작업을 취소합니다. 자동저장은 리소스 검색창과 선택을 유지합니다. 정렬 변경 후보는 게임 깊이 검사와 대조해 새 오류가 있으면 출력을 거부하며, 결과는 `report.json`의 `gameDepthValidation`에 기록합니다.
+
+이전 보관 파일의 서버 비밀 CSV 중복 사본을 정리하려면 `node scripts/game-sync/prune-sensitive-references.cjs`로 계획을 확인하고 `--apply`로 실행합니다. 게임 원본과 저장 프로젝트는 보존하고 기준·NPC·런타임·후보의 연결 해시를 함께 갱신합니다. `.game-sync/maintenance/`에 CSV 내용을 포함하지 않는 복구용 메타데이터를 보관합니다.
 
 `.game-sync/baselines/<id>/`는 저장한 프로젝트가 참조하는 기준 스냅샷입니다.
 작업은 `.game-sync/workspaces/<map>/project.json`, 이전 저장본은 같은 폴더의 `history/`에 보관합니다.

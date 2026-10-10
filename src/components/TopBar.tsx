@@ -18,7 +18,7 @@ export function TopBar() {
   }, []);
   const mapName = useEditorStore((s) => s.mapName);
   const gameSync = useEditorStore((s) => s.gameSync);
-  const resetNonce = useEditorStore((s) => s.resetNonce);
+  const documentNonce = useEditorStore((s) => s.documentNonce);
   const size = useEditorStore((s) => s.size);
   const setMapName = useEditorStore((s) => s.setMapName);
   const setSize = useEditorStore((s) => s.setSize);
@@ -93,7 +93,7 @@ export function TopBar() {
         <span className="workflow-dimensions">{size[0]} × {size[1]}</span>
       </div>
       <div className="workflow-topbar-actions">
-        <FileMenu key={resetNonce} />
+        <FileMenu key={documentNonce} />
         <details ref={advancedRef} className="workflow-advanced" onKeyDown={event => { if (event.key === "Escape") { event.currentTarget.open = false; event.stopPropagation(); } }}>
           <summary>고급 도구</summary>
           <div className="workflow-advanced-menu" onClick={event => { if ((event.target as HTMLElement).closest("button") && advancedRef.current) advancedRef.current.open = false; }}>

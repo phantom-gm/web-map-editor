@@ -22,7 +22,7 @@ export default tseslint.config(
   },
   {
     // 설정/테스트/스크립트 파일은 Node 컨텍스트
-    files: ["*.{js,mjs,ts}", "scripts/**/*.{js,mjs,cjs}", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
+    files: ["*.{js,mjs,ts}", "scripts/**/*.{js,mjs,cjs}", "src/**/*.cjs", "src/**/*.test.{ts,tsx}", "next.config.mjs", "vitest.config.ts"],
     languageOptions: { globals: { ...globals.node } },
   },
 );

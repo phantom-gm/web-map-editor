@@ -85,7 +85,7 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
   async function addSelected(){
     if(adding||!pending.length)return;
     const token=++addingGeneration.current,controller=new AbortController();imageRequest.current?.abort();imageRequest.current=controller;
-    const before=useEditorStore.getState(),projectIdentity=[before.mapName,before.gameSync?.baselineId,before.resetNonce].join(":");
+    const before=useEditorStore.getState(),projectIdentity=[before.mapName,before.gameSync?.baselineId,before.documentNonce].join(":");
     setAdding(true);setAddError("");
     try{
       if(gameObjects){
@@ -93,7 +93,7 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
         const result = await gameRequest<{resourceIds:string[]}>({ action:"register-object-resources", mapName:before.gameSync.mapName, baselineId:before.gameSync.baselineId, resources:pending.map(item=>({ruid:item.ruid,name:item.name})) });
         if(token!==addingGeneration.current||controller.signal.aborted)return;
         const current=useEditorStore.getState();
-        if([current.mapName,current.gameSync?.baselineId,current.resetNonce].join(":")!==projectIdentity)throw new Error("편집 중인 맵이 바뀌었습니다. 다시 선택해 주세요.");
+        if([current.mapName,current.gameSync?.baselineId,current.documentNonce].join(":")!==projectIdentity)throw new Error("편집 중인 맵이 바뀌었습니다. 다시 선택해 주세요.");
         current.addGameResourceReferences(result.resourceIds);
         useGamePreviewStore.getState().setShowObjects(true);
         close();return;
@@ -106,7 +106,7 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
       if(token!==addingGeneration.current||controller.signal.aborted)return;
       if(tiles.some(tile=>!tile.img))throw new Error("일부 이미지를 열지 못했습니다. 잠시 뒤 다시 추가해 주세요.");
       const current=useEditorStore.getState();
-      if([current.mapName,current.gameSync?.baselineId,current.resetNonce].join(":")!==projectIdentity)throw new Error("편집 중인 프로젝트가 바뀌었습니다. 창을 닫고 다시 선택해 주세요.");
+      if([current.mapName,current.gameSync?.baselineId,current.documentNonce].join(":")!==projectIdentity)throw new Error("편집 중인 프로젝트가 바뀌었습니다. 창을 닫고 다시 선택해 주세요.");
       tiles.forEach(markServerResourceImage);
       current.addResolvedTiles(tiles);close();
     }catch(failure){if(token===addingGeneration.current&&!controller.signal.aborted)setAddError(failure instanceof Error?failure.message:String(failure));}

@@ -24,11 +24,12 @@ function entries(scene: GamePreviewScene) {
     ...(scene.traps??[]).map(t=>({selection:{kind:"trap" as const,entityId:t.entityId},item:t,label:"함정 · "+t.name,color:"#f3a149"})),
   ];
 }
-export function gameRuntimeHit(x:number,y:number,scene:GamePreviewScene,images:GamePreviewImages,camera:Camera,preferred:RuntimeKind|null):RuntimeSelection|null {
+export function gameRuntimeHit(x:number,y:number,scene:GamePreviewScene,images:GamePreviewImages,camera:Camera,preferred:RuntimeKind|null,labels = true,selected:RuntimeSelection|null = null):RuntimeSelection|null {
   const list=entries(scene).filter(e=>!preferred||e.selection.kind===preferred);
   if(preferred==="trap")for(const t of scene.traps??[]){const polygon=trapPolygon(t.cell,t.maxCell,scene,camera);let positive=false,negative=false;for(let i=0;i<4;i++){const a=polygon[i],b=polygon[(i+1)%4],cross=(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);if(cross>1e-7)positive=true;if(cross< -1e-7)negative=true;}if(!(positive&&negative))return{kind:"trap",entityId:t.entityId};}
-  // Editor anchor badges stay selectable even if the actual sprite is hidden or disabled.
+  // Badges are selectable only when the same visibility condition draws them.
   for(const entry of [...list].reverse()) {
+    if(!labels && !(selected?.kind===entry.selection.kind && selected.entityId===entry.selection.entityId))continue;
     const [cx,cy]=previewWorldToScreen(entry.item.position,scene,camera);
     if(Math.hypot(x-cx,y-(cy-10))<=12)return entry.selection;
   }

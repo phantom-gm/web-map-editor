@@ -15,7 +15,7 @@ import "./ResourceLibrary.css";
 
 const isServerTile = (tile:PaletteTile) => !!tile.ruid && /^[a-f0-9]{32}$/i.test(tile.ruid);
 export function PalettePanel() {
-  const gameSync=useEditorStore(s=>s.gameSync),resetNonce=useEditorStore(s=>s.resetNonce);
+  const gameSync=useEditorStore(s=>s.gameSync),documentNonce=useEditorStore(s=>s.documentNonce);
   const runtimePanel=useGamePreviewStore(s=>s.runtimePanel),showNpcs=useGamePreviewStore(s=>s.showNpcs),showObjects=useGamePreviewStore(s=>s.showObjects);
   const preview=useGamePreviewStore(),comparisonEnabled=preview.comparisonEnabled;
   const groundBrushRuids=preview.scene?.baselineId===gameSync?.baselineId?preview.scene?.groundBrushRuids:undefined;
@@ -28,7 +28,7 @@ export function PalettePanel() {
   const request=useRef<AbortController|null>(null),generation=useRef(0);
   const verified=useRef(new Map<string,PaletteTile>());
   useEffect(()=>()=>{generation.current+=1;request.current?.abort();},[]);
-  const ready=!gameSync||(preview.status==="ready"&&preview.scene?.baselineId===gameSync.baselineId&&preview.scene.report?.groundEditingSupported===true);
+  const ready=!gameSync||(preview.status!=="error"&&preview.scene?.baselineId===gameSync.baselineId&&preview.scene.report?.groundEditingSupported===true);
   const query=search.trim().toLocaleLowerCase();
   const eligible=useMemo(()=>palette.flatMap((tile,index)=>{
     if(gameSync&&(!tile.ruid||!groundBrushRuids?.includes(tile.ruid)))return [];
@@ -45,7 +45,7 @@ export function PalettePanel() {
     const tile=useEditorStore.getState().palette[index];
     if(!tile||!isServerTile(tile)||!ready)return;
     const token=++generation.current;request.current?.abort();const controller=new AbortController();request.current=controller;
-    const before=useEditorStore.getState(),identity=[before.mapName,before.gameSync?.baselineId,before.resetNonce].join(":");
+    const before=useEditorStore.getState(),identity=[before.mapName,before.gameSync?.baselineId,before.documentNonce].join(":");
     before.setTool("cursor");setBusy("select");setLoadingIndex(index);setFailedIndex(null);setError("");setNotice("");
     try{
       let resolved=isServerResourceImage(tile)?tile:verified.current.get(tile.ruid!);
@@ -60,13 +60,13 @@ export function PalettePanel() {
       }
       if(token!==generation.current||controller.signal.aborted)return;
       const current=useEditorStore.getState();
-      if([current.mapName,current.gameSync?.baselineId,current.resetNonce].join(":")!==identity||current.palette[index]?.ruid!==tile.ruid)return;
+      if([current.mapName,current.gameSync?.baselineId,current.documentNonce].join(":")!==identity||current.palette[index]?.ruid!==tile.ruid)return;
       const view=useGamePreviewStore.getState();
       // A late image response must not replace a tool or selection made while loading.
       if(current.activeTool!=="cursor"||current.selectedEntityId!==before.selectedEntityId||
         current.selectedGameNpcId!==before.selectedGameNpcId||current.selectedGameRuntime!==before.selectedGameRuntime||
         current.selectedGameObjectIds!==before.selectedGameObjectIds||current.selectedBlockedCells!==before.selectedBlockedCells||
-        (current.gameSync&&(view.comparisonEnabled||view.showNpcs||view.showObjects||view.runtimePanel||view.status!=="ready")))return;
+        (current.gameSync&&(view.comparisonEnabled||view.showNpcs||view.showObjects||view.runtimePanel||view.status==="error")))return;
       const old=current.palette[index];
       // Only hydrate the selected server image. Existing indices and authored dimensions stay intact.
       if(old.url!==resolved.url||old.img!==resolved.img){
@@ -84,7 +84,7 @@ export function PalettePanel() {
     const token=++generation.current;request.current?.abort();setBusy("resolve");setFailedIndex(null);setError("");setNotice("");
     try{
       const results=await resolveTiles(targets.map(tile=>({name:tile.name,hash:tile.hash})));
-      if(token!==generation.current||useEditorStore.getState().resetNonce!==current.resetNonce)return;
+      if(token!==generation.current||useEditorStore.getState().documentNonce!==current.documentNonce)return;
       useEditorStore.getState().applyResolutions(results);
       const count=results.filter(result=>result.ruid).length;
       setNotice(count+"개를 서버 리소스와 연결했습니다."+ (count<targets.length?" 연결하지 못한 소재는 기존 데이터로 보관합니다.":""));
@@ -93,11 +93,11 @@ export function PalettePanel() {
   }
   async function loadMetadata(event:React.ChangeEvent<HTMLInputElement>,kind:"registry"|"catalog"){
     const files=Array.from(event.target.files??[]);event.target.value="";if(!files.length)return;
-    const initialReset=useEditorStore.getState().resetNonce;
+    const initialReset=useEditorStore.getState().documentNonce;
     generation.current+=1;request.current?.abort();setBusy(null);setLoadingIndex(null);setFailedIndex(null);setError("");setNotice("");
     try{
       const sources=await Promise.all(files.map(async file=>({name:file.name,text:await file.text()})));
-      if(useEditorStore.getState().resetNonce!==initialReset)return;
+      if(useEditorStore.getState().documentNonce!==initialReset)return;
       const editor=useEditorStore.getState();
       if(kind==="registry"){editor.loadRegistry(JSON.parse(sources[0].text));setNotice("기존 소재의 서버 리소스 연결 정보를 읽었습니다.");}
       else{
@@ -144,6 +144,6 @@ export function PalettePanel() {
       <input ref={regRef} type="file" accept="application/json,.json" hidden onChange={e=>void loadMetadata(e,"registry")}/>
       <input ref={npcRef} type="file" accept="application/json,.json,text/csv,.csv" multiple hidden onChange={e=>void loadMetadata(e,"catalog")}/>
     </div></details>}
-    {browseOpen&&<ResourceBrowser key={resetNonce} gameObjects={!!gameSync} onClose={()=>setBrowseOpen(false)}/>}
+    {browseOpen&&<ResourceBrowser key={documentNonce} gameObjects={!!gameSync} onClose={()=>setBrowseOpen(false)}/>}
   </aside>;
 }

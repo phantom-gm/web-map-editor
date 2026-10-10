@@ -207,10 +207,16 @@ function tintedImage(image: HTMLImageElement, color: [number, number, number, nu
   return canvas;
 }
 
+const drawOrderCache = new WeakMap<GamePreviewScene, { sprites: GamePreviewSprite[]; layer: string; sorted: GamePreviewSprite[] }>();
 export function drawGamePreview(
   ctx: CanvasRenderingContext2D, scene: GamePreviewScene, images: GamePreviewImages, camera: Camera, dims: Dims,
 ): void {
-  for (const sprite of sortPreviewSprites(scene)) {
+  let order = drawOrderCache.get(scene);
+  if (!order || order.sprites !== scene.sprites || order.layer !== scene.defaultSortingLayer) {
+    order = { sprites: scene.sprites, layer: scene.defaultSortingLayer, sorted: sortPreviewSprites(scene) };
+    drawOrderCache.set(scene, order);
+  }
+  for (const sprite of order.sorted) {
     const resolved = images.get(sprite.ruid);
     if (!resolved) continue; // Missing assets are counted explicitly by the loading state.
     const geometry = previewSpriteGeometry(sprite, resolved.asset, scene, camera);

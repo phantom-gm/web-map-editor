@@ -25,4 +25,11 @@ describe("local game sync access", () => {
     vi.stubEnv("MSW_GAME_ROOT", "C:/game"); vi.stubEnv("VERCEL", "1");
     expect(() => assertLocalGameSyncRequest(request("http://localhost:3000/api/game-sync"))).toThrow();
   });
+  it("accepts Next's relative URL placeholder only with a valid loopback Host and Origin", () => {
+    vi.stubEnv("MSW_GAME_ROOT", "C:/game"); vi.stubEnv("VERCEL", "");
+    expect(() => assertLocalGameSyncRequest(request("http://n/api/game-sync", "http://127.0.0.1:3000", "127.0.0.1:3000"))).not.toThrow();
+    for (const host of ["editor.example", "127.0.0.1@evil.example", "127.0.0.1/path", "["]) {
+      expect(() => assertLocalGameSyncRequest(request("http://n/api/game-sync", undefined, host))).toThrow();
+    }
+  });
 });

@@ -117,6 +117,81 @@ function fixture(t, { noGround = false, mapMode = 1 } = {}) {
   const hashes = () => Object.fromEntries(['map/fixture.map', 'map/fixture.json', csvRelative].map(rel => [rel, crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex')]));
   return { root, temp, options, csvRelative, MapBuilder, hashes };
 }
+test('unrelated resource removals and inventory notes preserve a saved draft; referenced art still blocks', fixtureOptions, t => {
+  const f = fixture(t), file = path.join(f.root, 'scripts/storage-inventory.lock.json');
+  const lock = JSON.parse(fs.readFileSync(file));
+  lock.resources.push({ ruid: 'object-ruid', name: 'required object' }, { ruid: 'unused-icon', name: 'unused icon' });
+  fs.writeFileSync(file, JSON.stringify(lock));
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  lock.resources = lock.resources.filter(r => r.ruid !== 'unused-icon'); lock.note = 'new enumeration note';
+  lock.resources.push({ ruid: 'new-object-upload', name: 'required object' });
+  fs.writeFileSync(file, JSON.stringify(lock));
+  const out = exportEditedProject(project, f.options);
+  assert.equal(out.report.exactMapBytes, true);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'ready');
+  lock.resources.find(r => r.ruid === 'object-ruid').name = 'changed required object';
+  fs.writeFileSync(file, JSON.stringify(lock));
+  assert.throws(() => previewEditedProject(project, f.options), { code: 'STALE_SOURCE' });
+});
+test('legacy guard edits do not invalidate constants-only dependencies; coordinate/PPU changes do', fixtureOptions, t => {
+  const f = fixture(t), file = path.join(f.root, 'scripts/build_map.cjs');
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  fs.appendFileSync(file, '\n// legacy overwrite protection only\n');
+  assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  fs.appendFileSync(file, '\nmodule.exports.PPU = 200;');
+  assert.throws(() => previewEditedProject(project, f.options), { code: 'STALE_SOURCE' });
+});
+test('source filename defines map identity and edited candidates preserve CRLF', fixtureOptions, t => {
+  const f = fixture(t), author = path.join(f.root, 'map/fixture.json');
+  const raw = JSON.parse(fs.readFileSync(author)); raw.map = 'wrongmap'; fs.writeFileSync(author, JSON.stringify(raw));
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.equal(project.map, 'fixture'); assert.equal(project.gameSync.mapName, 'fixture');
+  project.ground[0][2] = project.palette.findIndex(p => p.ruid === tile('물').ruid);
+  const out = exportEditedProject(project, f.options), bytes = fs.readFileSync(out.mapPath, 'utf8');
+  assert.ok(bytes.includes('\r\n')); assert.equal(/(?<!\r)\n/.test(bytes), false);
+});
+test('new baselines and candidates capture only required tables, never server secret contents', fixtureOptions, t => {
+  const f = fixture(t), rel = 'RootDesk/MyDesk/DataSet/config/DT_ServerSecret.csv';
+  fs.mkdirSync(path.dirname(path.join(f.root, rel)), { recursive: true });
+  fs.writeFileSync(path.join(f.root, rel), 'Key,Value\nsecret,test-only-secret\n');
+  const imported = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const out = exportEditedProject(imported.project, f.options);
+  assert.equal(fs.existsSync(path.join(imported.baselineDir, 'snapshot', rel)), false);
+  assert.equal(fs.existsSync(path.join(out.candidateDir, 'reference', rel)), false);
+  assert.equal(reviewCandidate(reviewInput(out, imported.project), f.options).status, 'ready');
+});
+test('secret-copy cleanup keeps existing candidate review and saved baseline usable', fixtureOptions, t => {
+  const f = fixture(t), imported = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const out = exportEditedProject(imported.project, f.options);
+  const rel = 'RootDesk/MyDesk/DataSet/config/DT_ServerSecret.csv', bytes = Buffer.from('Key,Value\nsecret,test-only-secret\n');
+  const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+  for (const file of [path.join(imported.baselineDir, 'snapshot', rel), path.join(out.candidateDir, 'reference', rel)]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes);
+  }
+  const manifestFile = path.join(imported.baselineDir, 'manifest.json'), manifest = JSON.parse(fs.readFileSync(manifestFile));
+  manifest.datasetFiles.push(rel); manifest.sourceFiles.push({ relative: rel, exists: true, sha256: digest(bytes) });
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+  const reportFile = path.join(out.candidateDir, 'report.json'), report = JSON.parse(fs.readFileSync(reportFile)); report.datasetFilesCopied++;
+  fs.writeFileSync(reportFile, JSON.stringify(report, null, 2) + '\n');
+  const reviewFile = path.join(out.candidateDir, 'review-manifest.json'), record = JSON.parse(fs.readFileSync(reviewFile));
+  record.baselineManifestSha256 = digest(fs.readFileSync(manifestFile));
+  record.referenceFiles.push({ path: 'reference/' + rel, bytes: bytes.length, sha256: digest(bytes) });
+  record.report.bytes = fs.statSync(reportFile).size; record.report.sha256 = digest(fs.readFileSync(reportFile));
+  fs.writeFileSync(reviewFile, JSON.stringify(record, null, 2) + '\n');
+  const { pruneSensitiveReferences } = require('./prune-sensitive-references.cjs');
+  const sync = path.join(f.temp, 'sync'); fs.mkdirSync(sync);
+  fs.renameSync(f.options.baselineRoot, path.join(sync, 'baselines')); fs.renameSync(f.options.outputRoot, path.join(sync, 'candidates'));
+  f.options.baselineRoot = path.join(sync, 'baselines'); f.options.outputRoot = path.join(sync, 'candidates');
+  const runtimeRecord = path.join(f.options.baselineRoot, 'runtime-' + crypto.randomUUID(), 'manifest.json');
+  fs.mkdirSync(path.dirname(runtimeRecord), { recursive: true });
+  fs.writeFileSync(runtimeRecord, JSON.stringify({baselineId:manifest.baselineId,baselineManifestSha256:record.baselineManifestSha256}));
+  assert.equal(pruneSensitiveReferences(sync).copies, 2);
+  assert.equal(pruneSensitiveReferences(sync, { apply: true }).copies, 2);
+  assert.equal(JSON.parse(fs.readFileSync(runtimeRecord)).baselineManifestSha256, digest(fs.readFileSync(path.join(f.options.baselineRoot, manifest.baselineId, 'manifest.json'))));
+  assert.equal(reviewCandidate(reviewInput(out, imported.project), f.options).status, 'ready');
+  assert.deepEqual(pruneSensitiveReferences(sync, { apply: true }), { copies: 0, metadataFiles: 0, applied: true });
+  assert.doesNotThrow(() => previewEditedProject(imported.project, f.options));
+});
 test('no-op copies exact map bytes and CSV reference snapshots; source remains unchanged', fixtureOptions, t => {
   const f = fixture(t), before = f.hashes();
   const imported = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -189,7 +264,7 @@ test('CSV modifications since baseline use current exact reference bytes and rep
 });
 test('CSV additions and deletions since baseline copy only the current reference set', fixtureOptions, t => {
   const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
-  const added = 'RootDesk/MyDesk/DataSet/world/DT_Added.csv';
+  const added = 'RootDesk/MyDesk/DataSet/world/DT_Bounds.csv';
   fs.writeFileSync(path.join(f.root, added), '\uFEFFKey,Value\r\nnew,1\r\n');
   fs.unlinkSync(path.join(f.root, f.csvRelative));
   const result = exportEditedProject(project, f.options);
@@ -209,7 +284,9 @@ test('map, project, constants and builder changes remain strictly stale', fixtur
   for (const relative of ['map/fixture.map', 'map/fixture.json',
     'scripts/build_map.cjs', '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs']) {
     const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
-    fs.appendFileSync(path.join(f.root, relative), ' ');
+    const file = path.join(f.root, relative);
+    if (relative === 'scripts/build_map.cjs') fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"TILE_W":2.56', '"TILE_W":2.57'));
+    else fs.appendFileSync(file, ' ');
     assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_SOURCE', relative);
   }
 });
@@ -222,7 +299,7 @@ test('CSV modification or reference-list change during export requests a retry',
       if (!changed && String(file).startsWith(f.options.outputRoot) && String(file).includes(path.sep + 'reference' + path.sep)) {
         changed = true;
         if (change === 'modify') write.call(fs, path.join(f.root, f.csvRelative), 'changed,during-export\r\n');
-        if (change === 'add') write.call(fs, path.join(f.root, 'RootDesk/MyDesk/DataSet/world/DT_Concurrent.csv'), 'new,value\r\n');
+        if (change === 'add') write.call(fs, path.join(f.root, 'RootDesk/MyDesk/DataSet/world/DT_Bounds.csv'), 'new,value\r\n');
         if (change === 'delete') fs.unlinkSync(path.join(f.root, f.csvRelative));
       }
       return write.call(fs, file, ...args);
@@ -408,6 +485,18 @@ test('sorting roles compile through MapBuilder, preserve unrelated fields, and p
   assert.deepEqual(fileTreeHashes(f.root), before);
   delete project.gameObjectEdits;
   assert.equal(exportEditedProject(project, f.options).report.unchanged, true);
+});
+test('sorting exports run the game depth gate and reject new legacy dimension drift', fixtureOptions, t => {
+  for (const regresses of [false, true]) {
+    const f = objectFixture(t), checker = path.join(f.root, 'scripts/depth_check.cjs');
+    fs.writeFileSync(checker, 'module.exports.runCheck = ({mapPath}) => ({ok:true,dimDrift:' +
+      (regresses ? 'mapPath.includes("candidates") ? 1 : 0' : '0') + '});');
+    const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+    const object = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
+    project.gameObjectEdits = { ...objectPatch(), sorting: [{entityId:object.entityId,setting:{mode:'wall'}}] };
+    if (regresses) assert.throws(() => exportEditedProject(project, f.options), { code: 'DEPTH_GATE_FAILED' });
+    else assert.equal(exportEditedProject(project, f.options).report.gameDepthValidation.status, 'passed');
+  }
 });
 test('surface sorting follows moved supports for both native and newly added objects', fixtureOptions, t => {
   const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -831,7 +920,8 @@ test('review strictly checks current native map, project, catalog, constants and
     const file = path.join(f.root, relative), original = fs.readFileSync(file);
     if (relative === 'scripts/storage-inventory.lock.json') {
       const lock = JSON.parse(original); lock.resources[0].name = 'changed-resource'; fs.writeFileSync(file, JSON.stringify(lock));
-    } else fs.appendFileSync(file, ' ');
+    } else if (relative === 'scripts/build_map.cjs') fs.writeFileSync(file, original.toString().replace('"TILE_W":2.56', '"TILE_W":2.57'));
+    else fs.appendFileSync(file, ' ');
     const review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked', relative);
     assert.ok(review.issues.some(issue => issue.includes(relative))); fs.writeFileSync(file, original);
   }

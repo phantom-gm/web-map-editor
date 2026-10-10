@@ -15,6 +15,7 @@ const TILE_NAME = /^Tile_(\d+)_(\d+)$/;
 const FAMILY_NAME = /^(페른델)_(1|2|4)x\2_(.+)_(\d+)$/;
 const CONSTANT_KEYS = ['TILE_W', 'TILE_H', 'ORIGIN_X', 'ORIGIN_Y', 'DEPTH_SCALE', 'GROUND_ORDER'];
 const COMPONENT = { transform: 'MOD.Core.TransformComponent', sprite: 'MOD.Core.SpriteRendererComponent' };
+const REFERENCE_NAMES = new Set([...npcEdits.FILES, ...runtimeEdits.FILES]);
 const clone = value => JSON.parse(JSON.stringify(value));
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const key = (x, y) => x + ',' + y;
@@ -81,7 +82,7 @@ function datasetFiles(root) {
       const file = path.join(dir, e.name);
       if (e.isSymbolicLink()) fail('UNSUPPORTED_SOURCE_LINK', 'DataSet의 링크 경로는 지원하지 않습니다: ' + file);
       if (e.isDirectory()) visit(file);
-      else if (e.isFile() && e.name.endsWith('.csv')) found.push(path.relative(root, file).split(path.sep).join('/'));
+      else if (e.isFile() && REFERENCE_NAMES.has(e.name)) found.push(path.relative(root, file).split(path.sep).join('/'));
     }
   }
   visit(base); return found.sort();
@@ -175,7 +176,7 @@ function analyzeMap(mb, catalog, constants, size) {
 }
 function projectDefaults(raw, mapName) {
   const p = clone(raw || {});
-  p.type = 'web-map-editor-project'; p.version = 2; p.map = p.map || mapName;
+  p.type = 'web-map-editor-project'; p.version = 2; p.map = mapName;
   validMapName(p.map);
   p.size = p.size || [1, 1]; p.groundOrigin = p.groundOrigin || [0, 0];
   p.ground = p.ground || []; p.blocked = p.blocked || []; p.entities = p.entities || [];
@@ -204,9 +205,9 @@ function readSnapshotSet(root, relatives) {
     return { relative, exists, sha256: bytes ? hash(bytes) : null, bytes };
   });
 }
-// Accept inventory refreshes only when every old resource and the tile catalog remain
-// identical. Baseline snapshots stay immutable; imports still require byte-exact capture.
-function compatibleInventory(before, after) {
+// Only referenced resources and the compiler's tile catalog define this baseline.
+// Changes to unrelated icons/art must not invalidate an existing saved map.
+function compatibleInventory(before, after, requiredRuids = []) {
   const records = lock => {
     if (!lock || !Array.isArray(lock.resources) ||
         (lock.count !== undefined && lock.count !== lock.resources.length)) return null;
@@ -220,13 +221,28 @@ function compatibleInventory(before, after) {
   };
   const oldRecords = records(before), newRecords = records(after);
   if (!oldRecords || !newRecords) return false;
-  const metadata = lock => Object.fromEntries(Object.entries(lock).filter(([k]) => !['resources', 'generatedAt', 'count'].includes(k)));
+  const metadata = lock => Object.fromEntries(Object.entries(lock).filter(([k]) => !['resources', 'generatedAt', 'count', 'note'].includes(k)));
   if (stable(metadata(before)) !== stable(metadata(after))) return false;
-  for (const [id, resource] of oldRecords) if (stable(resource) !== stable(newRecords.get(id))) return false;
-  const oldNames = new Set([...oldRecords.values()].map(r => r.name));
-  for (const [id, resource] of newRecords) if (!oldRecords.has(id) && oldNames.has(resource.name)) return false;
+  const required = new Set([...requiredRuids, ...catalogFromLock(before).map(r => r.ruid)]);
+  for (const id of required) {
+    const resource = oldRecords.get(id);
+    if (!resource) continue; // Native built-in resources can be outside the group inventory.
+    if (stable(resource) !== stable(newRecords.get(id))) return false;
+  }
+  // Non-tile sprites are referenced by RUID, so a new same-named upload is harmless.
+  // Tile-family name ambiguity still fails closed in catalogFromLock below.
   try { return stable(catalogFromLock(before)) === stable(catalogFromLock(after)); }
   catch { return false; }
+}
+function baselineResourceIds(root, manifest, baselineDir) {
+  if (manifest.resourceIds) return manifest.resourceIds;
+  const project = readJson(safeChild(baselineDir, 'project.json', root));
+  const { MapBuilder } = require(sourceRelative(root, manifest.builderRelative));
+  const mb = MapBuilder.read(safeChild(baselineDir, 'snapshot/' + manifest.mapRelative, root));
+  return [...new Set([...project.palette.map(p => p.ruid), ...mb.listEntities().map(e => {
+    const ruid = mb.component(e.path, COMPONENT.sprite)?.SpriteRUID;
+    return typeof ruid === 'string' ? ruid : ruid?.DataId;
+  })].filter(Boolean))];
 }
 function verifySources(root, manifest, { includeDatasets = false, baselineDir } = {}) {
   let strictSourceFilesUnchangedSinceBaseline = true;
@@ -240,11 +256,18 @@ function verifySources(root, manifest, { includeDatasets = false, baselineDir } 
     const exists = fs.existsSync(absolute);
     const bytes = exists ? fs.readFileSync(absolute) : null;
     if (exists !== f.exists || (exists && hash(bytes) !== f.sha256)) {
+      if (!includeDatasets && exists && f.relative === 'scripts/build_map.cjs') {
+        // This compiler consumes only these exported constants, never the legacy build code.
+        const deps = loadDependencies(root);
+        if (stable(deps.constants) === stable(manifest.constants) && deps.ppu === (manifest.ppu ?? 100)) {
+          strictSourceFilesUnchangedSinceBaseline = false; continue;
+        }
+      }
       if (!includeDatasets && baselineDir && exists && f.exists && f.relative === 'scripts/storage-inventory.lock.json') {
         const snapshot = fs.readFileSync(safeChild(baselineDir, 'snapshot/' + f.relative, root));
         if (hash(snapshot) !== f.sha256) fail('BASELINE_CORRUPT', '기준 리소스 목록이 변경되었습니다. 다시 동기화하세요.');
         let compatible = false;
-        try { compatible = compatibleInventory(JSON.parse(snapshot.toString('utf8')), JSON.parse(bytes.toString('utf8'))); } catch { /* Invalid inventory stays blocked. */ }
+        try { compatible = compatibleInventory(JSON.parse(snapshot.toString('utf8')), JSON.parse(bytes.toString('utf8')), baselineResourceIds(root, manifest, baselineDir)); } catch { /* Invalid inventory stays blocked. */ }
         if (compatible) { strictSourceFilesUnchangedSinceBaseline = false; continue; }
       }
       fail('STALE_SOURCE', '게임 원본이 기준 시점과 달라졌습니다: ' + f.relative + '. 다시 동기화하세요.');
@@ -273,7 +296,7 @@ function captureDatasetReferences(root, manifest) {
   try { captured = readSnapshotSet(root, datasetFiles(root)); }
   catch (e) { if (e.code === 'ENOENT') referenceChanged(); throw e; }
   verifyDatasetCapture(root, captured);
-  const baseline = new Map(manifest.sourceFiles.filter(f => manifest.datasetFiles.includes(f.relative)).map(f => [f.relative, f]));
+  const baseline = new Map(manifest.sourceFiles.filter(f => manifest.datasetFiles.includes(f.relative) && REFERENCE_NAMES.has(path.basename(f.relative))).map(f => [f.relative, f]));
   const current = new Map(captured.map(f => [f.relative, f]));
   const changes = [];
   for (const relative of [...new Set([...baseline.keys(), ...current.keys()])].sort()) {
@@ -326,7 +349,7 @@ function createSyncProject({ gameRoot, mapName, baselineRoot }) {
     version: VERSION, baselineId, mapName: project.map, mapFileName: mapName, gameRoot: root,
     createdAt: new Date().toISOString(), mapRelative, projectRelative, datasetFiles: ds,
     baselineProjectSha256: hash(jsonBytes(project)),
-    sourceFiles: snapshots.map(f => ({ relative: f.relative, exists: f.exists, sha256: f.sha256 })), constants: deps.constants, builderRelative: deps.builderRelative,
+    sourceFiles: snapshots.map(f => ({ relative: f.relative, exists: f.exists, sha256: f.sha256 })), constants: deps.constants, ppu: deps.ppu, builderRelative: deps.builderRelative,
     catalog, blocks: analysis.blocks, groundEditingSupported: analysis.supported, unsupportedReasons: analysis.reasons,
     totalEntities: analysis.totalEntities, counts: counts(analysis.blocks, analysis.coverage.size, analysis.groundEntities)
   };
@@ -857,6 +880,27 @@ function compareEditedProject(project, options) {
 }
 function validateStorageRoot(target, gameRoot) { return outsideGame(target, gamePath(gameRoot)); }
 
+function validateSortingDepth(root, checked, mapPath, originalPath) {
+  if (!checked.objects.sorting.length) return { status: 'unchanged' };
+  const checker = path.join(root, 'scripts/depth_check.cjs');
+  if (!fs.existsSync(checker)) return { status: 'unavailable' };
+  const { runCheck } = require(sourceRelative(root, 'scripts/depth_check.cjs'));
+  const jsonPath = safeChild(checked.dir, 'snapshot/' + checked.manifest.projectRelative, root);
+  const log = console.log, warn = console.warn;
+  let before, after;
+  try {
+    console.log = console.warn = () => undefined;
+    before = runCheck({ mapPath: originalPath, jsonPath });
+    after = runCheck({ mapPath, jsonPath });
+  } finally { console.log = log; console.warn = warn; }
+  // Existing unrelated map debt is preserved; new sorting errors never reach an apply package.
+  const counters = ['dimDrift', 'totNew', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh'];
+  const regressions = counters.filter(key => (after[key] || 0) > (before[key] || 0));
+  if (before.missing || after.missing || regressions.length) fail('DEPTH_GATE_FAILED',
+    '정렬 변경이 게임 깊이 검사에 맞지 않습니다 (' + regressions.join(', ') + '). 기존 JSON 오브젝트는 복제본에 정렬을 적용하거나 원본 저작 메타도 함께 맞춰 주세요. 저장된 편집 내용은 유지됩니다.');
+  return { status: 'passed', before: Object.fromEntries(counters.map(k => [k, before[k] || 0])), after: Object.fromEntries(counters.map(k => [k, after[k] || 0])) };
+}
+
 function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const checked = inspectSyncProject(project, { gameRoot, baselineRoot });
   const { root, dir, manifest, affected, report } = checked;
@@ -891,10 +935,15 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     if (safeChild(candidateDir, manifest.mapRelative, root) !== mapPath) fail('UNSAFE_OUTPUT', '후보 경로가 변경되었습니다.');
     if (fs.existsSync(mapPath)) fail('CANDIDATE_EXISTS', '후보 파일을 덮어쓰지 않습니다.');
     mb.write(mapPath); // The only structured map write. Destination is verified outside gameRoot.
+    // Preserve the game's line endings so one entity edit stays a reviewable diff.
+    if (originalBytes.includes(Buffer.from('\r\n'))) {
+      fs.writeFileSync(mapPath, fs.readFileSync(mapPath, 'utf8').replace(/\r?\n/g, '\r\n'));
+    }
     const reread = deps.MapBuilder.read(mapPath);
     for (const [name, value] of [...preserved, ...editedObjects]) if (stable(reread.find(name)) !== value) fail('PRESERVATION_FAILED', '저장 후 엔티티 검증 실패: ' + name);
     groundComparison = { unchangedRuidTransform: true, coverageExact: true, unchangedBlocks: manifest.counts.groundEntities - affected.length };
   }
+  report.gameDepthValidation = validateSortingDepth(root, checked, mapPath, originalPath);
   if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
   if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
   for (const candidate of runtimeCandidates) writeFile(candidateDir, candidate.relative, candidate.bytes, root);

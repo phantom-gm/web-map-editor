@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useEditorStore, captureEditorSnapshot } from "../store/editorStore";
 import { parseGameMonsterEdits, parseGamePortalEdits, parseGameSpawnEdits, parseMonsterPatch, parsePortalPatch, parseGameRuntimeSync, runtimeSourceKey, type MonsterFields, type PortalFields } from "../lib/gameRuntime";
-import { sceneWithRuntimeDraft } from "../lib/gameRuntimePreview";
+import { gameRuntimeHit, sceneWithRuntimeDraft } from "../lib/gameRuntimePreview";
+import { previewWorldToScreen } from "../lib/gamePreview";
 import { emptyLayer } from "../types/blueprint";
 import { PROJECT_TYPE, type ProjectFile } from "../lib/projectIO";
 import type { GamePreviewScene } from "../lib/gamePreview";
@@ -11,6 +12,15 @@ const monster:MonsterFields={monsterClassId:1,cell:[1,1],count:4,spread:2,respaw
 const portal:PortalFields={cell:[2,2],destMap:"other",destCell:[1,1],destFacing:"SE",enabled:true};
 const state=()=>useEditorStore.getState(),saved=()=>state().exportProject();
 const empty=()=>({version:1 as const,updated:[],removed:[],added:[]});
+it("hidden runtime badges cannot steal clicks; visible or selected badges remain selectable", () => {
+  const s = { ...scene(), sprites: [], monsters: [], spawn: null, traps: [] } as GamePreviewScene;
+  const portal = s.portals![0], camera = { x: 0, y: 0, zoom: 1 };
+  const [x, y] = previewWorldToScreen(portal.position, s, camera);
+  const selected = { kind: "portal" as const, entityId: portal.entityId };
+  expect(gameRuntimeHit(x, y - 10, s, new Map(), camera, null, false)).toBeNull();
+  expect(gameRuntimeHit(x, y - 10, s, new Map(), camera, null, true)).toEqual(selected);
+  expect(gameRuntimeHit(x, y - 10, s, new Map(), camera, null, false, selected)).toEqual(selected);
+});
 const project=():ProjectFile=>({
   type:PROJECT_TYPE,version:2,map:"fixture",gameSync:{version:1,baselineId:"baseline",mapName:"fixture"},
   size:[8,8],groundOrigin:[0,0],ground:[],blocked:[[4,4]],palette:[],

@@ -9,7 +9,7 @@ export function activateEditorTool(tool: Tool): void {
   if (useWorkspaceSession.getState().loading || view.comparisonEnabled) return;
   if (editor.gameSync && ["brush", "rect", "eraser", "eyedropper", "block"].includes(tool)) {
     const scene = view.scene;
-    if (view.status !== "ready" || scene?.baselineId !== editor.gameSync.baselineId ||
+    if (view.status === "error" || scene?.baselineId !== editor.gameSync.baselineId ||
       (tool === "block" ? scene.report?.walkEditingSupported !== true : scene.report?.groundEditingSupported !== true)) return;
   }
   editor.clearGameSelection();
@@ -42,7 +42,7 @@ export function editorShortcutsBlocked(event: ShortcutEvent, scope?: ShortcutDoc
   return !!target?.closest?.('input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], [role="textbox"], [data-editor-shortcuts="ignore"]');
 }
 
-/** Escape/blur rolls back only the live brush/legacy drag, without touching history or other overlays. */
+/** Explicit Escape/Ctrl+Z cancels a live stroke without consuming earlier history. */
 export function rollbackEditorStroke(before: Snapshot): void {
   useEditorStore.setState(state => {
     const sameGround = before.ground.size === state.ground.size && [...before.ground].every(([key, value]) => state.ground.get(key) === value);
@@ -65,6 +65,10 @@ export function palettePlacementIssue(tool: Tool): string | null {
   const tile = editor.palette[editor.activeIdx];
   if (!tile?.ruid || !/^[a-f0-9]{32}$/i.test(tile.ruid)) return "이 소재는 MSW 서버와 연결되지 않았습니다. 왼쪽 팔레트에서 서버 소재를 선택하세요.";
   // Linked ground already comes from the server preview/catalog path, independently of the legacy palette cache.
-  if (editor.gameSync && view.status === "ready" && view.scene?.baselineId === editor.gameSync.baselineId && view.scene.groundBrushRuids?.includes(tile.ruid)) return null;
+  if (editor.gameSync) {
+    if (view.status === "error") return view.error || "게임 미리보기를 갱신한 뒤 다시 칠하세요.";
+    if (view.scene?.baselineId !== editor.gameSync.baselineId) return "게임 바닥 정보를 불러오는 중입니다. 잠시 기다려 주세요.";
+    if (view.scene.groundBrushRuids?.includes(tile.ruid)) return null;
+  }
   return isServerResourceImage(tile) ? null : "새 배치 전에 서버 이미지 확인이 필요합니다. 왼쪽 팔레트에서 소재를 다시 선택하세요.";
 }

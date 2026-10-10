@@ -191,7 +191,7 @@ function applyObjectEdits(mb, edits, stable) {
   // Floor/wall first; a surface uses the final support Z and never contributes a second footprint.
   for (const row of [...(edits.sorting || [])].sort((a,b) => Number(a.setting.mode === 'surface') - Number(b.setting.mode === 'surface'))) {
     const name = pathFor(row.entityId), before = clone(mb.find(name)), s = row.setting;
-    const tf = clone(mb.component(name, TF)), sr = mb.component(name, SR);
+    const tf = clone(mb.component(name, TF));
     const prior = mb.component(name, DEPTH) || { '@type': DEPTH };
     const anchor = objectAnchor([tf.Position.x, tf.Position.y], edits.constants);
     const order = s.mode === 'wall' ? -998 : 0;
