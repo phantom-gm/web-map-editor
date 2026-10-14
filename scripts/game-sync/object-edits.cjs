@@ -2,6 +2,7 @@
 // Native object edits remain separate from the legacy authoring entities array.
 // Every structured mutation goes through the game's MapBuilder public methods.
 const { parseObjectSorting, objectAnchor, SURFACE_EPSILON } = require('../../src/lib/objectSorting.cjs');
+const { parseObjectVisualOffsets } = require('../../src/lib/objectVisualOffset.cjs');
 const TF = 'MOD.Core.TransformComponent';
 const SR = 'MOD.Core.SpriteRendererComponent';
 const DEPTH = 'script.IsoDepthMetaComponent';
@@ -100,13 +101,13 @@ function moveTarget(record, position, constants) {
   return { position: dgx === 0 && dgy === 0 ? [...original] : [original[0] + sx, original[1] + sy, original[2] + sy * constants.DEPTH_SCALE], dgx, dgy };
 }
 function inspectObjectEdits(value, profile, constants) {
-  const empty = { moved: [], removed: [], added: [], sorting: [], changed: false };
+  const empty = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], changed: false };
   if (value === undefined) return empty;
-  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : [])], '오브젝트 편집');
+  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : []), ...(value.visualOffsets !== undefined ? ['visualOffsets'] : [])], '오브젝트 편집');
   if (value.version !== 1 || !['moved', 'removed', 'added'].every(k => Array.isArray(value[k]))
     || value.moved.length + value.removed.length + value.added.length > 10000) fail('INVALID_OBJECT_EDITS', '오브젝트 편집 버전 또는 배열이 유효하지 않습니다.');
   const used = new Set(), existing = new Set(profile.entities.map(e => e.id));
-  const result = { moved: [], removed: [], added: [], sorting: [], constants, changed: false };
+  const result = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], constants, changed: false };
   const get = (id, capability) => {
     const record = typeof id === 'string' && profile.records.get(id);
     if (!record) fail('UNKNOWN_OBJECT', '원본 오브젝트를 찾을 수 없습니다: ' + id);
@@ -150,7 +151,15 @@ function inspectObjectEdits(value, profile, constants) {
     }
     result.sorting.push({ ...row, record, added: additions.has(row.entityId) });
   }
-  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length > 0;
+  let offsets;
+  try { offsets = parseObjectVisualOffsets(value.visualOffsets); } catch (e) { fail('INVALID_OBJECT_OFFSET', e.message); }
+  for (const row of offsets) {
+    const record = additions.get(row.entityId)?.record || profile.records.get(row.entityId);
+    if (!record || removed.has(row.entityId) || (record.resource && !additions.has(row.entityId))) fail('INVALID_OBJECT_OFFSET', '미세 조정할 배치가 없습니다.');
+    if (!record.descriptor.canMove) fail('PROTECTED_OBJECT', '보호된 오브젝트의 이미지는 조정할 수 없습니다.');
+    result.visualOffsets.push({ ...row, record, added: additions.has(row.entityId) });
+  }
+  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length + result.visualOffsets.length > 0;
   return result;
 }
 function changedComponents(edit) {
@@ -217,6 +226,18 @@ function applyObjectEdits(mb, edits, stable) {
     if (old >= 0) edited.splice(old, 1);
     edited.push([actualPath, stable(before)]);
   }
+  // Apply image translation LAST: sorting/footprints must use the logical anchor.
+  // Native renderer has no XY offset; bake only Transform XY, preserving Z and every depth field.
+  for (const row of edits.visualOffsets || []) {
+    const name = pathFor(row.entityId), expected = clone(mb.find(name));
+    const position = expected.jsonString['@components'].find(c => c['@type'] === TF).Position;
+    position.x += row.offset[0]; position.y += row.offset[1];
+    mb.patchComponent(name, TF, { Position: position });
+    if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '이미지 미세 조정이 위치 이외의 값을 변경했습니다.');
+    const actualPath = mb.find(name).path, old = edited.findIndex(e => e[0] === actualPath);
+    if (old >= 0) edited.splice(old, 1);
+    edited.push([actualPath, stable(expected)]);
+  }
   return edited;
 }
 function objectScene(mb, profile, edits) {
@@ -238,6 +259,14 @@ function objectScene(mb, profile, edits) {
     if (row) object.sortSetting = clone(row.setting);
     const name = edits.added.some(e => e.entityId === object.entityId) ? 'Obj_Editor_' + object.entityId : profile.records.get(object.entityId).item.path;
     object.sortInfo = sortInfo(mb, name);
+    const offset = (edits.visualOffsets || []).find(e => e.entityId === object.entityId)?.offset;
+    if (offset) {
+      object.visualOffset = [...offset];
+      // Preserve precise logical anchors independently from rendered XY.
+      const placement = [...edits.moved, ...edits.added].find(e => e.entityId === object.entityId);
+      const logical = placement?.position || object.sourcePosition;
+      object.position = [logical[0], logical[1], object.position[2]];
+    }
   }
   return { objects, objectPrototypes: [...profile.records.values()].map(r => r.descriptor) };
 }

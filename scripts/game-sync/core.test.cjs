@@ -1259,6 +1259,75 @@ test('fresh synchronization uses runtime walk cells when authoring JSON lags beh
   assert.deepEqual(fileTreeHashes(f.root), before);
 });
 const runtimePatch=(updated=[],removed=[],added=[])=>({version:1,updated,removed,added});
+test('unrelated monster/effect additions preserve pending portal edits, export and candidate review',fixtureOptions,t=>{
+  const f=trapFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});
+  project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
+  const saved=structuredClone(project),baseline=fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId));
+  fs.appendFileSync(f.runtimeFile('DT_MonsterClass'),'202,Other,MONSTER2,9202,monster02,2,\r\n');
+  fs.appendFileSync(f.runtimeFile('DT_MonsterAppearance'),'9202,Idle,SE,66666666666666666666666666666666\r\n9201,Attack,SE,77777777777777777777777777777777\r\n');
+  fs.appendFileSync(f.runtimeFile('ST_MonsterName'),'MONSTER2,Other,다른 몬스터\r\n');
+  const abn=path.join(f.root,'RootDesk/MyDesk/DataSet/world/DT_Abnormality.csv'),names=path.join(f.root,'RootDesk/MyDesk/DataSet/world/ST_ABNName.csv');
+  fs.appendFileSync(abn,'1003,NEW,4000,Pc,NEW\n');fs.appendFileSync(names,'NEW,New,신규 효과\n');
+  const scene=previewEditedProject(project,f.options);assert.equal(scene.runtimeSource.stale,false);
+  const out=exportEditedProject(project,f.options),identity=reviewInput(out,project);
+  assert.equal(out.report.portalChanges.updated,1);assert.equal(reviewCandidate(identity,f.options).status,'ready');
+  fs.appendFileSync(f.runtimeFile('DT_MonsterClass'),'203,Another,MONSTER3,9203,monster03,1,\r\n');
+  assert.equal(reviewCandidate(identity,f.options).status,'ready');
+  assert.deepEqual(project,saved);assert.deepEqual(fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId)),baseline);
+});
+test('a trap-free map ignores effect changes used only in other maps',fixtureOptions,t=>{
+  const f=trapFixture(t);fs.writeFileSync(f.trapFile,'TrapID,MapName,MinX,MinY,MaxX,MaxY,AbnormalityID\nT_other,other,1,1,2,2,1011\n');
+  const {project}=createSyncProject({...f.options,mapName:'fixture'});project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
+  const file=path.join(f.root,'RootDesk/MyDesk/DataSet/world/DT_Abnormality.csv');fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('25000','26000'));
+  assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,false);
+  assert.doesNotThrow(()=>exportEditedProject(project,f.options));
+});
+test('monster combat-stat changes do not invalidate layout dependencies',fixtureOptions,t=>{
+  const f=runtimeFixture(t),file=f.runtimeFile('DT_MonsterClass');
+  fs.writeFileSync(file,'MonsterClassID,#DevName,MonsterName,MonsterAppearanceID,ModelID,BodyScale,BodyTint,HP\n201,Monster,MONSTER1,9201,monster01,1.5,,100\n');
+  const {project}=createSyncProject({...f.options,mapName:'fixture'});project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
+  fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(',,100',',,200'));
+  assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,false);assert.doesNotThrow(()=>exportEditedProject(project,f.options));
+});
+test('referenced monster scale, Idle SE art and names still block with the changed file',fixtureOptions,t=>{
+  for(const [name,from,to]of [['DT_MonsterClass','1.5','1.6'],['DT_MonsterAppearance','4'.repeat(32),'8'.repeat(32)],['ST_MonsterName','몬스터','변경된 몬스터']]){
+    const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
+    const file=f.runtimeFile(name);fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(from,to));
+    const source=previewEditedProject(project,f.options).runtimeSource;assert.equal(source.stale,true);assert.ok(source.changedFiles.some(f=>f.endsWith(name+'.csv')));
+    assert.throws(()=>exportEditedProject(project,f.options),e=>e.code==='STALE_RUNTIME_SOURCE'&&e.message.includes(name+'.csv'));
+  }
+});
+test('a newly authored monster adds its selected class to the dependency scope',fixtureOptions,t=>{
+  const f=runtimeFixture(t);fs.appendFileSync(f.runtimeFile('DT_MonsterClass'),'202,Other,MONSTER2,9202,monster02,2,\r\n');
+  fs.appendFileSync(f.runtimeFile('DT_MonsterAppearance'),'9202,Idle,SE,66666666666666666666666666666666\r\n');
+  const {project}=createSyncProject({...f.options,mapName:'fixture'});
+  project.gameMonsterEdits=runtimePatch([],[],[{entityId:crypto.randomUUID(),monsterClassId:202,cell:[6,6],count:1,spread:0,respawnMinSec:0,respawnMaxSec:0,firstSpawnSec:0,enabled:true}]);
+  const file=f.runtimeFile('DT_MonsterClass');fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('monster02,2,','monster02,3,'));
+  assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,true);assert.throws(()=>exportEditedProject(project,f.options),{code:'STALE_RUNTIME_SOURCE'});
+});
+test('trap effects referenced by original or newly authored traps still guard edits',fixtureOptions,t=>{
+  for(const added of [false,true]){
+    const f=trapFixture(t);if(added)fs.writeFileSync(f.trapFile,'TrapID,MapName,MinX,MinY,MaxX,MaxY,AbnormalityID\nT_other,other,1,1,2,2,1011\n');
+    const {project}=createSyncProject({...f.options,mapName:'fixture'});
+    project.gameTrapEdits=added?runtimePatch([],[],[{entityId:crypto.randomUUID(),cell:[6,6],maxCell:[7,7],abnormalityId:1002}]):runtimePatch([{entityId:'T1',maxCell:[5,4]}]);
+    const file=path.join(f.root,'RootDesk/MyDesk/DataSet/world/DT_Abnormality.csv');
+    fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(added?'3000':'25000',added?'4000':'26000'));
+    assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,true);assert.throws(()=>exportEditedProject(project,f.options),{code:'STALE_RUNTIME_SOURCE'});
+  }
+});
+test('removing the last trap removes unused effect dependencies and keeps other-map rows',fixtureOptions,t=>{
+  const f=trapFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});project.gameTrapEdits=runtimePatch([],['T1','T2']);
+  const file=path.join(f.root,'RootDesk/MyDesk/DataSet/world/DT_Abnormality.csv');fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('25000','26000'));
+  assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,false);const out=exportEditedProject(project,f.options);
+  assert.equal(out.report.trapChanges.removed,2);assert.ok(fs.readFileSync(path.join(out.candidateDir,'RootDesk/MyDesk/DataSet/world/DT_MapTrap.csv'),'utf8').includes('T_other'));
+});
+test('removed portals do not retain dependencies on their old destination or sprite',fixtureOptions,t=>{
+  const f=runtimeFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});project.gamePortalEdits=runtimePatch([],['P1','P2']);
+  fs.appendFileSync(f.walkPath,'\r\nother,2,3\r\n');
+  const config=f.runtimeFile('DT_GameConfig');fs.writeFileSync(config,fs.readFileSync(config,'utf8').replace('5'.repeat(32),'6'.repeat(32)));
+  assert.equal(previewEditedProject(project,f.options).runtimeSource.stale,false);
+  assert.equal(exportEditedProject(project,f.options).report.portalChanges.removed,2);
+});
 function trapFixture(t){
  const f=runtimeFixture(t),put=(name,text)=>{const file=path.join(f.root,'RootDesk/MyDesk/DataSet/world',name+'.csv');fs.writeFileSync(file,text);return file;};
  const trapFile=put('DT_MapTrap','\ufeffTrapID,MapName,MinX,MinY,MaxX,MaxY,AbnormalityID,#Memo\r\nT1,fixture,2,3,4,4,1011,"keep, note"\r\nT2,fixture,5,0,6,0,1002,second\nT_other,other,1,1,2,2,1011,last');
@@ -1513,4 +1582,121 @@ test('resource precision and depth survive export without changing any original 
     assert.throws(() => previewEditedProject(project, f.options), e => e.code === 'INVALID_OBJECT_DEPTH');
   }
   assert.deepEqual(fileTreeHashes(f.root), before);
+});
+
+test('sorting gate uses candidate blocked cells without changing the source walk table', fixtureOptions, t => {
+  const f = objectFixture(t), checker = path.join(f.root, 'scripts/depth_check.cjs');
+  const source = fs.readFileSync(f.walkPath);
+  fs.writeFileSync(checker, "module.exports.runCheck = ({mapPath, blocked}) => { if (!mapPath.includes('candidates')) { if(blocked !== undefined) throw Error('source override'); return {ok:true}; } if(blocked.mapName !== 'fixture' || blocked.set.has('2,2') || !blocked.set.has('4,4')) throw Error('stale walk snapshot'); return {ok:true}; };");
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const object = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
+  project.blocked = [[3,3],[4,4]];
+  project.gameObjectEdits = { ...objectPatch(), sorting: [{entityId:object.entityId,setting:{mode:'wall'}}] };
+  const output = exportEditedProject(project, f.options);
+  assert.equal(output.report.gameDepthValidation.status, 'passed');
+  assert.equal(output.report.walkComparison.currentMapCellsExact, true);
+  assert.ok(source.equals(fs.readFileSync(f.walkPath)));
+});
+
+test('blank RectTile canvas accepts its first packed floor without changing game source', fixtureOptions, t => {
+  const f = fixture(t, { noGround: true });
+  const mapPath = path.join(f.root, 'map/fixture.map');
+  f.MapBuilder.read(mapPath).remove('Obj_keep')
+    .empty('Background').upsertComponent('Background', 'MOD.Core.BackgroundComponent', { Type: 2 })
+    .write(mapPath);
+  const authorPath = path.join(f.root, 'map/fixture.json');
+  const raw = JSON.parse(fs.readFileSync(authorPath)); raw.entities = []; raw.blocked = [];
+  fs.writeFileSync(authorPath, JSON.stringify(raw));
+  const before = f.hashes();
+  const { project, report } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.equal(report.groundEditingSupported, true);
+  assert.equal(project.ground.length, 0);
+  assert.equal(previewEditedProject(project, f.options).report.groundEditingSupported, true);
+  assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  const grass = project.palette.findIndex(p => p.ruid === tile('잔디').ruid);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) project.ground.push([x, y, grass]);
+  const out = exportEditedProject(project, f.options);
+  assert.equal(out.report.counts.groundCells, 16);
+  assert.equal(out.report.counts.groundEntities, 1);
+  assert.equal(out.report.counts.bySize['4'], 1);
+  assert.equal(out.report.groundComparison.coverageExact, true);
+  assert.deepEqual(f.hashes(), before);
+});
+test('blank-floor support does not unlock native terrain, image backgrounds or scripted maps', fixtureOptions, t => {
+  for (const [type, fields] of [
+    ['MOD.Core.RectTileMapComponent', {}],
+    ['MOD.Core.BackgroundComponent', { Type: 0 }],
+    ['MOD.Core.FootholdComponent', { FootholdsByLayer: { MapLayer0: [] } }],
+    ['script.CustomFloor', {}],
+  ]) {
+    const f = fixture(t, { noGround: true });
+    const mapPath = path.join(f.root, 'map/fixture.map');
+    f.MapBuilder.read(mapPath).remove('Obj_keep').empty('OtherFloor')
+      .upsertComponent('OtherFloor', type, fields).write(mapPath);
+    const { project, report } = createSyncProject({ ...f.options, mapName: 'fixture' });
+    assert.equal(report.groundEditingSupported, false);
+    project.ground.push([7, 7, 0]);
+    assert.throws(() => exportEditedProject(project, f.options), { code: 'UNSUPPORTED_GROUND' });
+  }
+});
+
+test('visual XY offsets preserve logical anchors, footprint, Z, blocked cells and source bytes through preview/export', fixtureOptions, t => {
+  const f = objectFixture(t), before = fileTreeHashes(f.root);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const original = f.MapBuilder.read(f.mapPath), id = original.find('Obj_editable').id;
+  const offset = [0.13, 0.27];
+  project.gameObjectEdits = { ...objectPatch(), visualOffsets: [{ entityId: id, offset }] };
+  const scene = previewEditedProject(JSON.parse(JSON.stringify(project)), f.options);
+  const object = scene.objects.find(o => o.entityId === id), sprite = scene.sprites.find(o => o.objectEntityId === id);
+  assert.deepEqual(object.position, [7,8,1.77]); assert.deepEqual(sprite.position, object.position);
+  assert.deepEqual(sprite.visualOffset, offset); assert.deepEqual(object.sortInfo.footprint, [2,3,2,3]);
+  const output = exportEditedProject(project, f.options), candidate = f.MapBuilder.read(output.mapPath);
+  const old = original.component('Obj_editable', 'MOD.Core.TransformComponent'), actual = candidate.component('Obj_editable', 'MOD.Core.TransformComponent');
+  assert.deepEqual(actual, { ...old, Position: { ...old.Position, x:7.13, y:8.27 } });
+  assert.deepEqual(candidate.component('Obj_editable', 'script.IsoDepthMetaComponent'), original.component('Obj_editable', 'script.IsoDepthMetaComponent'));
+  assert.equal(output.report.objectChanges.moved, 1); assert.equal(output.report.changedCells, 0); assert.equal(output.report.walkChangedCells, 0);
+  assert.equal(output.report.objectComparison.permittedFieldsOnly, true);
+  for(const e of original.listEntities()) if(e.id !== id) assert.deepEqual(candidate.find(e.path), original.find(e.path));
+  const comparison = compareEditedProject(project, f.options).comparison;
+  assert.deepEqual(comparison.objects.moved[0].to,[7.13,8.27,1.77]);
+  assert.deepEqual(fileTreeHashes(f.root), before);
+  project.gameObjectEdits.visualOffsets[0].offset=[0,0];
+  assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
+});
+test('visual offsets compose with native cell moves, copies, resource scaling and sorting without changing sorting anchors', fixtureOptions, t => {
+  const f=objectFixture(t), { project }=createSyncProject({...f.options,mapName:'fixture'});
+  const original=f.MapBuilder.read(f.mapPath), id=original.find('Obj_editable').id;
+  const resource=registerTestResource(f,project), copy=crypto.randomUUID(), added=crypto.randomUUID();
+  project.gameObjectEdits={...objectPatch([{entityId:id,position:[8.28,7.36]}],[],[
+    {entityId:copy,prototypeId:id,position:[8.28,7.36]},
+    {entityId:added,prototypeId:'resource_'+resource,position:[1.28,-.64],scale:.75}]),
+    resources:[resource], sorting:[{entityId:added,setting:{mode:'floor',offset:[0,0],size:[1,1],bounds:[3,5],padX:0}}],
+    visualOffsets:[{entityId:id,offset:[.12,.2]},{entityId:copy,offset:[-.2,.3]},{entityId:added,offset:[.8,1.2]}]};
+  const scene=previewEditedProject(project,f.options), output=exportEditedProject(project,f.options), mb=f.MapBuilder.read(output.mapPath);
+  for(const object of scene.objects.filter(o=>o.visualOffset)){
+    const name=object.entityId===id?'Obj_editable':'Obj_Editor_'+object.entityId, tf=mb.component(name,'MOD.Core.TransformComponent');
+    assert.ok(Math.abs(tf.Position.x-object.position[0]-object.visualOffset[0])<1e-7);
+    assert.ok(Math.abs(tf.Position.y-object.position[1]-object.visualOffset[1])<1e-7);
+    assert.equal(tf.Position.z,object.position[2]);
+  }
+  assert.deepEqual(scene.objects.find(o=>o.entityId===added).sortInfo.footprint,[16,15,1,1]);
+  assert.equal(mb.component('Obj_Editor_'+added,'MOD.Core.TransformComponent').Scale.x,.75);
+  assert.equal(output.report.objectChanges.moved,1); // cell move + image offset is one changed original
+});
+test('visual offset input rejects protected, removed, unknown and library-only targets plus malformed values', fixtureOptions, t => {
+  const f=objectFixture(t), {project}=createSyncProject({...f.options,mapName:'fixture'});
+  const mb=f.MapBuilder.read(f.mapPath), id=mb.find('Obj_editable').id, protectedId=mb.find('Obj_keep').id;
+  const resource=registerTestResource(f,project);
+  for(const rows of [
+    [{entityId:'missing',offset:[0,.1]}],[{entityId:protectedId,offset:[0,.1]}],
+    [{entityId:'resource_'+resource,offset:[0,.1]}],
+    [{entityId:id,offset:[0,Infinity]}],[{entityId:id,offset:[41,0]}],
+    [{entityId:id,offset:[0,.1],position:[0,0]}],
+    [{entityId:id,offset:[0,.1]},{entityId:id,offset:[0,.2]}],
+  ]){
+    project.gameObjectEdits={...objectPatch(),resources:[resource],visualOffsets:rows};
+    assert.throws(()=>previewEditedProject(project,f.options));
+  }
+  project.gameObjectEdits={...objectPatch([],[id]),visualOffsets:[{entityId:id,offset:[0,.1]}]};
+  assert.throws(()=>exportEditedProject(project,f.options));
 });

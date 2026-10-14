@@ -39,11 +39,13 @@ function fixture() {
   function put(root: string, relative: string, data: string | Buffer) {
     const file = path.join(root, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data); return file;
   }
-  for (const name of ["core.cjs", "object-edits.cjs", "walk-edits.cjs", "zip.cjs", "npcs.cjs", "runtime.cjs", "traps.cjs", "actor-depth.cjs"]) {
+  for (const name of ["core.cjs", "load-core.cjs", "object-edits.cjs", "walk-edits.cjs", "zip.cjs", "npcs.cjs", "runtime.cjs", "runtime-dependencies.cjs", "traps.cjs", "actor-depth.cjs"]) {
     const relative = "scripts/game-sync/" + name;
     put(localEditor, relative, fs.readFileSync(path.join(editorRoot, relative)));
   }
-  put(localEditor, "src/lib/objectSorting.cjs", fs.readFileSync(path.join(editorRoot, "src/lib/objectSorting.cjs")));
+  for (const name of ["objectSorting.cjs", "objectVisualOffset.cjs"]) {
+    put(localEditor, "src/lib/" + name, fs.readFileSync(path.join(editorRoot, "src/lib/" + name)));
+  }
   const builder = put(gameRoot, ".agents/skills/msw-general/scripts/map/msw_map_builder.cjs", fs.readFileSync(sourceBuilder));
   put(gameRoot, "scripts/build_map.cjs", "module.exports={TILE_W:2.56,TILE_H:1.28,ORIGIN_X:0,ORIGIN_Y:0,DEPTH_SCALE:0.21875,GROUND_ORDER:-1000,PPU:100};");
   const resources = [

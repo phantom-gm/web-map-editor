@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { parseCsv, world } = require('./npcs.cjs');
 const traps = require('./traps.cjs');
+const { dependencies, catalogSignature } = require('./runtime-dependencies.cjs');
 const FILES = ['DT_MonsterSpawn.csv','DT_MonsterClass.csv','DT_MonsterAppearance.csv','ST_MonsterName.csv','DT_Portal.csv','DT_Bounds.csv','DT_Walk.csv','DT_GameConfig.csv','DT_MapTrap.csv','DT_Abnormality.csv','ST_ABNName.csv'];
 const ID = /^[A-Za-z0-9_-]{1,128}$/, UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const M_FIELDS = ['monsterClassId','cell','count','spread','respawnMinSec','respawnMaxSec','firstSpawnSec','enabled'];
@@ -99,20 +100,24 @@ function inspectRuntime(project,profile,constants,npcs=[]) {
     comparison:{monsters:monsters.comparison,portals:portals.comparison,spawn:spawnChanged?{from:world(spawn.sourceCell,constants),to:world(spawn.cell,constants)}:null,
       ...(profile.traps.supported?{traps:{moved:trapEdit.moved.map(r=>({entityId:r.entityId,from:world(r.source.cell,constants),to:world(r.values.cell,constants)})),added:trapEdit.added.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)})),removed:trapEdit.removed.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)})),updated:trapEdit.updated.map(r=>({entityId:r.entityId,position:world(r.values.cell,constants)}))}}:{})}};
 }
-function signature(files,name,mapName,maps){
+function signature(files,name,mapName,maps,deps){
+  const catalog = catalogSignature(files, name, deps); if (catalog !== undefined) return catalog;
+  if (name === 'DT_GameConfig' && !deps.portalReferenced) return 'unused';
   const file=files[name];if(!file)return null;const parsed=parseCsv(file.bytes);
   let rows;
   if(name==='DT_MonsterSpawn'||name==='DT_Portal')rows=parsed.rows.filter(r=>r.data[name==='DT_Portal'?'SrcMap':'MapName']===mapName).map(r=>r.data);
   else if(name==='DT_MapTrap')return JSON.stringify({header:parsed.header,rows:parsed.rows.filter(r=>r.data.MapName===mapName).map(r=>r.data)});
   else if(name==='DT_Bounds')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>{const d={...r.data};if(d.MapName!==mapName){delete d.SpawnX;delete d.SpawnY;}return d;});
   else if(name==='DT_Walk')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>r.data);
-  else if(name==='DT_GameConfig')rows=parsed.rows.filter(r=>r.data.ConfigKey==='PortalSpriteRuid').map(r=>r.data);
+  else if(name==='DT_GameConfig')rows=parsed.rows.filter(r=>r.data.ConfigKey==='PortalSpriteRuid').map(r=>({ConfigKey:r.data.ConfigKey,ConfigValue:r.data.ConfigValue}));
   else return hash(file.bytes);
   return JSON.stringify(rows.map(canonical).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 }
 function sourceDrift(profile,currentFiles,edit){
-  const maps=new Set([profile.mapName,...profile.portals.filter(r=>r.map===profile.mapName).map(r=>r.values.destMap),...[...(edit?.portals?.records?.values()||[])].map(r=>r.values.destMap)]);
-  const changes=[];for(const [name,file]of Object.entries(profile.files)){try{if(signature(profile.files,name,profile.mapName,maps)!==signature(currentFiles,name,profile.mapName,maps))changes.push(file.relative);}catch{changes.push(file.relative);}}return [...new Set(changes)];
+  const portals = edit?.portals?.records ? [...edit.portals.records.values()] : profile.portals.filter(r=>r.map===profile.mapName);
+  const maps=new Set([profile.mapName,...portals.map(r=>r.values.destMap)]);
+  const deps = dependencies(profile, edit);
+  const changes=[];for(const [name,file]of Object.entries(profile.files)){try{if(signature(profile.files,name,profile.mapName,maps,deps)!==signature(currentFiles,name,profile.mapName,maps,deps))changes.push(file.relative);}catch{changes.push(file.relative);}}return [...new Set(changes)];
 }
 const quote=s=>/[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
 function patchTable(bytes,mapName,idColumn,mapColumn,changes,added,removed,render){const parsed=parseCsv(bytes,[idColumn,mapColumn]);identify(parsed,idColumn,mapColumn);const byId=new Map(parsed.rows.map(r=>[r.data[idColumn],r]));for(const r of added)if(byId.has(r.id))fail('RUNTIME_ID_COLLISION','새 런타임 행 ID가 최신 CSV에 이미 있습니다.');const changed=new Map(changes.map(r=>[r.id,r])),deleted=new Set(removed.map(r=>r.id)),rawRows=new Map(parsed.rows.map(r=>[r.raw,r]));const serialize=(r,original)=>parsed.header.map(h=>quote(String(render(r,original,parsed.header)[h]??''))).join(',');const incoming=added.map(r=>serialize(r,null)+parsed.newline).join('');let out='',inserted=false;const hasTarget=parsed.rows.some(r=>r.data[mapColumn]===mapName);

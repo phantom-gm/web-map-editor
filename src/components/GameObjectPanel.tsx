@@ -1,7 +1,9 @@
+import { MAX_VISUAL_OFFSET } from "../lib/objectVisualOffset.cjs";
 import { ObjectSortingPanel } from "./ObjectSortingPanel";
 import { ResourceBrowser } from "./ResourceBrowser";
 import { activateEditorTool } from "../lib/editorCommands";
 import { useState } from "react";
+import { movementLabel, visibleMovementFeedback } from "../lib/gameMoveFeedback";
 import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useWorkspaceSession } from "../lib/gameWorkspace";
@@ -92,6 +94,7 @@ export function GameObjectLibrary() {
 }
 
 export function GameObjectInspector() {
+  const movement = useEditorStore(visibleMovementFeedback);
   const [deltaX, setDeltaX] = useState(1), [deltaY, setDeltaY] = useState(0);
   const selected = useEditorStore(s => s.selectedGameObjectIds);
   const cells = useEditorStore(s => s.selectedBlockedCells);
@@ -114,6 +117,9 @@ export function GameObjectInspector() {
   const transform = (operation: "move" | "duplicate" | "delete", dx = 0, dy = 0) =>
     useEditorStore.getState().transformGameSelection(operation, scene, [dx, dy]);
   const single = objects.length === 1 && !cells.length;
+  const imageOffset = object?.visualOffset ?? [0, 0];
+  const setImageOffset = (x: number, y: number) => useEditorStore.getState().offsetGameObjectVisual(
+    object.entityId, [Number(x.toFixed(8)), Number(y.toFixed(8))], scene);
   const [gx, gy] = object ? objectCellOffset(object.position, object.sourcePosition, scene) : [0, 0];
   return <section className="entity-inspector game-object-inspector" aria-label="게임 오브젝트 속성">
     <div className="ei-head"><strong>{single ? object.name : "묶음 편집"}</strong>
@@ -124,6 +130,25 @@ export function GameObjectInspector() {
     <p className="selection-count" role="status">오브젝트 {selected.length}개 · 이동불가 {cells.length}칸 선택</p>
     {error && <div className="selection-error" role="alert">{error}</div>}
     {objects.length === 1 && <ObjectSortingPanel key={object.entityId} object={object} scene={scene} disabled={locked} cells={cells} />}
+    {single && <fieldset className="object-visual-offset" disabled={!canMove} aria-label="이미지만 미세 조정">
+      <legend>이미지만 미세 조정</legend>
+      <div className="ei-grid2">
+        <label className="ei-row"><span>이미지 가로 (px)</span><NumberField value={Number((imageOffset[0] * 100).toFixed(4))} float
+          min={-MAX_VISUAL_OFFSET * 100} max={MAX_VISUAL_OFFSET * 100} disabled={!canMove}
+          onCommit={n => setImageOffset(n / 100, imageOffset[1])} /></label>
+        <label className="ei-row"><span>이미지 세로 (px)</span><NumberField value={Number((imageOffset[1] * 100).toFixed(4))} float
+          min={-MAX_VISUAL_OFFSET * 100} max={MAX_VISUAL_OFFSET * 100} disabled={!canMove}
+          onCommit={n => setImageOffset(imageOffset[0], n / 100)} /></label>
+      </div>
+      <div className="object-nudge" aria-label="이미지 4픽셀 미세 이동">
+        <button aria-label="이미지만 왼쪽으로 4픽셀" disabled={!canMove || imageOffset[0] - 0.04 < -MAX_VISUAL_OFFSET} onClick={() => setImageOffset(imageOffset[0] - 0.04, imageOffset[1])}>← 4px</button>
+        <button aria-label="이미지만 위로 4픽셀" disabled={!canMove || imageOffset[1] + 0.04 > MAX_VISUAL_OFFSET} onClick={() => setImageOffset(imageOffset[0], imageOffset[1] + 0.04)}>↑ 4px</button>
+        <button aria-label="이미지만 아래로 4픽셀" disabled={!canMove || imageOffset[1] - 0.04 < -MAX_VISUAL_OFFSET} onClick={() => setImageOffset(imageOffset[0], imageOffset[1] - 0.04)}>↓ 4px</button>
+        <button aria-label="이미지만 오른쪽으로 4픽셀" disabled={!canMove || imageOffset[0] + 0.04 > MAX_VISUAL_OFFSET} onClick={() => setImageOffset(imageOffset[0] + 0.04, imageOffset[1])}>→ 4px</button>
+      </div>
+      <p className="object-help">+가로는 오른쪽, +세로는 위쪽입니다. 게임 기준 픽셀로 그림만 옮기며, 셀·이동불가 칸·깊이 값은 유지합니다.</p>
+      <button className="ei-fit" disabled={!canMove || !imageOffset.some(n => n !== 0)} onClick={() => setImageOffset(0, 0)}>이미지 미세 조정 초기화</button>
+    </fieldset>}
     <div className="object-tabs" aria-label="묶음에 넣을 대상">
       <button aria-pressed={!pickingCells} onClick={() => { preview.setSelectionMode("objects"); useEditorStore.getState().setTool("cursor"); }}>오브젝트 선택</button>
       <button aria-pressed={pickingCells} disabled={locked || !canEditCells} onClick={selectBlockedMode}>이동불가 칸 선택</button>
@@ -141,9 +166,10 @@ export function GameObjectInspector() {
     {!!cells.length && <button className="ei-fit" onClick={() => useEditorStore.getState().selectBlockedCells([])}>이동불가 선택 비우기</button>}
     {object && <button className="ei-fit" onClick={() => focusObject(object)}>선택 위치 보기</button>}
     {single && !object.resourceId && <div className="ei-grid2">
-      <label className="ei-row"><span>원본에서 X칸</span><NumberField value={gx} disabled={!canMove} onCommit={n => transform("move", n - gx, 0)} /></label>
-      <label className="ei-row"><span>원본에서 Y칸</span><NumberField value={gy} disabled={!canMove} onCommit={n => transform("move", 0, n - gy)} /></label>
+      <label className="ei-row"><span>원본 대비 X칸</span><NumberField value={gx} disabled={!canMove} onCommit={n => transform("move", n - gx, 0)} /></label>
+      <label className="ei-row"><span>원본 대비 Y칸</span><NumberField value={gy} disabled={!canMove} onCommit={n => transform("move", 0, n - gy)} /></label>
     </div>}
+    {movement && <p className="object-move-summary">직전 이동: {movementLabel(movement)}</p>}
     <div className="object-nudge" aria-label="선택 묶음 한 칸 이동">
       <button aria-label="북서로 한 칸" disabled={!canMove} onClick={() => transform("move", -1, 0)}>↖</button>
       <button aria-label="북동으로 한 칸" disabled={!canMove} onClick={() => transform("move", 0, -1)}>↗</button>

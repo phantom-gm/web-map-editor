@@ -170,9 +170,21 @@ function analyzeMap(mb, catalog, constants, size) {
       coverage.set(k, block);
     }
   }
-  if (!tileCount) reasons.push('Tile_* 바닥이 없는 맵입니다. 오브젝트 바닥은 원본 그대로 보존합니다.');
+  // A new blank canvas can accept its first floor. Keep object floors, native
+  // tile containers and scripted maps protected when there are no Tile_* cells.
+  const emptyCanvas = !tileCount && entities.every(item => {
+    const components = mb.find(item.path)?.jsonString?.['@components'];
+    return Array.isArray(components) && components.every(component => {
+      const type = component['@type'];
+      if (type === 'MOD.Core.MapComponent' || type === COMPONENT.transform) return true;
+      if (type === 'MOD.Core.BackgroundComponent') return component.Type === 2;
+      if (type === 'MOD.Core.FootholdComponent') return Object.keys(component.FootholdsByLayer || {}).length === 0;
+      return false;
+    });
+  });
+  if (!tileCount && !emptyCanvas) reasons.push('Tile_* 바닥이 없는 맵입니다. 오브젝트 바닥은 원본 그대로 보존합니다.');
   return { blocks, coverage, groundEntities: tileCount, totalEntities: entities.length,
-    supported: reasons.length === 0 && tileCount > 0, reasons: [...new Set(reasons)] };
+    supported: reasons.length === 0 && (tileCount > 0 || emptyCanvas), reasons: [...new Set(reasons)] };
 }
 function projectDefaults(raw, mapName) {
   const p = clone(raw || {});
@@ -687,7 +699,7 @@ function inspectLoadedProject(project, state) {
       ...(runtimeProfile.supported.spawn ? { spawnChanged: runtime.spawnChanged } : {}),
       ...(runtimeProfile.supported.traps ? {trapChanges: Object.fromEntries(['moved','added','removed','updated'].map(k => [k, runtime.traps[k].length]))} : {}),
       runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
-      objectChanges: { moved: objects.moved.length, removed: objects.removed.length, added: objects.added.length },
+      objectChanges: { moved: new Set([...objects.moved, ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size, removed: objects.removed.length, added: objects.added.length },
       ...(objects.sorting.length ? { objectSortingChanged: objects.sorting.length } : {}),
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
@@ -699,7 +711,7 @@ function inspectLoadedProject(project, state) {
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
-      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added)].map(e => e.entityId)).size,
+      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size,
       warnings } };
 }
 // Shared in-memory map construction keeps preview and export on the same packing path.
@@ -709,7 +721,7 @@ function buildCandidateMap(project, checked) {
   if (stable(deps.constants) !== stable(manifest.constants)) fail('STALE_SOURCE', '게임 좌표 상수가 변경되었습니다.');
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mb = deps.MapBuilder.read(originalPath);
-  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added)].map(e => e.record.item.path));
+  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.record.item.path));
   const removedNames = new Set(affected.map(b => b.name));
   const preserved = mb.listEntities().filter(e => !removedNames.has(e.name) && !changedPaths.has(e.path)).map(e => [e.path, stable(mb.find(e.path))]);
   if (report.changedCells > 0) {
@@ -803,7 +815,15 @@ function previewFromChecked(project, checked) {
   const scene = previewMapSprites(mb, blocks);
   const nativeObjects = objectEdits.objectScene(mb, checked.objectProfile, checked.objects);
   const objectIds = new Map(nativeObjects.objects.map(o => [o.spriteId, o.entityId]));
-  for (const sprite of scene.sprites) if (objectIds.has(sprite.id)) sprite.objectEntityId = objectIds.get(sprite.id);
+  const objectsById = new Map(nativeObjects.objects.map(o => [o.entityId, o]));
+  for (const sprite of scene.sprites) if (objectIds.has(sprite.id)) {
+    sprite.objectEntityId = objectIds.get(sprite.id);
+    const object = objectsById.get(sprite.objectEntityId);
+    if (object.visualOffset) {
+      sprite.visualOffset = [...object.visualOffset];
+      sprite.position = [...object.position];
+    }
+  }
   for (const npc of checked.npcs.descriptors) if (npc.enabled && npc.ruid) scene.sprites.push({
     id: 'npc:' + npc.entityId, name: npc.name, path: '/maps/' + manifest.mapName + '/NpcPreview_' + npc.entityId,
     ruid: npc.ruid, kind: 'other', npcEntityId: npc.entityId, position: npc.position, scale: [npc.bodyScale, npc.bodyScale],
@@ -862,7 +882,11 @@ function comparisonFromChecked(checked, scene) {
     npcs: checked.npcs.comparison, ...checked.runtime.comparison,
     objects: {
       // Editor IDs are stable across requests; generated native GUIDs intentionally are not.
-      moved: objects.moved.map(e => ({ entityId: e.entityId, from: [...e.record.descriptor.sourcePosition], to: [...scene.objects.find(o => o.entityId === e.entityId).position] })),
+      moved: [...new Map([...objects.moved, ...objects.visualOffsets.filter(e => !e.added)].map(e => [e.entityId, e])).values()].map(e => {
+        const object = scene.objects.find(o => o.entityId === e.entityId), offset = object.visualOffset || [0, 0];
+        return { entityId: e.entityId, from: [...e.record.descriptor.sourcePosition],
+          to: [object.position[0] + offset[0], object.position[1] + offset[1], object.position[2]] };
+      }),
       added: objects.added.map(e => ({ entityId: e.entityId, prototypeId: e.prototypeId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })),
       ...(objects.sorting.length ? { sorted: objects.sorting.map(e => ({ entityId: e.entityId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })) } : {}),
       removed: objects.removed.map(e => ({ entityId: e.entityId, position: [...e.record.descriptor.sourcePosition] }))
@@ -891,7 +915,9 @@ function validateSortingDepth(root, checked, mapPath, originalPath) {
   try {
     console.log = console.warn = () => undefined;
     before = runCheck({ mapPath: originalPath, jsonPath });
-    after = runCheck({ mapPath, jsonPath });
+    after = runCheck({ mapPath, jsonPath, ...(checked.walk.changed ? {
+      blocked: { mapName: checked.manifest.mapName, set: new Set(checked.walk.after) }
+    } : {}) });
   } finally { console.log = log; console.warn = warn; }
   // Existing unrelated map debt is preserved; new sorting errors never reach an apply package.
   const counters = ['dimDrift', 'totNew', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh'];
@@ -907,7 +933,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const references = captureDatasetReferences(root, manifest);
   if (checked.npcs.edited && checked.npcSource.stale) fail('STALE_NPC_SOURCE', 'NPC 원본이 변경되었습니다. NPC 원본을 새로 가져온 후 다시 편집해 주세요.');
   if (checked.npcs.edited && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).length) fail('STALE_NPC_SOURCE', 'NPC 원본이 후보 준비 중 변경되었습니다. 다시 가져오세요.');
-  if (checked.runtime.edited && checked.runtimeSource.stale) fail('STALE_RUNTIME_SOURCE', '몬스터·포탈·시작점 원본이 변경되었습니다. 런타임 원본을 새로 가져오세요.');
+  if (checked.runtime.edited && checked.runtimeSource.stale) fail('STALE_RUNTIME_SOURCE',
+    '이 맵에서 사용하는 배치·종류·외형 원본이 변경되었습니다: ' + checked.runtimeSource.changedFiles.map(file => path.basename(file)).join(', ') +
+    '. 저장된 작업은 유지됩니다. 런타임 원본을 확인해 주세요.');
   const runtimeCandidates = checked.runtime.edited ? runtimeEdits.buildCandidates(checked.runtime, readRuntimeFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)) : [];
   if (runtimeUsesNpcOccupancy(report) && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).includes(checked.npcs.profile.spawnRelative)) fail('STALE_NPC_SOURCE', '현재 맵 NPC 배치가 변경되어 스폰 위치를 검증할 수 없습니다. NPC 원본을 새로 가져오세요.');
   const npcReference = checked.npcs.edited ? references.captured.find(r => r.relative === checked.npcs.profile.spawnRelative) : null;

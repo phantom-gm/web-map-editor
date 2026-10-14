@@ -1,5 +1,6 @@
 'use strict';
 const {parseCsv,world}=require('./npcs.cjs');
+const { trapEffectIds, catalogSignature } = require('./runtime-dependencies.cjs');
 const hash=bytes=>require('node:crypto').createHash('sha256').update(bytes).digest('hex');
 const ID=/^[A-Za-z0-9_-]{1,128}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const fields=['cell','maxCell','abnormalityId'];
@@ -40,10 +41,10 @@ function inspect(raw,profile,constants,size,portals=[],incoming=[]){
  return{profile,records,changed,added,removed,moved,updated,descriptors,warnings,edited:changed.length+added.length+removed.length,echo:patch.updated.length||patch.removed.length||patch.added.length?patch:null};
 }
 function signature(files,map){const f=files.DT_MapTrap;if(!f)return null;const p=parseCsv(f.bytes,['TrapID','MapName']);return JSON.stringify({header:p.header,rows:p.rows.filter(r=>r.data.MapName===map).map(r=>r.data)});}
-function drift(profile,current){const out=[];if(signature(profile.files,profile.mapName)!==signature(current,profile.mapName))out.push(profile.files.DT_MapTrap?.relative||current.DT_MapTrap?.relative||'DT_MapTrap.csv');for(const n of ['DT_Abnormality','ST_ABNName'])if(!same(profile.files[n]?.bytes?.toString('base64'),current[n]?.bytes?.toString('base64')))out.push(profile.files[n]?.relative||current[n]?.relative||n+'.csv');return out;}
+function drift(profile,current,edit){const out=[],deps={effectIds:trapEffectIds(profile,edit)};if(signature(profile.files,profile.mapName)!==signature(current,profile.mapName))out.push(profile.files.DT_MapTrap?.relative||current.DT_MapTrap?.relative||'DT_MapTrap.csv');for(const n of ['DT_Abnormality','ST_ABNName']){try{if(catalogSignature(profile.files,n,deps)!==catalogSignature(current,n,deps))out.push(profile.files[n]?.relative||current[n]?.relative||n+'.csv');}catch{out.push(profile.files[n]?.relative||current[n]?.relative||n+'.csv');}}return out;}
 const quote=s=>/[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
 function build(edit,current){
- if(!edit.edited)return[];if(drift(edit.profile,current).length)fail('STALE_TRAP_SOURCE','함정 원본이나 상태이상 정의가 바뀌었습니다. 원본을 다시 읽어 주세요.');
+  if(!edit.edited)return[];if(drift(edit.profile,current,edit).length)fail('STALE_TRAP_SOURCE','함정 원본이나 상태이상 정의가 바뀌었습니다. 원본을 다시 읽어 주세요.');
  const latest=analyze(current,edit.profile.mapName);if(!latest.supported)fail('UNSUPPORTED_TRAPS',latest.reasons.join(' '));
  const file=current.DT_MapTrap,p=parseCsv(file.bytes,['TrapID','MapName']),byId=new Map(p.rows.map(r=>[r.data.TrapID,r]));for(const r of edit.added)if(byId.has(r.id))fail('TRAP_ID_COLLISION','새 함정 ID가 최신 CSV에 이미 있습니다.');
  const changed=new Map(edit.changed.map(r=>[r.id,r])),deleted=new Set(edit.removed.map(r=>r.id)),raw=new Map(p.rows.map(r=>[r.raw,r]));

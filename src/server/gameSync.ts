@@ -59,9 +59,9 @@ interface SyncCore {
 async function core(): Promise<SyncCore> {
   // Keep the local CJS compiler outside the browser/Next bundle. It uses the
   // installed MapBuilder and explicit filesystem paths at request time only.
-  const modulePath = path.join(process.cwd(), "scripts", "game-sync", "core.cjs");
+  const modulePath = path.join(process.cwd(), "scripts", "game-sync", "load-core.cjs");
   const loaded = await import(/* webpackIgnore: true */ pathToFileURL(modulePath).href);
-  return loaded.default as SyncCore;
+  return loaded.default.loadGameSyncCore(process.cwd(), { reload: process.env.NODE_ENV === "development" }) as SyncCore;
 }
 
 export function listGameMaps(): string[] {

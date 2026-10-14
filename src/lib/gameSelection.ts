@@ -1,7 +1,7 @@
 import { SURFACE_EPSILON } from "./objectSorting.cjs";
 import { cellKey, parseCellKey, type CellKey } from "./cell";
 import {
-  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting,
+  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting, setGameObjectVisualOffset,
   type GameObjectDescriptor, type GameObjectEdits, type GameObjectPosition,
 } from "./gameObjects";
 import type { GamePreviewScene } from "./gamePreview";
@@ -83,6 +83,8 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
       expected[2] = support.position[2] - SURFACE_EPSILON;
     }
     if (!near(object.position, expected)) throw stale();
+    const visualOffset = input.gameObjectEdits?.visualOffsets?.find(row => row.entityId === id)?.offset ?? [0, 0];
+    if (!near(object.visualOffset ?? [0, 0], visualOffset)) throw stale();
     if (prototype.resourceId && object.scale !== (addition?.scale ?? 1)) throw stale();
     if (object.canMove !== prototype.canMove || object.canDelete !== prototype.canDelete || object.canDuplicate !== prototype.canDuplicate) throw stale();
   }
@@ -174,6 +176,7 @@ export function planGameSelectionTransform(
         : removeGameObjectEdit(gameObjectEdits, object.entityId);
   }
   if (operation === "duplicate") for (let i = 0; i < objects.length; i++) {
+    if (objects[i].visualOffset) gameObjectEdits = setGameObjectVisualOffset(gameObjectEdits, copyIds[i], objects[i].visualOffset!);
     const setting = objects[i].sortSetting;
     if (setting) {
       const index = setting.mode === "surface" ? ids.indexOf(setting.supportId) : -1;

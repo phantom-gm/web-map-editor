@@ -2,13 +2,14 @@ import { GameRuntimeInspector } from "./GameRuntimePanel";
 import { gameRuntimeHit, runtimeDescriptor, sceneWithRuntimeDraft, drawGameRuntime } from "../lib/gameRuntimePreview";
 import type { RuntimeCell, RuntimeSelection, RuntimeKind } from "../lib/gameRuntime";
 import { drawGameComparison } from "../lib/gameComparison";
+import { drawMovementFeedback, makeMovementFeedback, movementLabel, sceneWithMovementFeedback, visibleMovementFeedback } from "../lib/gameMoveFeedback";
 import { GameObjectInspector } from "./GameObjectPanel";
 import { previewScreenToWorld, gameObjectHitCandidates, snapObjectPosition, objectCellOffset, sceneWithGameObjectGroupDraft, drawGameObjectSelection, gameObjectsInScreenRect } from "../lib/gameObjectPreview";
 import { GameNpcInspector } from "./GameNpcPanel";
 import { gameNpcHitCandidates, sceneWithNpcDraft, drawGameNpcLabels, drawGameNpcSelection } from "../lib/gameNpcPreview";
 import type { GameNpcCell } from "../lib/gameNpc";
 import type { GameObjectDescriptor, GameObjectPosition } from "../lib/gameObjects";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore, captureEditorSnapshot, type Snapshot, type VisualFlags } from "../store/editorStore";
 import {
   TW,
@@ -606,6 +607,7 @@ export function CanvasGrid() {
   const selectedGameNpcId = useEditorStore(state => state.selectedGameNpcId);
   const [npcDraft, setNpcDraft] = useState<{ id: string; cell: GameNpcCell } | null>(null);
   const npcDrag = useRef<{ id:string; cell:GameNpcCell; pointer:GameObjectPosition; version:number; baselineId:string } | null>(null);
+  const movement = useEditorStore(visibleMovementFeedback);
   const selectedGameObjectId = useEditorStore(state => state.selectedGameObjectId);
   const selectedGameObjectIds = useEditorStore(state => state.selectedGameObjectIds);
   const selectedBlockedCells = useEditorStore(state => state.selectedBlockedCells);
@@ -653,6 +655,18 @@ export function CanvasGrid() {
   const visual = useEditorStore((s) => s.visual);
   const stand = useEditorStore(selectStandCtx); // 엔티티·이동불가 버전이 바뀔 때만 새 객체
   const setCamera = useEditorStore((s) => s.setCamera);
+
+  const activeMovement = useMemo(() => {
+    if (!gameSync || !showScene || comparisonEnabled || workspaceLoading || previewStatus === "error" ||
+      previewScene?.baselineId !== gameSync.baselineId || activeTool !== "cursor") return null;
+    if (!objectDraft) return movement;
+    const cells = objectDraft.cells.map(key => {
+      const [x, y] = parseCellKey(key);
+      return cellKey(x + objectDraft.delta[0], y + objectDraft.delta[1]);
+    });
+    return makeMovementFeedback(previewScene, { documentNonce: 0, gameObjectsVer: 0, blockedVer: 0 },
+      objectDraft.ids, objectDraft.cells, cells, objectDraft.delta);
+  }, [gameSync, showScene, comparisonEnabled, workspaceLoading, previewStatus, previewScene, activeTool, objectDraft, movement]);
 
   const cancelGesture = useCallback((rollback = true) => {
     const before = strokeBefore.current, hadDrawing = mode.current === "paint" || mode.current === "blockErase" || mode.current === "rect" || mode.current === "moveEntity";
@@ -1278,7 +1292,9 @@ export function CanvasGrid() {
     if (!ctx) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const objectScene = previewScene && objectDraft ? sceneWithGameObjectGroupDraft(previewScene, objectDraft.ids, objectDraft.delta) : previewScene;
+    const immediateScene = previewScene && movement && previewStatus !== "error"
+      ? sceneWithMovementFeedback(previewScene, movement) : previewScene;
+    const objectScene = immediateScene && objectDraft ? sceneWithGameObjectGroupDraft(immediateScene, objectDraft.ids, objectDraft.delta) : immediateScene;
     const npcScene = objectScene && npcDraft ? sceneWithNpcDraft(objectScene, npcDraft.id, npcDraft.cell) : objectScene;
     const shownScene = npcScene && runtimeDraft ? sceneWithRuntimeDraft(npcScene,runtimeDraft.selection,runtimeDraft.cell) : npcScene;
     const comparisonReady = previewStatus === "ready" && comparisonBaseline?.baselineId === gameSync?.baselineId &&
@@ -1301,6 +1317,7 @@ export function CanvasGrid() {
       drawGameComparison(ctx, comparisonBaseline, previewScene, comparison, previewImages, camera, comparisonFilters);
     }
     if (preview?.scene && !comparisonEnabled) {
+      if (activeMovement) drawMovementFeedback(ctx, activeMovement, preview.scene, previewImages, camera, dims);
       if (selectedGameNpcId) drawGameNpcSelection(ctx, selectedGameNpcId, preview.scene, previewImages, camera);
       for (const id of selectedGameObjectIds) drawGameObjectSelection(ctx, id, preview.scene, previewImages, camera, id === selectedGameObjectId ? "#ffd166" : "#75dce8");
       const highlight = new Set(selectedBlockedCells.map(key => {
@@ -1357,7 +1374,7 @@ export function CanvasGrid() {
     selectedGameObjectId,
     selectedGameObjectIds,
     selectedBlockedCells,
-    objectDraft, npcDraft, selectedGameNpcId, runtimeDraft, selectedGameRuntime, runtimePanel,
+    movement, activeMovement, objectDraft, npcDraft, selectedGameNpcId, runtimeDraft, selectedGameRuntime, runtimePanel,
     selectionBox,
   ]);
 
@@ -1368,6 +1385,11 @@ export function CanvasGrid() {
         cancelGesture(); fittedPreviewBaseline.current = useEditorStore.getState().gameSync?.baselineId ?? null;
         useEditorStore.getState().zoomAt(factor, dims.w / 2, dims.h / 2);
       }} />
+      {activeMovement && <div className="object-move-feedback" role="status" aria-live="polite">
+        <strong>{objectDraft ? "이동 미리보기" : "직전 이동"} · {movementLabel(activeMovement)}</strong>
+        <span><i className="move-before-dot" />이동 전 <i className="move-after-dot" />현재 위치</span>
+        {!objectDraft && <button type="button" aria-label="이동 표시 닫기" onClick={() => useEditorStore.getState().clearGameMoveFeedback()}>×</button>}
+      </div>}
       {placementIssue && <div className="canvas-placement-notice" role="alert"><span>{placementIssue}</span><button type="button" aria-label="배치 안내 닫기" onClick={() => setPlacementIssue(null)}>×</button></div>}
       {gameSync && comparisonEnabled && <div className="comparison-view-badge" role="status">
         {previewStatus !== "ready" ? "비교 준비 중" : comparisonMode === "original" ? "가져온 원본" : comparisonMode === "edited" ? "현재 수정본" : "현재 수정본 + 변경 강조"} · 보기 전용

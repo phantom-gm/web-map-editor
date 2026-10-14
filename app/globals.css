@@ -1201,3 +1201,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
  .app .toolbar-options summary { padding:8px; font-size:12px; }
  .app .history-tools { margin-left:auto; }
 }
+
+/* Per-placement sprite adjustment is distinct from moving the cell selection. */
+.object-visual-offset { margin: 12px 0; padding: 12px; min-width: 0; border: 1px solid #41666a; border-radius: 8px; background: #193038; }
+.object-visual-offset legend { padding: 0 6px; color: #a8e4db; font-weight: 600; }
+.object-visual-offset .object-nudge button { padding-inline: 3px; font-size: 12px; }
+.object-visual-offset .object-help { margin: 8px 0; }
+.object-visual-offset .ei-fit { margin-bottom: 0; }
+
+/* Last successful edit: screen-space feedback only, never saved with the map. */
+.object-move-feedback {
+  position: absolute; left: 16px; bottom: 70px; z-index: 20;
+  display: flex; flex-direction: column; gap: 6px;
+  max-width: calc(100% - 360px); padding: 12px 38px 12px 14px;
+  color: #f1f6f8; background: rgba(15, 31, 41, .96);
+  border: 1px solid #4e8794; border-radius: 9px;
+  box-shadow: 0 3px 16px #0005; font-size: 13px;
+}
+.object-move-feedback strong { font-weight: 600; }
+.object-move-feedback span { display: flex; align-items: center; gap: 6px; color: #b6cbd4; font-size: 12px; }
+.object-move-feedback i { width: 8px; height: 8px; border-radius: 50%; }
+.move-before-dot { background: #75dce8; }
+.move-after-dot { background: #ffd166; margin-left: 10px; }
+.object-move-feedback button { position: absolute; top: 6px; right: 6px; padding: 3px 7px; background: transparent; border: 0; color: #c1d6df; }
+.object-move-summary { padding: 8px 10px; margin: 0; color: #8fe5ee; background: #233943; border-radius: 5px; font-size: 12px; }
+@media (max-width: 750px) { .object-move-feedback { max-width: calc(100% - 32px); bottom: 60px; } }

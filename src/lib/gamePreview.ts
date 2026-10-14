@@ -17,6 +17,8 @@ export interface GamePreviewConstants {
 export interface GamePreviewSprite {
   id: string;
   objectEntityId?: string;
+  /** World XY translation of the image, separate from the logical position/Z. */
+  visualOffset?: [number, number];
   npcEntityId?: string;
   monsterEntityId?: string;
   portalEntityId?: string;
@@ -131,8 +133,11 @@ export function previewSpriteGeometry(
   const c = kx * sin * sy, d = ky * cos * sy;
   const pivotX = asset.pivot[0] * asset.width;
   const pivotY = (1 - asset.pivot[1]) * asset.height;
-  const tx = anchor[0] - a * pivotX - c * pivotY;
-  const ty = anchor[1] - b * pivotX - d * pivotY;
+  const visualAnchor = sprite.visualOffset ? previewWorldToScreen([
+    sprite.position[0] + sprite.visualOffset[0], sprite.position[1] + sprite.visualOffset[1],
+  ], scene, camera) : anchor;
+  const tx = visualAnchor[0] - a * pivotX - c * pivotY;
+  const ty = visualAnchor[1] - b * pivotX - d * pivotY;
   const corners = [[0, 0], [asset.width, 0], [0, asset.height], [asset.width, asset.height]]
     .map(([x, y]) => [a * x + c * y + tx, b * x + d * y + ty]);
   return {

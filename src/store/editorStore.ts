@@ -12,10 +12,11 @@ import { defaultNpcCatalog, parseNpcCatalog, type NpcCatalog } from "../lib/npcC
 import { exportEntities } from "../lib/entityExport";
 import { exportDrift, type DriftItem } from "../lib/exportDrift";
 import { computeSortOffsets, type SortOffsetResult } from "../lib/sortOffsetCheck";
+import { makeMovementFeedback, type GameMoveFeedback } from "../lib/gameMoveFeedback";
 import type { GamePreviewScene } from "../lib/gamePreview";
 import { currentGameObjects, mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
 import type { ObjectSortSetting } from "../lib/objectSorting.cjs";
-import { setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
+import { setGameObjectVisualOffset, setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
 import { addGameNpcEdit, updateGameNpcEdit, removeGameNpcEdit, parseGameNpcEdits, parseGameNpcSync, npcEditsKey, npcCellInBounds, type GameNpcEdits, type GameNpcSync, type GameNpcPatch, type GameNpcCell } from "../lib/gameNpc";
 import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
@@ -176,6 +177,8 @@ export interface EditorState extends RuntimeProjectFields {
   selectedGameObjectIds: string[];
   selectedBlockedCells: CellKey[];
   gameSelectionError: string | null;
+  gameMoveFeedback: GameMoveFeedback | null;
+  clearGameMoveFeedback: () => void;
   size: [number, number];
   camera: Camera;
   hover: [number, number] | null;
@@ -270,6 +273,7 @@ export interface EditorState extends RuntimeProjectFields {
   moveGameObjectTo: (entityId: string, position: GameObjectPosition, commit?: boolean) => void;
   addGameResourceReferences: (ids: string[]) => void;
   scaleGameResource: (entityId: string, scale: number) => void;
+  offsetGameObjectVisual: (entityId: string, offset: GameObjectPosition, scene: GamePreviewScene) => void;
   sortGameObject: (entityId: string, setting: ObjectSortSetting | undefined, scene: GamePreviewScene) => void;
   depthGameResource: (entityId: string, depthOffset: number) => void;
   addGameObject: (prototypeId: string, position: GameObjectPosition, scale?: number) => string | null;
@@ -363,6 +367,8 @@ const runtimeCommit = (s: EditorState, fields: RuntimeProjectFields, selection: 
 });
 
 export const useEditorStore = create<EditorState>((set, get) => ({
+  gameMoveFeedback: null,
+  clearGameMoveFeedback: () => set({ gameMoveFeedback: null }),
   mapName: "newmap",
   gameSync: undefined,
   gameObjectEdits: undefined,
@@ -943,7 +949,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
         selectedGameObjectIds, selectedGameObjectId: selectedGameObjectIds[selectedGameObjectIds.length - 1] ?? null,
         selectedBlockedCells: mode === "replace" ? [] : s.selectedBlockedCells.filter(key => s.blocked.has(key)),
-        selectedEntityId: null, gameSelectionError: null,
+        selectedEntityId: null, gameSelectionError: null, gameMoveFeedback: null,
       };
     }),
   selectBlockedCells: (cells, mode = "replace") =>
@@ -951,12 +957,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
       selectedBlockedCells: mergeGameSelection(s.selectedBlockedCells.filter(key => s.blocked.has(key)),
         cells.filter(key => s.blocked.has(key)), mode),
-      selectedEntityId: null, gameSelectionError: null,
+      selectedEntityId: null, gameSelectionError: null, gameMoveFeedback: null,
     })),
   clearGameSelection: () => set({
     selectedGameRuntime: null, gameRuntimeError: null, selectedGameNpcId: null, gameNpcError: null,
     selectedGameObjectId: null, selectedGameObjectIds: [], selectedBlockedCells: [],
-    selectedEntityId: null, gameSelectionError: null,
+    selectedEntityId: null, gameSelectionError: null, gameMoveFeedback: null,
   }),
   transformGameSelection: (operation, scene, delta = [0, 0]) => {
     let success = false;
@@ -964,9 +970,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       try {
         const plan = planGameSelectionTransform(s, operation, scene, delta, newEntityId);
         success = true;
-        if (!plan.changed) return { gameSelectionError: null };
+        if (!plan.changed) return { gameSelectionError: null, gameMoveFeedback: null };
         const before = captureEditorSnapshot(s);
         return {
+          gameMoveFeedback: operation === "move" ? makeMovementFeedback(scene, {
+            documentNonce: s.documentNonce,
+            gameObjectsVer: s.gameObjectsVer + (plan.objectsChanged ? 1 : 0),
+            blockedVer: s.blockedVer + (plan.blockedChanged ? 1 : 0),
+          }, s.selectedGameObjectIds, s.selectedBlockedCells, plan.selectedBlockedCells, delta) : null,
           gameObjectEdits: plan.gameObjectEdits, blocked: plan.blocked,
           gameObjectsVer: s.gameObjectsVer + (plan.objectsChanged ? 1 : 0),
           blockedVer: s.blockedVer + (plan.blockedChanged ? 1 : 0),
@@ -1006,6 +1017,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const gameObjectEdits = scaleGameResourceEdit(s.gameObjectEdits, entityId, scale);
       if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
       return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
+  }),
+  offsetGameObjectVisual: (entityId, offset, scene) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const object = currentGameObjects(s, scene).get(entityId);
+      if (!object?.canMove) throw new Error("보호된 오브젝트의 이미지는 조정할 수 없습니다.");
+      const gameObjectEdits = setGameObjectVisualOffset(s.gameObjectEdits, entityId, offset);
+      if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+      const previous = object.visualOffset ?? [0, 0];
+      const gameMoveFeedback = makeMovementFeedback(scene, {
+        documentNonce: s.documentNonce, gameObjectsVer: s.gameObjectsVer + 1, blockedVer: s.blockedVer,
+      }, [entityId], [], [], [(offset[0] - previous[0]) * 100, (offset[1] - previous[1]) * 100], "pixel");
+      return { gameMoveFeedback, gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null,
         undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
     } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
   }),

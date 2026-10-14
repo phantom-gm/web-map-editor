@@ -13,6 +13,7 @@ vi.mock("react", async importOriginal => ({
   useRef: (current: unknown) => ({ current }),
   useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, () => undefined],
   useCallback: (callback: unknown) => callback,
+  useMemo: (factory: () => unknown) => factory(),
 }));
 vi.mock("../store/editorStore", async importOriginal => {
   const actual = await importOriginal<typeof import("../store/editorStore")>();

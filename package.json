@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "game:sync": "node scripts/game-sync/cli.cjs",
-    "test:game-sync": "node --test scripts/game-sync/core.test.cjs"
+    "test:game-sync": "node --test scripts/game-sync/*.test.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

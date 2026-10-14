@@ -1,3 +1,4 @@
+import { parseObjectVisualOffsets, type ObjectVisualOffset } from "./objectVisualOffset.cjs";
 import { parseObjectSorting, type ObjectSortSetting, type ObjectSortEdit } from "./objectSorting.cjs";
 /** Sparse edits to native game objects; legacy project entities stay unchanged. */
 export type GameObjectPosition = [number, number];
@@ -7,6 +8,7 @@ export interface GameObjectEdits {
   version: 1;
   resources?: string[];
   sorting?: ObjectSortEdit[];
+  visualOffsets?: ObjectVisualOffset[];
   moved: GameObjectMove[];
   removed: string[];
   added: GameObjectAddition[];
@@ -19,6 +21,8 @@ export interface GameObjectDescriptor {
   ruid: string;
   position: [number, number, number];
   sourcePosition: [number, number, number];
+  /** Image translation in world units; position remains the logical anchor. */
+  visualOffset?: [number, number];
   canMove: boolean;
   canDuplicate: boolean;
   canDelete: boolean;
@@ -44,7 +48,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 const empty = (): GameObjectEdits => ({ version: 1, moved: [], removed: [], added: [] });
 function compact(value: GameObjectEdits): GameObjectEdits | undefined {
-  return value.moved.length || value.removed.length || value.added.length || value.resources?.length || value.sorting?.length ? value : undefined;
+  return value.moved.length || value.removed.length || value.added.length || value.resources?.length || value.sorting?.length || value.visualOffsets?.length ? value : undefined;
 }
 
 /** Validate before changing editor state. Absence and an empty v1 overlay both mean no native edits. */
@@ -57,6 +61,7 @@ export function parseGameObjectEdits(value: unknown): GameObjectEdits | undefine
   const resources = value.resources;
   if (resources !== undefined && (!Array.isArray(resources) || resources.length > 500 || new Set(resources).size !== resources.length || resources.some(id => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)))) throw new Error("서버 소재 목록을 확인하세요.");
   const sorting = parseObjectSorting(value.sorting);
+  const visualOffsets = parseObjectVisualOffsets(value.visualOffsets);
   const seen = new Set<string>();
   const take = (id: unknown): string => {
     if (!validId(id) || seen.has(id)) throw new Error("게임 오브젝트 ID가 올바르지 않거나 중복되었습니다.");
@@ -81,7 +86,8 @@ export function parseGameObjectEdits(value: unknown): GameObjectEdits | undefine
     throw new Error("복제 원본은 게임 기준 배치의 오브젝트여야 합니다.");
   }
   if (sorting.some(row => removed.includes(row.entityId) || row.setting.mode === "surface" && removed.includes(row.setting.supportId))) throw new Error("정렬 대상이나 받치는 가구가 삭제되어 있습니다.");
-  return compact({ version: 1, moved, removed, added, ...(sorting.length ? { sorting } : {}), ...(resources !== undefined ? { resources: [...resources] as string[] } : {}) });
+  if (visualOffsets.some(row => removed.includes(row.entityId))) throw new Error("삭제된 오브젝트의 이미지는 조정할 수 없습니다.");
+  return compact({ version: 1, moved, removed, added, ...(visualOffsets.length ? { visualOffsets } : {}), ...(sorting.length ? { sorting } : {}), ...(resources !== undefined ? { resources: [...resources] as string[] } : {}) });
 }
 
 function checkTarget(entityId: string, position?: GameObjectPosition): void {
@@ -126,7 +132,7 @@ export function removeGameObjectEdit(current: GameObjectEdits | undefined, entit
   if (edits.removed.includes(entityId)) return current;
   const addition = edits.added.some(item => item.entityId === entityId);
   return compact({
-    ...edits, ...(edits.sorting ? { sorting: edits.sorting.filter(row => row.entityId !== entityId) } : {}), moved: edits.moved.filter(item => item.entityId !== entityId),
+    ...edits, ...(edits.visualOffsets ? { visualOffsets: edits.visualOffsets.filter(row => row.entityId !== entityId) } : {}), ...(edits.sorting ? { sorting: edits.sorting.filter(row => row.entityId !== entityId) } : {}), moved: edits.moved.filter(item => item.entityId !== entityId),
     added: edits.added.filter(item => item.entityId !== entityId),
     removed: addition ? edits.removed : [...edits.removed, entityId],
   });
@@ -154,4 +160,13 @@ export function depthGameResourceEdit(current: GameObjectEdits | undefined, enti
   const target = current?.added.find(item => item.entityId === entityId);
   if (!target?.prototypeId.startsWith("resource_")) throw new Error("새 서버 소재만 앞뒤를 보정할 수 있습니다.");
   return parseGameObjectEdits({ ...current, added: current!.added.map(item => item.entityId === entityId ? { ...item, depthOffset } : item) })!;
+}
+
+/** Per-placement image translation; never changes grid moves or blocked cells. */
+export function setGameObjectVisualOffset(current: GameObjectEdits | undefined, entityId: string, offset: GameObjectPosition): GameObjectEdits | undefined {
+  checkTarget(entityId, offset);
+  const edits = current ?? empty();
+  if (edits.removed.includes(entityId)) throw new Error("삭제된 오브젝트의 이미지는 조정할 수 없습니다.");
+  const visualOffsets = [...(edits.visualOffsets ?? []).filter(row => row.entityId !== entityId), { entityId, offset }];
+  return parseGameObjectEdits({ ...edits, visualOffsets });
 }
