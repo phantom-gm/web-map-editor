@@ -10,6 +10,10 @@ const DEPTH = 'script.IsoDepthMetaComponent';
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const clone = value => JSON.parse(JSON.stringify(value));
 const near = (a, b) => Math.abs(a - b) <= 1e-7;
+// Game IsoProjectLogic.BACKDROP_ORDER (build_map export): above the floor, behind every entity.
+// The 'wall' sort mode (UI: 배경) bakes it for back walls, wall hangings and floor patches.
+// core.loadDependencies fails if the game's value ever differs.
+const BACKDROP_ORDER = -998;
 function fail(code, message) { const error = new Error(message); error.name = 'GameSyncError'; error.code = code; throw error; }
 function vector(v, fallback) { return fallback.map((n, i) => Number(v?.[['x', 'y', 'z', 'w'][i]] ?? n)); }
 function sortInfo(mb, name) {
@@ -151,7 +155,7 @@ function inspectObjectEdits(value, profile, constants) {
     if (row.setting.mode === 'surface') {
       const support = target(row.setting.supportId), mode = settings.get(row.setting.supportId)?.mode;
       const order = support.native.jsonString['@components'].find(c => c['@type'] === SR).OrderInLayer ?? 0;
-      if (mode === 'surface' || mode === 'wall' || (!mode && order !== 0)) fail('INVALID_OBJECT_SUPPORT', '받치는 대상은 바닥 가구여야 합니다. 벽 장식이나 다른 소품은 선택할 수 없습니다.');
+      if (mode === 'surface' || mode === 'wall' || (!mode && order !== 0)) fail('INVALID_OBJECT_SUPPORT', '받치는 대상은 바닥 가구여야 합니다. 배경이나 다른 소품은 선택할 수 없습니다.');
     }
     // Game BaseW/BaseH = native size / ppu / 0.64. A value far below that (e.g. px/100 authored
     // elsewhere) shrinks the occluder height and hides footprint checks; reject it when the
@@ -224,7 +228,7 @@ function applyObjectEdits(mb, edits, stable) {
     const tf = clone(mb.component(name, TF));
     const prior = mb.component(name, DEPTH) || { '@type': DEPTH };
     const anchor = objectAnchor([tf.Position.x, tf.Position.y], edits.constants);
-    const order = s.mode === 'wall' ? -998 : 0;
+    const order = s.mode === 'wall' ? BACKDROP_ORDER : 0;
     const meta = { ...clone(prior), GX: anchor[0], GY: anchor[1], W: 1, H: 1, BaseW: 0, BaseH: 0,
       ScaleX: Math.abs(tf.Scale?.x ?? 1), ScaleY: Math.abs(tf.Scale?.y ?? 1), SortPadX: 0, StaticOrder: order };
     if (s.mode === 'floor') Object.assign(meta, { GX: anchor[0] + s.offset[0], GY: anchor[1] + s.offset[1],
@@ -316,4 +320,4 @@ function objectScene(mb, profile, edits) {
   }
   return { objects, objectPrototypes: [...profile.records.values()].map(r => r.descriptor) };
 }
-module.exports = { validateResource, addResourcePrototypes, analyzeObjects, inspectObjectEdits, applyObjectEdits, objectScene };
+module.exports = { BACKDROP_ORDER, validateResource, addResourcePrototypes, analyzeObjects, inspectObjectEdits, applyObjectEdits, objectScene };

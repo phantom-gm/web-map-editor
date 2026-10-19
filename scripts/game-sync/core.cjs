@@ -109,6 +109,9 @@ function loadDependencies(root) {
   const exported = require(constantFile);
   const constants = Object.fromEntries(CONSTANT_KEYS.map(k => [k, exported[k]]));
   if (Object.values(constants).some(v => !Number.isFinite(v))) fail('INVALID_CONSTANTS', '게임 좌표 상수가 유효하지 않습니다.');
+  // Older game commits predate the named backdrop plane; when it is exported it must match what the editor bakes.
+  if (exported.BACKDROP_ORDER !== undefined && exported.BACKDROP_ORDER !== objectEdits.BACKDROP_ORDER) fail('INVALID_CONSTANTS',
+    '게임 배경 평면(BACKDROP_ORDER ' + exported.BACKDROP_ORDER + ')이 에디터 값(' + objectEdits.BACKDROP_ORDER + ')과 다릅니다. 에디터를 게임에 맞춰 갱신하세요.');
   const candidates = ['.agents/skills', '.claude/skills', '.codex/skills'].map(p => p + '/msw-general/scripts/map/msw_map_builder.cjs');
   const relative = candidates.find(p => fs.existsSync(path.join(root, p)));
   if (!relative) fail('MISSING_BUILDER', '게임의 MapBuilder를 찾지 못했습니다.');
@@ -999,7 +1002,7 @@ function validateEditDepth(root, checked, mapPath, originalPath) {
   // Existing unrelated map debt is preserved; new sorting errors never reach an apply package.
   // Mirrors the game's fail formula (depth_check summary). occlStale only grows when an edit
   // fixes a frozen violation, so it is reported for a baseline update instead of blocking.
-  const counters = ['dimDrift', 'totNew', 'crossCells', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh'];
+  const counters = ['dimDrift', 'totNew', 'crossCells', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh', 'planeUnknown'];
   const notices = ['occlStale', 'bndHot'];
   const regressions = counters.filter(key => (after[key] || 0) > (before[key] || 0));
   if (before.missing || after.missing || regressions.length) fail('DEPTH_GATE_FAILED',

@@ -1974,3 +1974,13 @@ test('candidates from an older baseline stay listed after the game moves an appl
   assert.equal(listed.skipped, 0);
   assert.deepEqual(listed.candidates.map(c => [c.candidateId, c.sameBaseline]), [[old.candidateId, false]]);
 });
+test('the editor backdrop plane must match the game BACKDROP_ORDER when the game exports it', fixtureOptions, t => {
+  const f = objectFixture(t), file = path.join(f.root, 'scripts/build_map.cjs');
+  const exported = require(file);
+  fs.writeFileSync(file, 'module.exports = ' + JSON.stringify({ ...exported, BACKDROP_ORDER: -998 }) + ';');
+  delete require.cache[require.resolve(file)];
+  assert.doesNotThrow(() => createSyncProject({ ...f.options, mapName: 'fixture' }));
+  fs.writeFileSync(file, 'module.exports = ' + JSON.stringify({ ...exported, BACKDROP_ORDER: -990 }) + ';');
+  delete require.cache[require.resolve(file)];
+  assert.throws(() => createSyncProject({ ...f.options, mapName: 'fixture' }), { code: 'INVALID_CONSTANTS', message: /BACKDROP_ORDER/ });
+});

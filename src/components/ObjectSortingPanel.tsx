@@ -55,12 +55,12 @@ export function ObjectSortingPanel({ object, scene, disabled, cells }: {
       }}>
         <option value="original">원본 설정 유지</option>
         <option value="floor" disabled={!canFloor}>바닥 가구</option>
-        <option value="wall">벽 장식</option>
+        <option value="wall">배경(뒷벽·바닥 패치)</option>
         <option value="surface">가구 위 소품</option>
       </select>
     </label>
     {mode === "original" && <p className="object-help">현재 게임의 정렬값을 유지합니다. 역할을 선택하면 이 배치에만 적용됩니다.</p>}
-    {mode === "wall" && <p className="object-help">벽 앞·캐릭터 뒤에 표시합니다. 액자, 벽에 건 허브처럼 벽에 붙은 장식에 사용하세요.</p>}
+    {mode === "wall" && <p className="object-help">바닥 위, 모든 건물·캐릭터 뒤에 표시합니다. 실내 뒷벽, 뒷벽에 건 장식, 바닥 패치처럼 캐릭터가 항상 앞을 지나가는 그림에 쓰세요. 건물 앞면에 붙은 장식은 건물 뒤로 숨으니 쓰지 마세요.</p>}
     {mode === "surface" && <>
       <label className="sort-field"><span>받치는 가구</span><select disabled={locked} value={setting?.mode === "surface" ? setting.supportId : ""}
         onChange={e => { if (e.target.value) set({ mode: "surface", supportId: e.target.value }); }}>
