@@ -22,7 +22,7 @@ import {
 } from "../lib/grid";
 import { cellKey, parseCellKey, type CellKey } from "../lib/cell";
 import { CODE_TO_TOOL } from "../lib/shortcuts";
-import { activateEditorTool, editorShortcutsBlocked, rollbackEditorStroke, palettePlacementIssue } from "../lib/editorCommands";
+import { activateEditorTool, escapeEditorSelection, editorShortcutsBlocked, rollbackEditorStroke, palettePlacementIssue } from "../lib/editorCommands";
 import { CanvasChrome } from "./CanvasChrome";
 import { makeEntityImageLookup } from "../lib/entityImage";
 import { fallbackColor, type PaletteTile } from "../lib/palette";
@@ -779,7 +779,7 @@ export function CanvasGrid() {
       }
       if (e.key === "Escape") {
         e.preventDefault(); cancelGesture();
-        activateEditorTool("cursor"); return;
+        escapeEditorSelection(); return;
       }
       // Ctrl+Z while painting cancels that live stroke, rather than undoing an older action too.
       if (mod && e.code === "KeyZ" && !e.shiftKey && (mode.current === "paint" || mode.current === "blockErase" || mode.current === "rect" || mode.current === "moveEntity")) {

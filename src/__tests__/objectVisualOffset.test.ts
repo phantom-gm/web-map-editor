@@ -27,7 +27,8 @@ it("stores only visual XY, round-trips, undoes/redoes and resets without changin
   state().undo();expect(state().exportProject()).toEqual(before);
   state().redo();expect(state().exportProject()).toEqual(saved);
   state().loadProject(saved,[]);expect(state().exportProject()).toEqual(saved);
-  const current=scene();current.objects![0].visualOffset=[.03,.1];
+  // Server z follows the drawn Y (game objectDepthZ), so the offset's Y shift moves z too.
+  const current=scene();current.objects![0].visualOffset=[.03,.1];current.objects![0].position[2]+=.1*.21875;
   state().offsetGameObjectVisual("tree",[0,0],current);expect(state().exportProject()).toEqual(before);
 });
 it("rejects stale scenes, protected objects and invalid offsets atomically",()=>{
@@ -60,7 +61,7 @@ it("validates offsets on load and removes/reset zero overlays without leaving st
 it("cell moves preserve offset; copies inherit it; deleting a copy removes its offset",()=>{
   const edits=setGameObjectVisualOffset(undefined,"tree",[.08,.12]);
   useEditorStore.setState({gameObjectEdits:edits});
-  const s=scene();s.objects![0].visualOffset=[.08,.12];
+  const s=scene();s.objects![0].visualOffset=[.08,.12];s.objects![0].position[2]+=.12*.21875;
   const moved=planGameSelectionTransform(state(),"move",s,[1,0],()=>"copy");
   expect(moved.gameObjectEdits?.moved[0].position).toEqual([2.51,1.7]);
   expect(moved.gameObjectEdits?.visualOffsets).toEqual(edits?.visualOffsets);

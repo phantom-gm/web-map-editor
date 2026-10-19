@@ -3,6 +3,7 @@
 // Every structured mutation goes through the game's MapBuilder public methods.
 const { parseObjectSorting, objectAnchor, SURFACE_EPSILON } = require('../../src/lib/objectSorting.cjs');
 const { parseObjectVisualOffsets } = require('../../src/lib/objectVisualOffset.cjs');
+const { parseObjectFlips } = require('../../src/lib/objectFlip.cjs');
 const TF = 'MOD.Core.TransformComponent';
 const SR = 'MOD.Core.SpriteRendererComponent';
 const DEPTH = 'script.IsoDepthMetaComponent';
@@ -40,7 +41,10 @@ function analyzeObjects(mb, project, preview) {
       || (json.origin.root_entity_id != null && json.origin.root_entity_id !== item.id)))) reasons.push('모델 연결이 있는 오브젝트는 보호합니다.');
     if (meta && (!['GX', 'GY', 'W', 'H'].every(k => Number.isInteger(meta[k])) || meta.W < 1 || meta.H < 1
       || !Number.isFinite(meta.StaticZ) || !Number.isFinite(meta.StaticOrder)
-      || !near(meta.StaticZ, position[2]) || meta.StaticOrder !== sr.OrderInLayer)) reasons.push('깊이 정렬 메타를 확인할 수 없습니다.');
+      || meta.StaticOrder !== sr.OrderInLayer)) reasons.push('깊이 정렬 메타를 확인할 수 없습니다.');
+    // StaticZ is a record only (game IsoDepthMetaComponent: runtime and depth_check read
+    // Position.z). Game z-only target patches leave it stale; every editor write re-records it.
+    const staleStaticZ = meta && Number.isFinite(meta.StaticZ) && !near(meta.StaticZ, position[2]);
     const tokens = [item.id, item.path, item.name];
     if (references.some(e => e.id !== item.id && tokens.some(token => e.text.includes(token)))) reasons.push('다른 엔티티가 참조하는 오브젝트는 보호합니다.');
     const authoring = (project.entities || []).filter(e => e.kind === 'object' && 'Obj_' + String(e.id).slice(0, 8) === item.name);
@@ -57,10 +61,10 @@ function analyzeObjects(mb, project, preview) {
       ? '선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.' : undefined;
     records.set(item.id, { item, native: clone(native), meta: meta && clone(meta),
       descriptor: { entityId: item.id, prototypeId: item.id, spriteId: item.id, name, ruid: ruid || '',
-        position, sourcePosition: [...position], sortInfo: sortInfo(mb, item.path), canMove: reasons.length === 0,
+        position, sourcePosition: [...position], flipX: sr.FlipX === true, sortInfo: sortInfo(mb, item.path), canMove: reasons.length === 0,
         canDelete: reasons.length === 0, canDuplicate: reasons.length === 0 && !cloneReason,
         ...(reasons.length || cloneReason ? { reason: [...reasons, cloneReason].filter(Boolean).join(' ') } : {}),
-        ...(collisionNote ? { collisionNote } : {}) } });
+        ...(collisionNote ? { collisionNote } : {}), ...(staleStaticZ ? { staleStaticZ: true } : {}) } });
   }
   return { records, entities };
 }
@@ -84,7 +88,7 @@ function addResourcePrototypes(mb, profile, resources, constants) {
     profile.records.set(id, { resource, item: { id, name, path: native.path }, native,
       descriptor: { entityId: id, prototypeId: id, spriteId: native.id, name: resource.name, ruid: resource.ruid,
         position: [0, 0, 0], sourcePosition: [0, 0, 0], canMove: true, canDelete: true, canDuplicate: true,
-        libraryOnly: true, resourceId: resource.id, scale: 1 } });
+        flipX: false, libraryOnly: true, resourceId: resource.id, scale: 1 } });
     mb.remove(name); // Library prototypes never enter the original map or candidate by themselves.
   }
 }
@@ -101,13 +105,13 @@ function moveTarget(record, position, constants) {
   return { position: dgx === 0 && dgy === 0 ? [...original] : [original[0] + sx, original[1] + sy, original[2] + sy * constants.DEPTH_SCALE], dgx, dgy };
 }
 function inspectObjectEdits(value, profile, constants) {
-  const empty = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], changed: false };
+  const empty = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], flips: [], changed: false };
   if (value === undefined) return empty;
-  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : []), ...(value.visualOffsets !== undefined ? ['visualOffsets'] : [])], '오브젝트 편집');
+  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : []), ...(value.visualOffsets !== undefined ? ['visualOffsets'] : []), ...(value.flips !== undefined ? ['flips'] : [])], '오브젝트 편집');
   if (value.version !== 1 || !['moved', 'removed', 'added'].every(k => Array.isArray(value[k]))
     || value.moved.length + value.removed.length + value.added.length > 10000) fail('INVALID_OBJECT_EDITS', '오브젝트 편집 버전 또는 배열이 유효하지 않습니다.');
   const used = new Set(), existing = new Set(profile.entities.map(e => e.id));
-  const result = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], constants, changed: false };
+  const result = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], flips: [], constants, changed: false };
   const get = (id, capability) => {
     const record = typeof id === 'string' && profile.records.get(id);
     if (!record) fail('UNKNOWN_OBJECT', '원본 오브젝트를 찾을 수 없습니다: ' + id);
@@ -149,6 +153,15 @@ function inspectObjectEdits(value, profile, constants) {
       const order = support.native.jsonString['@components'].find(c => c['@type'] === SR).OrderInLayer ?? 0;
       if (mode === 'surface' || mode === 'wall' || (!mode && order !== 0)) fail('INVALID_OBJECT_SUPPORT', '받치는 대상은 바닥 가구여야 합니다. 벽 장식이나 다른 소품은 선택할 수 없습니다.');
     }
+    // Game BaseW/BaseH = native size / ppu / 0.64. A value far below that (e.g. px/100 authored
+    // elsewhere) shrinks the occluder height and hides footprint checks; reject it when the
+    // server resource tells us the real image size.
+    const m = record.resource?.metadata;
+    if (row.setting.mode === 'floor' && m) {
+      const expected = [m.width / m.pixelsPerUnit / 0.64, m.height / m.pixelsPerUnit / 0.64];
+      if (row.setting.bounds.some((n, i) => n < expected[i] / 1.5)) fail('INVALID_OBJECT_SORTING',
+        '그림 크기(' + expected.map(n => n.toFixed(2)).join('×') + ')보다 정렬 범위가 너무 작습니다. 정렬 설정을 바닥으로 다시 지정해 자동 계산값을 쓰세요.');
+    }
     result.sorting.push({ ...row, record, added: additions.has(row.entityId) });
   }
   let offsets;
@@ -159,7 +172,15 @@ function inspectObjectEdits(value, profile, constants) {
     if (!record.descriptor.canMove) fail('PROTECTED_OBJECT', '보호된 오브젝트의 이미지는 조정할 수 없습니다.');
     result.visualOffsets.push({ ...row, record, added: additions.has(row.entityId) });
   }
-  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length + result.visualOffsets.length > 0;
+  let flips;
+  try { flips = parseObjectFlips(value.flips); } catch (e) { fail('INVALID_OBJECT_FLIP', e.message); }
+  for (const row of flips) {
+    const record = additions.get(row.entityId)?.record || profile.records.get(row.entityId);
+    if (!record || removed.has(row.entityId) || (record.resource && !additions.has(row.entityId))) fail('INVALID_OBJECT_FLIP', '반전할 배치가 없습니다.');
+    if (!record.descriptor.canMove) fail('PROTECTED_OBJECT', '보호된 오브젝트는 반전할 수 없습니다.');
+    if (row.flipX !== (record.descriptor.flipX === true)) result.flips.push({ ...row, record, added: additions.has(row.entityId) });
+  }
+  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length + result.visualOffsets.length + result.flips.length > 0;
   return result;
 }
 function changedComponents(edit) {
@@ -226,17 +247,41 @@ function applyObjectEdits(mb, edits, stable) {
     if (old >= 0) edited.splice(old, 1);
     edited.push([actualPath, stable(before)]);
   }
-  // Apply image translation LAST: sorting/footprints must use the logical anchor.
-  // Native renderer has no XY offset; bake only Transform XY, preserving Z and every depth field.
-  for (const row of edits.visualOffsets || []) {
+  // Renderer-only mirroring keeps the logical anchor, collider and depth metadata intact.
+  for (const row of edits.flips || []) {
     const name = pathFor(row.entityId), expected = clone(mb.find(name));
-    const position = expected.jsonString['@components'].find(c => c['@type'] === TF).Position;
-    position.x += row.offset[0]; position.y += row.offset[1];
+    expected.jsonString['@components'].find(c => c['@type'] === SR).FlipX = row.flipX;
+    mb.patchComponent(name, SR, { FlipX: row.flipX });
+    if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '좌우반전이 렌더러 이외의 값을 변경했습니다.');
+    const actualPath = mb.find(name).path, old = edited.findIndex(e => e[0] === actualPath);
+    if (old >= 0) edited.splice(old, 1);
+    edited.push([actualPath, stable(expected)]);
+  }
+  // Apply image translation LAST: sorting/footprints must use the logical anchor.
+  // The native renderer has no XY offset, so the image shift is baked into Transform XY.
+  // The game derives Z from the drawn Y (build_map objectDepthZ, depth_check (1)), so Z and
+  // the StaticZ record move with the vertical shift. Surface props re-anchor to their
+  // support's final Z below so they stay just in front of it.
+  const surfaces = new Map((edits.sorting || []).filter(r => r.setting.mode === 'surface').map(r => [r.entityId, r.setting.supportId]));
+  const commit = (name, mutate) => {
+    const expected = clone(mb.find(name)), components = expected.jsonString['@components'];
+    const position = components.find(c => c['@type'] === TF).Position, meta = components.find(c => c['@type'] === DEPTH);
+    mutate(position);
+    if (meta) meta.StaticZ = position.z;
     mb.patchComponent(name, TF, { Position: position });
+    if (meta) mb.patchComponent(name, DEPTH, { StaticZ: meta.StaticZ });
     if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '이미지 미세 조정이 위치 이외의 값을 변경했습니다.');
     const actualPath = mb.find(name).path, old = edited.findIndex(e => e[0] === actualPath);
     if (old >= 0) edited.splice(old, 1);
     edited.push([actualPath, stable(expected)]);
+  };
+  for (const row of edits.visualOffsets || []) commit(pathFor(row.entityId), position => {
+    position.x += row.offset[0]; position.y += row.offset[1];
+    if (!surfaces.has(row.entityId)) position.z += row.offset[1] * edits.constants.DEPTH_SCALE;
+  });
+  for (const [id, supportId] of surfaces) {
+    const z = mb.component(pathFor(supportId), TF).Position.z - SURFACE_EPSILON, name = pathFor(id);
+    if (mb.component(name, TF).Position.z !== z) commit(name, position => { position.z = z; });
   }
   return edited;
 }
@@ -258,6 +303,7 @@ function objectScene(mb, profile, edits) {
     const row = (edits.sorting || []).find(e => e.entityId === object.entityId);
     if (row) object.sortSetting = clone(row.setting);
     const name = edits.added.some(e => e.entityId === object.entityId) ? 'Obj_Editor_' + object.entityId : profile.records.get(object.entityId).item.path;
+    object.flipX = mb.component(name, SR).FlipX === true;
     object.sortInfo = sortInfo(mb, name);
     const offset = (edits.visualOffsets || []).find(e => e.entityId === object.entityId)?.offset;
     if (offset) {

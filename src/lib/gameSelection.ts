@@ -1,7 +1,7 @@
 import { SURFACE_EPSILON } from "./objectSorting.cjs";
 import { cellKey, parseCellKey, type CellKey } from "./cell";
 import {
-  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting, setGameObjectVisualOffset,
+  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting, setGameObjectVisualOffset, setGameObjectFlip,
   type GameObjectDescriptor, type GameObjectEdits, type GameObjectPosition,
 } from "./gameObjects";
 import type { GamePreviewScene } from "./gamePreview";
@@ -74,7 +74,9 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
     const prototype = prototypes.get(prototypeId);
     if (!prototype || object.prototypeId !== prototypeId || !near(object.sourcePosition, prototype.sourcePosition)) throw stale();
     const target = addition?.position ?? moved.get(id)?.position ?? prototype.sourcePosition.slice(0, 2);
-    const expected = [target[0], target[1], prototype.sourcePosition[2] + (target[1] - prototype.sourcePosition[1]) * DEPTH_SCALE + (addition?.depthOffset ?? 0)];
+    const visualOffset = input.gameObjectEdits?.visualOffsets?.find(row => row.entityId === id)?.offset ?? [0, 0];
+    // Z follows the drawn Y (game objectDepthZ), so the vertical image shift moves it too.
+    const expected = [target[0], target[1], prototype.sourcePosition[2] + (target[1] - prototype.sourcePosition[1]) * DEPTH_SCALE + (addition?.depthOffset ?? 0) + visualOffset[1] * DEPTH_SCALE];
     const setting = input.gameObjectEdits?.sorting?.find(row => row.entityId === id)?.setting;
     if (JSON.stringify(setting) !== JSON.stringify(object.sortSetting)) throw stale();
     if (setting?.mode === "surface") {
@@ -83,8 +85,9 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
       expected[2] = support.position[2] - SURFACE_EPSILON;
     }
     if (!near(object.position, expected)) throw stale();
-    const visualOffset = input.gameObjectEdits?.visualOffsets?.find(row => row.entityId === id)?.offset ?? [0, 0];
     if (!near(object.visualOffset ?? [0, 0], visualOffset)) throw stale();
+    const flipX = input.gameObjectEdits?.flips?.find(row => row.entityId === id)?.flipX ?? (prototype.flipX === true);
+    if ((object.flipX === true) !== flipX) throw stale();
     if (prototype.resourceId && object.scale !== (addition?.scale ?? 1)) throw stale();
     if (object.canMove !== prototype.canMove || object.canDelete !== prototype.canDelete || object.canDuplicate !== prototype.canDuplicate) throw stale();
   }
@@ -177,6 +180,8 @@ export function planGameSelectionTransform(
   }
   if (operation === "duplicate") for (let i = 0; i < objects.length; i++) {
     if (objects[i].visualOffset) gameObjectEdits = setGameObjectVisualOffset(gameObjectEdits, copyIds[i], objects[i].visualOffset!);
+    const prototype = scene.objectPrototypes?.find(p => p.entityId === objects[i].prototypeId);
+    if ((objects[i].flipX === true) !== (prototype?.flipX === true)) gameObjectEdits = setGameObjectFlip(gameObjectEdits, copyIds[i], objects[i].flipX === true);
     const setting = objects[i].sortSetting;
     if (setting) {
       const index = setting.mode === "surface" ? ids.indexOf(setting.supportId) : -1;

@@ -1,8 +1,9 @@
 # 깊이정렬(앞/뒤) — 에디터 쪽 요약
 
-> **정본은 게임 프로젝트에 있다:**
-> `legend_of_light/docs/map/isometric/DEPTH_SORT_CONTRACT.md`
-> 규칙을 바꾸려면 거기부터 고치고, 아래 두 구현과 두 테스트를 **한 커밋에서 같이** 바꾼다.
+> **정본은 게임 프로젝트의 코드다:** `legend_of_light/scripts/build_map.cjs` `objectDepthZ()`와
+> `scripts/depth_check.cjs` 검사 (1). 설명 문서는 `docs/map/isometric/guide.md`·`에디터_sortOffset_요구사항.md`.
+> (예전에 가리키던 `DEPTH_SORT_CONTRACT.md`는 어느 repo에도 존재한 적이 없다.)
+> 규칙을 바꾸려면 게임 쪽부터 고치고, 아래 구현과 테스트를 **한 커밋에서 같이** 바꾼다.
 
 ## 유일한 깊이식
 
@@ -11,7 +12,8 @@ z = −(gx + gy) × 0.14  −  offsetY_px × PX_TO_WORLD  −  sortOffset × 0.1
 ```
 
 - 구현: [`src/lib/entityGeom.ts`](src/lib/entityGeom.ts) `gameDepthZ()`
-- 게임 원본: `legend_of_light/scripts/build_map.cjs:392` (`z = pos.y − extra × CELL_DEPTH`)
+- 게임 원본: `legend_of_light/scripts/build_map.cjs` `objectDepthZ(posY, sortOffset)` = `(posY − sortOffset × TILE_H/2) × DEPTH_SCALE`
+  (TILE_H 1.28, DEPTH_SCALE 0.21875 → 셀 1칸 = 0.14). 에디터 식은 이 값을 z 공간에서 그대로 쓴다.
 - **`sortOffset` 1 = 정확히 한 칸.** `gy+1` 로 옮긴 것과 z 가 완전히 같다.
 
 ## 이 식에 넣지 말 것
@@ -96,4 +98,5 @@ export 의 `footprintCells`(DT_Walk 재료)도 같은 함수를 쓴다 — 맵 �
 
 - `src/__tests__/entityGeom.test.ts` — `gameDepthZ` 가 위 식과 같은지 (4개 과거 버그 회귀 가드)
 - `src/__tests__/entityDrawOrder.test.ts` — 멀티셀 점유 위 엔티티가 위로 오는지
-- 게임 쪽 `scripts/depth_check.cjs` 검사 (6) — 실맵 전 오브젝트의 baked z 파리티
+- 게임 쪽 `scripts/depth_check.cjs` 검사 (1) — 실맵 json 오브젝트의 baked z == objectDepthZ 파리티
+  ((6)은 발자국 미달 검사다)

@@ -17,7 +17,7 @@ import {
   type MapEntity,
 } from "../types/entity";
 
-const CELL_DEPTH = GAME_TILE_HALF_H; // 0.14 = 셀 1칸 깊이 (build_map CELL_DEPTH 와 동일)
+const CELL_DEPTH = GAME_TILE_HALF_H; // 0.14 = 셀 1칸 z 깊이 (게임 TILE_H/2 0.64 × DEPTH_SCALE 0.21875)
 const ORIGIN = 15; // IsoProjectLogic ORIGIN_X/Y
 
 export interface FpRect {

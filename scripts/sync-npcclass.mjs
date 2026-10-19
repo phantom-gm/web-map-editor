@@ -106,12 +106,17 @@ function collect(csvPath, idCol, nameCol, type, strings) {
     process.exit(1);
   }
   const iName = header.indexOf(nameCol);
+  // Rows another row names as OriginMonsterID are debug-only originals (game DATASET_SCHEMA);
+  // label them so the blueprint dropdown does not offer them as twins of the placement row.
+  const iOrigin = header.indexOf("OriginMonsterID");
+  const origins = new Set(iOrigin < 0 ? [] : rows.map((c) => (c[iOrigin] ?? "").trim()).filter(Boolean).map(Number));
   const out = [];
   for (const c of rows) {
     const id = Number((c[iId] ?? "").trim());
     if (!Number.isFinite(id)) continue;
     const raw = (iName >= 0 ? (c[iName] ?? "") : "").trim();
-    out.push({ id, name: strings.get(raw) ?? raw, type });
+    const name = strings.get(raw) ?? raw;
+    out.push({ id, name: origins.has(id) ? name + " (원본·디버그 전용)" : name, type });
   }
   return out;
 }

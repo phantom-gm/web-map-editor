@@ -28,6 +28,16 @@ function canonical(value) {
   return value;
 }
 function fail(code, message) { const e = new Error(message); e.name = 'GameSyncError'; e.code = code; throw e; }
+// Windows resolves 'Velosgreenroad.map' to velosgreenroad.map, but the game's CSV rows,
+// depth_check and runtime lookups compare the exact (lowercase) name. Require the on-disk spelling.
+function exactMapFileName(root, mapName) {
+  let names;
+  try { names = fs.readdirSync(path.join(root, 'map')).filter(name => name.endsWith('.map')).map(name => name.slice(0, -4)); } catch { return mapName; }
+  if (names.includes(mapName)) return mapName;
+  const match = names.find(name => name.toLowerCase() === mapName.toLowerCase());
+  if (match) fail('MAP_NAME_CASE', '맵 이름의 대소문자가 게임 파일과 다릅니다: ' + mapName + ' → ' + match + ' 로 입력해 주세요.');
+  return mapName;
+}
 function validMapName(name) {
   if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(name)) fail('INVALID_MAP', '맵 이름은 영문, 숫자, 밑줄, 하이픈만 허용합니다.');
   return name;
@@ -233,8 +243,9 @@ function compatibleInventory(before, after, requiredRuids = []) {
   };
   const oldRecords = records(before), newRecords = records(after);
   if (!oldRecords || !newRecords) return false;
-  const metadata = lock => Object.fromEntries(Object.entries(lock).filter(([k]) => !['resources', 'generatedAt', 'count', 'note'].includes(k)));
-  if (stable(metadata(before)) !== stable(metadata(after))) return false;
+  // Only the group identity matters. Bookkeeping keys the game adds or drops
+  // (note, verifiedAdditions, ...) must not invalidate every saved baseline.
+  if (stable(before.groupCode) !== stable(after.groupCode)) return false;
   const required = new Set([...requiredRuids, ...catalogFromLock(before).map(r => r.ruid)]);
   for (const id of required) {
     const resource = oldRecords.get(id);
@@ -319,9 +330,10 @@ function captureDatasetReferences(root, manifest) {
   }
   return { captured, changes };
 }
-function createSyncProject({ gameRoot, mapName, baselineRoot }) {
+function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject }) {
   const root = gamePath(gameRoot);
   validMapName(mapName);
+  exactMapFileName(root, mapName);
   const storage = outsideGame(baselineRoot, root);
   const deps = loadDependencies(root);
   const mapRelative = 'map/' + mapName + '.map', projectRelative = 'map/' + mapName + '.json';
@@ -331,9 +343,38 @@ function createSyncProject({ gameRoot, mapName, baselineRoot }) {
   const snapshot = relative => snapshots.find(f => f.relative === relative);
   if (!snapshot(mapRelative)?.exists) fail('MAP_NOT_FOUND', '게임 맵 파일이 없습니다: ' + mapName);
   const raw = snapshot(projectRelative)?.exists ? JSON.parse(snapshot(projectRelative).bytes.toString('utf8').replace(/^\uFEFF/, '')) : null;
+  // The game derives size and DT_Bounds from map/<name>.json (convert_map); without it the
+  // editor cannot know the map extent, so say so instead of failing later on a cell check.
+  if (!raw) fail('MAP_JSON_MISSING', '게임 맵 작성 파일이 없습니다: ' + projectRelative + '. 맵 크기를 알 수 없어 가져올 수 없습니다.');
   const project = projectDefaults(raw, mapName);
   if (!Array.isArray(project.size) || project.size.length !== 2 || project.size.some(n => !Number.isInteger(n) || n < 1)) fail('INVALID_SIZE', '프로젝트 맵 크기가 유효하지 않습니다.');
   const catalog = catalogFromLock(JSON.parse(snapshot('scripts/storage-inventory.lock.json').bytes.toString('utf8')));
+  // Applied editor tiles may not exist in the legacy game's inventory naming scheme.
+  // Recover only registered 1x1 brushes from the prior immutable baseline/receipts.
+  // Read placement from the current native map; never replay prior object edits.
+  // Recovery is best-effort: a missing, moved or damaged prior baseline must never
+  // block the only way to start over from the current game files.
+  const recoveryWarnings = [];
+  if (previousProject !== undefined) {
+    const recovered = [];
+    try {
+      const previous = loadBaseline(previousProject, { gameRoot: root, baselineRoot: storage });
+      if (previous.manifest.mapName !== mapName) fail('BASELINE_MISMATCH', '다른 맵의 소재 기준을 가져올 수 없습니다.');
+      const known = new Set(catalog.map(tile => tile.ruid));
+      for (const tile of loadGroundCatalog(previousProject, previous)) {
+        if (!tile.family?.startsWith('resource:') || known.has(tile.ruid)) continue;
+        if (tile.n !== 1 || !/^[a-f0-9]{32}$/.test(tile.ruid) ||
+            !near(tile.px, [deps.constants.TILE_W * deps.ppu, deps.constants.TILE_H * deps.ppu])) {
+          fail('INVALID_GROUND_RESOURCE', '기존 바닥 소재의 등록 크기를 확인하세요.');
+        }
+        recovered.push(clone(tile)); known.add(tile.ruid);
+      }
+      catalog.push(...recovered);
+    } catch (e) {
+      recoveryWarnings.push('이전 기준의 등록 바닥 소재를 이어받지 못했습니다(' + (e.code || 'ERROR') + '). ' +
+        '에디터로 등록했던 바닥은 편집할 수 없을 수 있으니 바닥 소재를 다시 등록하세요.');
+    }
+  }
   let analysis;
   try { analysis = analyzeMap(deps.MapBuilder.read(sourceRelative(root, mapRelative)), catalog, deps.constants, project.size); }
   catch (e) { analysis = { blocks: [], coverage: new Map(), groundEntities: 0, totalEntities: 0, supported: false, reasons: ['MapBuilder 읽기 미지원: ' + e.message] }; }
@@ -353,6 +394,9 @@ function createSyncProject({ gameRoot, mapName, baselineRoot }) {
   const importedRuntime = runtimeEdits.analyzeRuntime(readRuntimeFiles(root, ds), mapName);
   if (importedRuntime.files.DT_Walk && Object.values(importedRuntime.supported).some(Boolean)) {
     project.blocked = importedRuntime.walk.filter(row => row.map === mapName).map(row => clone(row.cell));
+    const outside = project.blocked.filter(c => c[0] < 0 || c[1] < 0 || c[0] >= project.size[0] || c[1] >= project.size[1]);
+    if (outside.length) fail('INVALID_BLOCKED', 'DT_Walk의 ' + mapName + ' 이동불가 칸 ' + outside.slice(0, 5).map(c => '(' + c.join(',') + ')').join(' ') +
+      (outside.length > 5 ? ' 외 ' + (outside.length - 5) + '개' : '') + '가 맵 크기 ' + project.size.join('×') + ' 밖입니다. 게임 데이터의 맵 크기나 DT_Walk 행을 먼저 맞춰 주세요.');
     walkEdits.blockedSet(project);
   }
   const baselineId = crypto.randomUUID();
@@ -376,10 +420,10 @@ function createSyncProject({ gameRoot, mapName, baselineRoot }) {
   const report = { mapName: project.map, baselineId, counts: manifest.counts,
     groundEditingSupported: analysis.supported, preservedEntities: analysis.totalEntities,
     sourceFilesUnchanged: true, sourceFiles: manifest.sourceFiles.length, datasetFiles: ds.length,
-    warnings: analysis.supported
+    warnings: [...recoveryWarnings, ...(analysis.supported
       ? ['게임 배치 미리보기와 후보 출력은 실제 게임의 4×4/2×2/1×1 배치를 보존합니다.',
          '바닥 블록 일부를 수정하면 그 블록 안의 그림은 같은 소재의 작은 타일로 다시 구성될 수 있습니다.']
-      : analysis.reasons };
+      : analysis.reasons)] };
   return { project, report, baselineDir, projectPath: path.join(baselineDir, 'project.json') };
 }
 function loadBaseline(project, { gameRoot, baselineRoot }) {
@@ -432,7 +476,7 @@ function packCells(cells, catalog) {
   const groups = new Map();
   for (const [k, ruid] of cells) {
     const t = byRuid.get(ruid);
-    if (!t || t.n !== 1) fail('UNSUPPORTED_TILE', '편집에는 등록된 페른델 1×1 바닥 소재를 사용하세요: ' + ruid);
+    if (!t || t.n !== 1) fail('UNSUPPORTED_TILE', '편집에는 등록된 1×1 바닥 소재를 사용하세요: ' + ruid);
     const group = groups.get(ruid) || { tile: t, cells: new Set() };
     group.cells.add(k); groups.set(ruid, group);
   }
@@ -619,8 +663,7 @@ function registerObjectResources(input, options) {
     return id;
   }) };
 }
-function loadObjectResources(project, state) {
-  const ids = project.gameObjectEdits?.resources;
+function loadResourceReferences(ids, state) {
   if (ids === undefined) return [];
   if (!Array.isArray(ids) || ids.length > 500 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) fail('INVALID_OBJECT_RESOURCE', '추가 소재 목록이 유효하지 않습니다.');
   return ids.map(id => {
@@ -633,6 +676,34 @@ function loadObjectResources(project, state) {
     objectEdits.validateResource(value.resource);
     return { id, ...value.resource };
   });
+}
+function loadObjectResources(project, state) {
+  return loadResourceReferences(project.gameObjectEdits?.resources, state);
+}
+// Only verified, centered, native-size 1x1 sprites may become floor brushes.
+// Keep their exact RUID/phase; never pack them into unrelated larger artwork.
+function groundResourceFits(metadata, constants, ppu) {
+  return metadata && near([metadata.width, metadata.height], [constants.TILE_W * ppu, constants.TILE_H * ppu])
+    && Array.isArray(metadata.pivot) && near(metadata.pivot, [0.5, 0.5]) && Math.abs(metadata.pixelsPerUnit - ppu) <= 1e-6;
+}
+function loadGroundCatalog(project, state) {
+  const selected = (project.palette || []).filter(tile => tile.gameResourceId !== undefined);
+  const resources = loadResourceReferences([...new Set(selected.map(tile => tile.gameResourceId))], state);
+  const byId = new Map(resources.map(resource => [resource.id, resource]));
+  const catalog = [...state.manifest.catalog], seen = new Set(catalog.map(tile => tile.ruid));
+  for (const tile of selected) {
+    const resource = byId.get(tile.gameResourceId);
+    if (!resource || resource.ruid !== tile.ruid || tile.category !== 'foothold' ||
+      !groundResourceFits(resource.metadata, state.manifest.constants, state.manifest.ppu) ||
+      !Array.isArray(tile.px) || !near(tile.px, [resource.metadata.width, resource.metadata.height])) {
+      fail('INVALID_GROUND_RESOURCE', '바닥 소재의 등록 정보·크기·중앙 피벗을 확인하세요.');
+    }
+    if (seen.has(tile.ruid)) continue;
+    seen.add(tile.ruid);
+    catalog.push({ name: resource.name, ruid: resource.ruid, n: 1, family: 'resource:' + resource.ruid,
+      material: '길경계', variant: 1, px: [resource.metadata.width, resource.metadata.height] });
+  }
+  return catalog;
 }
 function inspectSyncProject(project, options) {
   return inspectLoadedProject(project, loadBaseline(project, options));
@@ -651,6 +722,8 @@ function inspectLoadedProject(project, state) {
   catch { /* Opaque native maps still permit exact unchanged output. */ }
   const objectProfile = original ? objectEdits.analyzeObjects(original, baseline, previewMapSprites(original, manifest.blocks))
     : { records: new Map(), entities: [] };
+  const catalog = loadGroundCatalog(project, state);
+  if (catalog.length > manifest.catalog.length && (!original || original.getTileMapMode() !== 1)) fail("UNSUPPORTED_RESOURCE_MAP", "새 바닥 소재는 RectTile 게임 맵에서 지원합니다.");
   const resources = loadObjectResources(project, state);
   if (resources.length) {
     if (!original || original.getTileMapMode() !== 1) fail('UNSUPPORTED_RESOURCE_MAP', '새 소재 배치는 RectTile 게임 맵에서 지원합니다.');
@@ -681,7 +754,7 @@ function inspectLoadedProject(project, state) {
     }
   }
   const area = new Map([...after].filter(([k]) => dirty.has(k)));
-  const replacements = changed.length ? packCells(area, manifest.catalog) : [];
+  const replacements = changed.length ? packCells(area, catalog) : [];
   const mapUnchanged = changed.length === 0 && !objects.changed;
   const warnings = changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.'] : [...manifest.unsupportedReasons];
   if (objects.changed) warnings.push('선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.');
@@ -690,7 +763,7 @@ function inspectLoadedProject(project, state) {
   if (runtimeSource.stale) warnings.push('몬스터·포탈·시작점 CSV가 변경되었습니다. 보관된 기준을 표시하며 변경 출력 전에 런타임 원본을 새로 가져오세요.');
   if (npcSource.stale) warnings.push('NPC 원본 CSV가 변경되었습니다. 현재 NPC는 보관된 기준을 표시하며, NPC 변경 출력 전에 NPC 원본을 새로 가져오세요.');
   if (npcProfile.supported) warnings.push('NPC는 정적 Idle 외형입니다. 건물과의 런타임 깊이 보정·이름표·대화 동작은 별도 게임 검증이 필요합니다.');
-  return { ...state, before, after, affected, replacements, dirty, objectProfile, objects, walk, npcs, npcSource, runtime, runtimeSource,
+  return { ...state, catalog, before, after, affected, replacements, dirty, objectProfile, objects, walk, npcs, npcSource, runtime, runtimeSource,
     report: { mapName: manifest.mapName, baselineId: manifest.baselineId, unchanged: mapUnchanged && !walk.changed && !npcs.edited && !runtime.edited, mapUnchanged,
       ...(npcProfile.supported ? { npcChanges: { moved: npcs.moves.length, added: npcs.added.length, removed: npcs.removed.length, updated: npcs.updates.length }, npcEditingSupported: true } : { npcEditingSupported: false }),
       npcEditingReasons: npcProfile.reasons,
@@ -701,6 +774,7 @@ function inspectLoadedProject(project, state) {
       runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
       objectChanges: { moved: new Set([...objects.moved, ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size, removed: objects.removed.length, added: objects.added.length },
       ...(objects.sorting.length ? { objectSortingChanged: objects.sorting.length } : {}),
+      ...(objects.flips.length ? { objectFlipsChanged: objects.flips.length } : {}),
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
       protectedObjects: [...objectProfile.records.values()].filter(r => !r.descriptor.canMove).length,
@@ -711,7 +785,7 @@ function inspectLoadedProject(project, state) {
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
-      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size,
+      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size,
       warnings } };
 }
 // Shared in-memory map construction keeps preview and export on the same packing path.
@@ -721,7 +795,7 @@ function buildCandidateMap(project, checked) {
   if (stable(deps.constants) !== stable(manifest.constants)) fail('STALE_SOURCE', '게임 좌표 상수가 변경되었습니다.');
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mb = deps.MapBuilder.read(originalPath);
-  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.record.item.path));
+  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.record.item.path));
   const removedNames = new Set(affected.map(b => b.name));
   const preserved = mb.listEntities().filter(e => !removedNames.has(e.name) && !changedPaths.has(e.path)).map(e => [e.path, stable(mb.find(e.path))]);
   if (report.changedCells > 0) {
@@ -733,7 +807,7 @@ function buildCandidateMap(project, checked) {
       mb.patchComponent(name, COMPONENT.transform, { Scale: deps.vector3(1, 1, 1) });
     }
     for (const [name, value] of preserved) if (stable(mb.find(name)) !== value) fail('PRESERVATION_FAILED', '보호 엔티티가 변경되었습니다: ' + name);
-    const parsed = analyzeMap(mb, manifest.catalog, deps.constants, project.size);
+    const parsed = analyzeMap(mb, checked.catalog, deps.constants, project.size);
     const parseErrors = parsed.reasons.filter(reason => !(after.size === 0 && reason.startsWith('Tile_*')));
     if (parseErrors.length || stable(sortedKeys(parsed.coverage)) !== stable(sortedKeys(after))) fail('COVERAGE_FAILED', '출력 바닥의 겹침, 빈칸 또는 좌표 검증에 실패했습니다.');
   }
@@ -845,7 +919,7 @@ function previewFromChecked(project, checked) {
     defaultSortingLayer: 'Default', sprites: scene.sprites, ...nativeObjects,
     npcs: checked.npcs.descriptors, npcCatalog: checked.npcs.catalog, npcEdits: checked.npcs.requested, npcSource: checked.npcSource, npcDialogGroups: checked.npcs.profile.dialogGroups || [], npcDialogGroupsAvailable: checked.npcs.profile.dialogGroupsAvailable === true,
     ...checked.runtime.scene, runtimeEdits: checked.runtime.echoes, runtimeSource: checked.runtimeSource,
-    groundBrushRuids: [...new Set(manifest.catalog.filter(t => t.n === 1).map(t => t.ruid))],
+    groundBrushRuids: [...new Set(checked.catalog.filter(t => t.n === 1).map(t => t.ruid))],
     warnings: [...report.warnings, ...scene.warnings],
     report: { ...report, spriteCount: scene.spriteCount, visibleSpriteCount: scene.sprites.length,
       hiddenSpriteCount: scene.hiddenSpriteCount, unsupportedSpriteCount: scene.unsupportedSpriteCount,
@@ -888,6 +962,7 @@ function comparisonFromChecked(checked, scene) {
           to: [object.position[0] + offset[0], object.position[1] + offset[1], object.position[2]] };
       }),
       added: objects.added.map(e => ({ entityId: e.entityId, prototypeId: e.prototypeId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })),
+      ...(objects.flips.length ? { flipped: objects.flips.map(e => ({ entityId: e.entityId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })) } : {}),
       ...(objects.sorting.length ? { sorted: objects.sorting.map(e => ({ entityId: e.entityId, position: [...scene.objects.find(o => o.entityId === e.entityId).position] })) } : {}),
       removed: objects.removed.map(e => ({ entityId: e.entityId, position: [...e.record.descriptor.sourcePosition] }))
     },
@@ -904,8 +979,10 @@ function compareEditedProject(project, options) {
 }
 function validateStorageRoot(target, gameRoot) { return outsideGame(target, gamePath(gameRoot)); }
 
-function validateSortingDepth(root, checked, mapPath, originalPath) {
-  if (!checked.objects.sorting.length) return { status: 'unchanged' };
+function validateEditDepth(root, checked, mapPath, originalPath) {
+  // Any object placement/offset/flip/sort or walk edit can move a game depth_check verdict,
+  // not just explicit sorting. Ground-only edits never touch object depth.
+  if (!checked.objects.changed && !checked.walk.changed) return { status: 'skipped' };
   const checker = path.join(root, 'scripts/depth_check.cjs');
   if (!fs.existsSync(checker)) return { status: 'unavailable' };
   const { runCheck } = require(sourceRelative(root, 'scripts/depth_check.cjs'));
@@ -920,11 +997,17 @@ function validateSortingDepth(root, checked, mapPath, originalPath) {
     } : {}) });
   } finally { console.log = log; console.warn = warn; }
   // Existing unrelated map debt is preserved; new sorting errors never reach an apply package.
-  const counters = ['dimDrift', 'totNew', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh'];
+  // Mirrors the game's fail formula (depth_check summary). occlStale only grows when an edit
+  // fixes a frozen violation, so it is reported for a baseline update instead of blocking.
+  const counters = ['dimDrift', 'totNew', 'crossCells', 'fpNew', 'windowMiss', 'portalFail', 'occlFresh', 'southFresh', 'bndFresh'];
+  const notices = ['occlStale', 'bndHot'];
   const regressions = counters.filter(key => (after[key] || 0) > (before[key] || 0));
   if (before.missing || after.missing || regressions.length) fail('DEPTH_GATE_FAILED',
-    '정렬 변경이 게임 깊이 검사에 맞지 않습니다 (' + regressions.join(', ') + '). 기존 JSON 오브젝트는 복제본에 정렬을 적용하거나 원본 저작 메타도 함께 맞춰 주세요. 저장된 편집 내용은 유지됩니다.');
-  return { status: 'passed', before: Object.fromEntries(counters.map(k => [k, before[k] || 0])), after: Object.fromEntries(counters.map(k => [k, after[k] || 0])) };
+    '편집 결과가 게임 깊이 검사(depth_check)를 새로 실패시킵니다 (' + (regressions.join(', ') || '맵 없음') + '). 오브젝트 위치·정렬·이동불가 칸을 다시 확인해 주세요. 기존 JSON 오브젝트는 복제본에 정렬을 적용하거나 원본 저작 메타도 함께 맞춰야 합니다. 저장된 편집 내용은 유지됩니다.');
+  const pick = keys => result => Object.fromEntries(keys.map(k => [k, result[k] || 0]));
+  const raised = notices.filter(key => (after[key] || 0) > (before[key] || 0));
+  return { status: 'passed', before: pick([...counters, ...notices])(before), after: pick([...counters, ...notices])(after),
+    ...(raised.length ? { notices: raised } : {}) };
 }
 
 function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
@@ -950,6 +1033,8 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const candidateId = crypto.randomUUID(), createdAt = new Date().toISOString();
   const candidateDir = safeChild(output, manifest.mapFileName + '-' + candidateId, root);
   fs.mkdirSync(candidateDir, { recursive: true });
+  // A failed gate or verification must not leave a half-written candidate that looks reviewable.
+  try {
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mapPath = safeChild(candidateDir, manifest.mapRelative, root);
   const originalBytes = fs.readFileSync(originalPath);
@@ -971,7 +1056,9 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     for (const [name, value] of [...preserved, ...editedObjects]) if (stable(reread.find(name)) !== value) fail('PRESERVATION_FAILED', '저장 후 엔티티 검증 실패: ' + name);
     groundComparison = { unchangedRuidTransform: true, coverageExact: true, unchangedBlocks: manifest.counts.groundEntities - affected.length };
   }
-  report.gameDepthValidation = validateSortingDepth(root, checked, mapPath, originalPath);
+  report.gameDepthValidation = validateEditDepth(root, checked, mapPath, originalPath);
+  if (report.gameDepthValidation.notices?.includes('occlStale')) report.warnings.push('편집으로 게임 깊이 검사의 동결된 가림 위반이 해소되었습니다. 게임 적용 시 depth-occlusion 기준 파일을 낮춰야 검사가 통과합니다.');
+  if (report.gameDepthValidation.notices?.includes('bndHot')) report.warnings.push('포탈·NPC 근처 깊이 경계 뒤집힘(★)이 늘었습니다. 게임 적용 전 depth_check (11) 목록을 확인해 주세요.');
   if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
   if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
   for (const candidate of runtimeCandidates) writeFile(candidateDir, candidate.relative, candidate.bytes, root);
@@ -1014,6 +1101,10 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   };
   writeFile(candidateDir, 'review-manifest.json', jsonBytes(reviewManifest), root);
   return { candidateId, candidateDir, mapPath, reportPath, report };
+  } catch (error) {
+    fs.rmSync(candidateDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 function runtimeUsesNpcOccupancy(report) { return report?.spawnChanged === true || Object.values(report?.monsterChanges || {}).some(n => n > 0); }
 function runtimeNpcDependency(profile) { const file = profile.files.DT_NpcSpawn; return file ? { relative: file.relative, sha256: hash(file.bytes) } : null; }
@@ -1031,6 +1122,7 @@ function candidateSummary(report) {
     groundRepackedCells: Math.max(0, (report.affectedCells ?? 0) - (report.changedCells ?? 0)),
     objectsMoved: report.objectChanges?.moved ?? 0, objectsAdded: report.objectChanges?.added ?? 0,
     objectsRemoved: report.objectChanges?.removed ?? 0,
+    ...(report.objectFlipsChanged ? { objectsFlipped: report.objectFlipsChanged } : {}),
     ...(report.objectSortingChanged ? { objectsSorted: report.objectSortingChanged } : {}),
     blockedAdded: report.walkComparison?.addedRows ?? 0, blockedRemoved: report.walkComparison?.removedRows ?? 0,
     walkChangedCells: report.walkChangedCells ?? 0,
@@ -1085,6 +1177,17 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
   let entries;
   try { entries = fs.readdirSync(output, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return result; throw error; }
   const prefix = manifest.mapFileName + '-';
+  // A candidate's apply files follow the baseline it was built from (as reviewCandidate does);
+  // the game may have moved a CSV since. Fall back to the current baseline if the old one is gone.
+  const manifests = new Map([[baselineId, manifest]]);
+  const manifestFor = id => {
+    if (!manifests.has(id)) {
+      let found = manifest;
+      try { const old = loadBaseline({ map: mapName, gameSync: { version: VERSION, mapName, baselineId: id } }, { gameRoot, baselineRoot }).manifest; if (old.mapFileName === manifest.mapFileName) found = old; } catch { /* keep current */ }
+      manifests.set(id, found);
+    }
+    return manifests.get(id);
+  };
   for (const entry of entries) {
     if (!entry.name.startsWith(prefix)) continue;
     const candidateId = entry.name.slice(prefix.length);
@@ -1100,10 +1203,11 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
         report.gameApplied !== false || report.runtimeVerified !== false) throw new Error('Invalid candidate identity.');
       const summary = candidateSummary(report);
       if (Object.values(summary).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('Invalid candidate summary.');
-      const walk = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
-      const npcFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
+      const recorded = manifestFor(recordedBaseline);
+      const walk = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
+      const npcFiles = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
       const npcChanged = Object.values(report.npcChanges || {}).some(n => n > 0);
-      const applyFiles = [manifest.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, manifest)];
+      const applyFiles = [recorded.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, recorded)];
       if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
       for (const relative of applyFiles) candidateChild(dir, relative, root);
       if (review) {

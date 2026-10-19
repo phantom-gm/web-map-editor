@@ -35,7 +35,9 @@ function parseCsv(bytes, required = []) {
   });
   return { header, records, rows, newline: /\r\n|\n|\r/.exec(text)?.[0] || '\r\n' };
 }
-const truth = value => /^(true|1)$/i.test(value);
+// Mirrors game DataSetRepoLogic.BoolCell: only true/false (any case) are read; blank
+// or anything else falls back to the column default the runtime uses.
+const boolCell = (value, fallback) => { const v = String(value ?? '').toLowerCase(); return v === 'true' ? true : v === 'false' ? false : fallback; };
 const integer = (value, label) => { if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value))) fail('UNSUPPORTED_NPC', label + ' 값이 정수가 아닙니다.'); return Number(value); };
 function spawnRows(bytes) {
   const parsed = parseCsv(bytes, ['NpcSpawnID', 'MapName', 'NpcClassID', 'CellX', 'CellY', 'Enabled', 'Scale', 'FlipX', 'DialogID']);
@@ -45,7 +47,7 @@ function spawnRows(bytes) {
     if (!ID.test(d.NpcSpawnID) || !ID.test(d.MapName) || seen.has(d.NpcSpawnID)) fail('UNSUPPORTED_NPC', 'NPC 스폰 ID가 중복되었거나 올바르지 않습니다: ' + d.NpcSpawnID);
     seen.add(d.NpcSpawnID);
     row.spawnId = d.NpcSpawnID; row.mapName = d.MapName; row.npcClassId = integer(d.NpcClassID, 'NpcClassID');
-    row.cell = [integer(d.CellX, 'CellX'), integer(d.CellY, 'CellY')]; row.enabled = truth(d.Enabled); row.flipX = truth(d.FlipX); row.dialogId = d.DialogID;
+    row.cell = [integer(d.CellX, 'CellX'), integer(d.CellY, 'CellY')]; row.enabled = boolCell(d.Enabled, true); row.flipX = boolCell(d.FlipX, false); row.dialogId = d.DialogID;
   }
   return parsed;
 }
@@ -66,8 +68,19 @@ function analyzeNpcs(files, mapName, sourceId = null) {
     // only assigning a new nonempty group needs an authoritative catalog.
     if (get('DT_QuestSequence.csv')) {
       try {
-        out.dialogGroups = [...new Set(parseCsv(get('DT_QuestSequence.csv'), ['SequenceGroupID']).rows
-          .map(row => row.data.SequenceGroupID).filter(id => ID.test(id)))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+        // Game runtime reads SequenceGroupID with IdCell (positive integer) and only plays groups
+        // that have a SequenceOrder > 0 row; anything else makes the NPC click do nothing.
+        const sequence = parseCsv(get('DT_QuestSequence.csv'), ['SequenceGroupID']).rows;
+        const groups = new Map();
+        for (const row of sequence) {
+          const id = row.data.SequenceGroupID;
+          if (!/^[1-9]\d*$/.test(id || '') || !(Number(row.data.SequenceOrder) > 0)) continue;
+          if (!groups.has(id)) groups.set(id, new Set());
+          const speaker = Number(row.data.SpeakerNpcClassID);
+          if (Number.isSafeInteger(speaker) && speaker > 0) groups.get(id).add(speaker);
+        }
+        out.dialogGroups = [...groups.keys()].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+        out.dialogSpeakers = Object.fromEntries([...groups].map(([id, speakers]) => [id, [...speakers].sort((a, b) => a - b)]));
         out.dialogGroupsAvailable = true;
       } catch (error) { if (error.name !== 'GameSyncError') throw error; }
     }
@@ -106,17 +119,20 @@ function inspectNpcs(project, profile, constants) {
     const validCell = c => Array.isArray(c) && c.length === 2 && c.every(Number.isSafeInteger) && c[0] >= 0 && c[1] >= 0 && c[0] < project.size[0] && c[1] < project.size[1];
     const validDialog = d => typeof d === 'string' && (d === '' || ID.test(d));
     const dialogGroups = new Set(profile.dialogGroups);
-    const requireDialogGroup = (id, previous) => {
+    const requireDialogGroup = (id, previous, npcClassId) => {
       if (id === '' || id === previous) return;
       if (!profile.dialogGroupsAvailable) fail('NPC_DIALOG_CATALOG_UNAVAILABLE', '대사 그룹 목록을 읽을 수 없습니다. NPC 원본을 다시 가져오거나 대사 ID를 비워두세요.');
-      if (!dialogGroups.has(id)) fail('UNKNOWN_NPC_DIALOG', '대사 그룹 목록에 없는 ID입니다: ' + id);
+      if (!dialogGroups.has(id)) fail('UNKNOWN_NPC_DIALOG', '대사 그룹 목록에 없는 ID입니다(게임은 양의 정수 ID와 순서가 있는 대사만 재생합니다): ' + id);
+      // The dialogue window draws the group's own speaker, so a mismatch shows another NPC's name.
+      const speakers = profile.dialogSpeakers?.[id] || [];
+      if (speakers.length && !speakers.includes(npcClassId)) warnings.push('대사 그룹 ' + id + '의 화자(' + speakers.join(', ') + ')가 이 NPC(' + npcClassId + ')와 다릅니다. 게임 대화창에는 그 화자의 이름표가 표시됩니다.');
     };
     for (const edit of raw.updated) {
       if (!exactKeys(edit, ['entityId', 'cell', 'flipX', 'dialogId'])) fail('INVALID_NPC_EDIT', '지원하지 않는 NPC 수정 필드입니다.'); target(edit.entityId);
       const record = records.get(edit.entityId);
       if (!record || !classes.get(record.npcClassId)?.canAdd) fail('INVALID_NPC_EDIT', '수정할 수 없는 NPC입니다.');
       if (edit.cell !== undefined && !validCell(edit.cell) || edit.flipX !== undefined && typeof edit.flipX !== 'boolean' || edit.dialogId !== undefined && edit.dialogId !== record.dialogId && !validDialog(edit.dialogId)) fail('INVALID_NPC_EDIT', 'NPC 좌표·반전·대사 ID를 확인하세요.');
-      if (edit.dialogId !== undefined) requireDialogGroup(edit.dialogId, record.dialogId);
+      if (edit.dialogId !== undefined) requireDialogGroup(edit.dialogId, record.dialogId, record.npcClassId);
       const next = { ...record, cell: edit.cell || record.cell, flipX: edit.flipX ?? record.flipX, dialogId: edit.dialogId ?? record.dialogId };
       if (!equal(next.cell, record.cell) || next.flipX !== record.flipX || next.dialogId !== record.dialogId) {
         records.set(edit.entityId, next); changed.push(next);
@@ -129,7 +145,7 @@ function inspectNpcs(project, profile, constants) {
       if (!exactKeys(edit, ['entityId', 'npcClassId', 'cell', 'flipX', 'dialogId'])) fail('INVALID_NPC_EDIT', '지원하지 않는 NPC 추가 필드입니다.'); target(edit.entityId);
       const spawnId = profile.mapName + '_Editor_' + edit.entityId;
       if (!UUID.test(edit.entityId) || records.has(edit.entityId) || profile.allIds.has(edit.entityId) || !Number.isSafeInteger(edit.npcClassId) || edit.npcClassId <= 0 || !classes.get(edit.npcClassId)?.canAdd || !validCell(edit.cell) || typeof edit.flipX !== 'boolean' || !validDialog(edit.dialogId) || profile.allIds.has(spawnId)) fail('INVALID_NPC_EDIT', '새 NPC의 종류·ID·좌표·반전·대사 ID를 확인하세요.');
-      requireDialogGroup(edit.dialogId);
+      requireDialogGroup(edit.dialogId, undefined, edit.npcClassId);
       const record = { ...edit, spawnId, mapName: profile.mapName, enabled: true, sourceCell: null, sourceFlipX: null, sourceDialogId: null };
       added.push(record); records.set(edit.entityId, record);
     }

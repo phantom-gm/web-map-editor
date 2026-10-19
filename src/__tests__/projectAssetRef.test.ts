@@ -57,3 +57,30 @@ describe("exportProject — v2 참조 포맷", () => {
     expect(bytes).toBeLessThan(200 * 1024); // 참조만이면 항목당 ~100B 수준
   });
 });
+
+
+describe("verified floor palette references", () => {
+  beforeEach(() => { useEditorStore.getState().newProject(); useEditorStore.setState({palette:[]}); });
+  it("upgrades an existing brush without changing cell indices and saves its verification", () => {
+    useEditorStore.setState({palette:[tile({ruid:"floor",category:"background"})],ground:new Map([["1,1",0]]),dirty:false});
+    useEditorStore.getState().addResolvedTiles([tile({ruid:"floor",name:"Velos_stone",category:"foothold",gameResourceId:"a".repeat(64)})]);
+    expect(useEditorStore.getState().palette).toHaveLength(1);
+    expect(useEditorStore.getState().ground.get("1,1")).toBe(0);
+    expect(useEditorStore.getState().dirty).toBe(true);
+    const saved=useEditorStore.getState().exportProject();
+    expect(saved.palette[0].gameResourceId).toBe("a".repeat(64));
+    expect(JSON.stringify(saved)).not.toContain("data:image");
+  });
+  it("keeps only the opened map's verified references when combining the shared library", () => {
+    const p=useEditorStore.getState().exportProject();
+    p.map="mapB";p.gameSync={version:1,baselineId:"baselineB",mapName:"mapB"};
+    const current=tile({ruid:"current",gameResourceId:"b".repeat(64)});
+    p.palette=[toStoredTile(current)];p.ground=[[0,0,0]];
+    useEditorStore.setState({palette:[tile({ruid:"foreign",gameResourceId:"a".repeat(64)})]});
+    useEditorStore.getState().loadProject(p,[current]);
+    const palette=useEditorStore.getState().exportProject().palette;
+    expect(palette[0].gameResourceId).toBe("b".repeat(64));
+    expect(palette.find(t=>t.ruid==="foreign")?.gameResourceId).toBeUndefined();
+    expect(useEditorStore.getState().ground.get("0,0")).toBe(0);
+  });
+});

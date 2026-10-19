@@ -4,16 +4,18 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 import { NextResponse } from "next/server";
-import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset } from "../../../src/server/mswMcp";
+import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset, type SpriteResourceMetadata } from "../../../src/server/mswMcp";
 import { runPool } from "../../../src/lib/pool";
 import type { AnimationPreviewFrame } from "../../../src/server/spriteMetadata";
 import type { SpriteAssetsResponse } from "../../../src/lib/spriteAsset";
 
 const IMG_CONCURRENCY = 8;
+// Identity of what the client decoded: an in-place Maker update keeps the RUID but changes these.
+const stampOf = (resource: SpriteResourceMetadata) => JSON.stringify([resource.version, resource.contentHash, resource.properties]);
 const MAX_RUIDS = 500;
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => null)) as { ruids?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { ruids?: unknown; metaOnly?: unknown } | null;
   const raw = Array.isArray(body?.ruids) ? body.ruids : null;
   if (!raw || raw.some(r => typeof r !== "string" || !/^[0-9a-f]{32}$/i.test(r))) {
     return NextResponse.json({ error: "ruids에는 32자리 RUID 문자열 배열이 필요합니다." }, { status: 400 });
@@ -22,7 +24,17 @@ export async function POST(req: Request) {
   if (ruids.length > MAX_RUIDS) {
     return NextResponse.json({ error: "한 번에 최대 500개 RUID를 조회할 수 있습니다." }, { status: 400 });
   }
-  if (!ruids.length) return NextResponse.json({ images: {}, sprites: {}, errors: {}, resolved: 0, missing: 0 });
+  if (!ruids.length) return NextResponse.json({ images: {}, sprites: {}, errors: {}, stamps: {}, resolved: 0, missing: 0 });
+  if (body?.metaOnly === true) {
+    // Cheap revalidation for client caches: metadata only, no image bytes.
+    try {
+      const resources = await withMcpClient(client => getGroupResourceMetadata(client, ruids));
+      const stamps = Object.fromEntries(ruids.flatMap(ruid => { const r = resources.get(ruid); return r ? [[ruid, stampOf(r)]] : []; }));
+      return NextResponse.json({ stamps }, { headers: { "Cache-Control": "no-store" } });
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 502 });
+    }
+  }
 
   try {
     // Metadata is refreshed on each request; a RUID can keep its identity after a data/pivot update.
@@ -41,10 +53,11 @@ export async function POST(req: Request) {
       return all;
     });
     const byId = new Map([...resources.values()].map(resource => [resource.ruid.toLowerCase(), resource]));
-    const result: SpriteAssetsResponse = { images: {}, sprites: {}, errors: {} };
+    const result: SpriteAssetsResponse = { images: {}, sprites: {}, errors: {}, stamps: {} };
     await runPool(IMG_CONCURRENCY, ruids.length, async i => {
       const ruid = ruids[i], resource = resources.get(ruid);
       result.images[ruid] = null;
+      if (resource) result.stamps![ruid] = stampOf(resource);
       if (!resource) {
         result.errors[ruid] = "resource-not-found";
         return;

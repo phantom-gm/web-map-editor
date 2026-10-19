@@ -31,6 +31,19 @@ export function activateEditorTool(tool: Tool): void {
   editor.setTool(tool);
 }
 
+/**
+ * Escape clears the current selection and any pending placement. With the cursor tool in a
+ * synced map it keeps the chosen selection mode (multi-select / blocked cells), matching the
+ * panel's ✕ button, so a blocked-cell batch edit can continue. Other tools return to the cursor.
+ */
+export function escapeEditorSelection(): void {
+  const editor = useEditorStore.getState(), view = useGamePreviewStore.getState();
+  if (!editor.gameSync || editor.activeTool !== "cursor") { activateEditorTool("cursor"); return; }
+  if (useWorkspaceSession.getState().loading || view.comparisonEnabled) return;
+  editor.clearGameSelection();
+  view.setRuntimePlacement(null); view.setPlacementNpc(null); view.setPlacementPrototype(null);
+}
+
 type ShortcutEvent = Pick<KeyboardEvent, "target" | "isComposing" | "defaultPrevented">;
 type ShortcutDocument = Pick<Document, "querySelector">;
 /** Native dialogs and the resource browser isolate every editor shortcut. */

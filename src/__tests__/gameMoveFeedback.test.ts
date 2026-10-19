@@ -11,8 +11,9 @@ function scene(): GamePreviewScene {
   const objects = ["rock", "tree"].map((entityId, i) => {
     const sourcePosition: [number, number, number] = [i * 3, i ? -i * 2 : 0, i];
     const edit = state().gameObjectEdits?.moved.find(o => o.entityId === entityId);
-    const position: [number, number, number] = edit ? [...edit.position, sourcePosition[2] + (edit.position[1] - sourcePosition[1]) * constants.DEPTH_SCALE] : sourcePosition;
+    const position: [number, number, number] = edit ? [...edit.position, sourcePosition[2] + (edit.position[1] - sourcePosition[1]) * constants.DEPTH_SCALE] : [...sourcePosition];
     const visualOffset = state().gameObjectEdits?.visualOffsets?.find(o => o.entityId === entityId)?.offset;
+    if (visualOffset) position[2] += visualOffset[1] * constants.DEPTH_SCALE; // z follows the drawn Y
     return { entityId, prototypeId: entityId, spriteId: entityId, name: entityId, ruid: entityId, sourcePosition, position,
       canMove: true, canDuplicate: true, canDelete: true, ...(visualOffset ? { visualOffset } : {}) };
   });
@@ -59,7 +60,9 @@ it("supports group moves and preserves the separate image offset", () => {
   const feedback = visibleMovementFeedback(state())!;
   expect(feedback.sprites).toHaveLength(2);
   const immediate = sceneWithMovementFeedback(before, feedback);
-  expect(immediate.sprites.map(s => s.position)).toEqual([[2.56, 1.28, 0.28], [5.56, -0.72, 1.28]]);
+  // rock z also carries its image offset (0.4 * DEPTH_SCALE): z follows the drawn Y.
+  const expected = [[2.56, 1.28, 0.28 + 0.4 * 0.21875], [5.56, -0.72, 1.28]];
+  immediate.sprites.forEach((s, i) => s.position.forEach((v, k) => expect(v).toBeCloseTo(expected[i][k], 9)));
   expect(immediate.sprites[0].visualOffset).toEqual([0.2, 0.4]);
   expect(sceneWithMovementFeedback(scene(), feedback).sprites).toEqual(scene().sprites);
 });

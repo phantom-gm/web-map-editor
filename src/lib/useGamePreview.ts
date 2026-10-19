@@ -3,7 +3,12 @@ import { useEditorStore } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { validPreviewAsset, type GamePreviewImages, type GamePreviewScene } from "./gamePreview";
 import { validateComparisonPair, type GameBaselinePreview, type GameComparison } from "./gameComparison";
-import { fetchSpriteAssets } from "./apiClient";
+import { fetchSpriteAssets, fetchSpriteStamps } from "./apiClient";
+
+// A RUID can be updated in place (Maker/MCP). Cached entries are revalidated with a cheap
+// metadata-only request at most this often, and reloaded only when their identity changed.
+const REVALIDATE_MS = 60_000;
+const verified = new WeakMap<GamePreviewImages, Map<string, { stamp?: string; at: number }>>();
 
 function loadImage(url: string, signal: AbortSignal): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -19,27 +24,47 @@ function loadImage(url: string, signal: AbortSignal): Promise<HTMLImageElement> 
 }
 
 /** Include original floor sprites and deleted objects so both views use their real resource metadata. */
-async function loadSceneImages(scenes: GamePreviewScene[], cache: GamePreviewImages, signal: AbortSignal) {
+export async function loadSceneImages(scenes: GamePreviewScene[], cache: GamePreviewImages, signal: AbortSignal) {
   const ruids = [...new Set(scenes.flatMap(scene => [
     ...scene.sprites.map(sprite => sprite.ruid),
     ...(scene.objectPrototypes ?? []).map(object => object.ruid),
     ...(scene.npcCatalog ?? []).map(npc => npc.ruid).filter(Boolean),
     ...(scene.monsterCatalog ?? []).map(m => m.ruid).filter(Boolean),
   ]))];
-  const missing = ruids.filter(ruid => !cache.has(ruid));
+  // Library thumbnails (including deleted originals) do not affect the current map.
+  // A comparison also includes the original scene, so its missing sprites still warn.
+  const requiredRuids = new Set(scenes.flatMap(scene => scene.sprites.map(sprite => sprite.ruid)));
+  let checks = verified.get(cache);
+  if (!checks) { checks = new Map(); verified.set(cache, checks); }
+  const now = Date.now();
+  const due = ruids.filter(ruid => cache.has(ruid) && now - (checks.get(ruid)?.at ?? 0) > REVALIDATE_MS);
+  const changed = new Set<string>();
+  if (due.length) {
+    try {
+      const stamps = await fetchSpriteStamps(due, signal);
+      for (const ruid of due) {
+        const known = checks.get(ruid)?.stamp;
+        if (stamps[ruid] && known && stamps[ruid] !== known) changed.add(ruid);
+        else checks.set(ruid, { stamp: known ?? stamps[ruid], at: now });
+      }
+    } catch (error) {
+      if (signal.aborted) throw error; // Revalidation is best-effort; keep showing cached images.
+    }
+  }
+  const missing = ruids.filter(ruid => !cache.has(ruid) || changed.has(ruid));
   const failures: string[] = [];
   for (let offset = 0; offset < missing.length; offset += 100) {
     const batch = missing.slice(offset, offset + 100);
     const data = await fetchSpriteAssets(batch, signal);
     await Promise.all(batch.map(async ruid => {
       const asset = data.sprites?.[ruid], url = data.images?.[ruid];
-      if (!url || !validPreviewAsset(asset)) { failures.push(ruid); return; }
+      if (!url || !validPreviewAsset(asset)) { if (!changed.has(ruid)) failures.push(ruid); return; }
       try {
         const image = await loadImage(url, signal);
-        if (!signal.aborted) cache.set(ruid, { image, asset });
+        if (!signal.aborted) { cache.set(ruid, { image, asset }); checks.set(ruid, { stamp: data.stamps?.[ruid], at: Date.now() }); }
       } catch (error) {
         if (signal.aborted) throw error;
-        failures.push(ruid);
+        if (!changed.has(ruid)) failures.push(ruid); // A failed refresh keeps the previous image.
       }
     }));
   }
@@ -48,7 +73,7 @@ async function loadSceneImages(scenes: GamePreviewScene[], cache: GamePreviewIma
       const image = cache.get(ruid);
       return image ? [[ruid, image] as const] : [];
     })),
-    missingImages: failures.length,
+    missingImages: failures.filter(ruid => requiredRuids.has(ruid)).length,
   };
 }
 

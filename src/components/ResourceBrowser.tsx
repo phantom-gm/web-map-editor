@@ -20,7 +20,9 @@ type Query = { category: string; search: string; revision: number };
 export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () => void; gameObjects?: boolean }) {
   const inPalette = useEditorStore(state=>state.palette);
   const prototypes = useGamePreviewStore(state=>state.scene?.objectPrototypes);
-  const havePalette = useMemo(()=>new Set(gameObjects ? (prototypes ?? []).filter(item=>item.resourceId).map(item=>item.ruid) : inPalette.map(tile=>tile.ruid).filter(Boolean)),[inPalette,prototypes,gameObjects]);
+  const linked = useEditorStore(state=>!!state.gameSync);
+  const groundBrushRuids = useGamePreviewStore(state=>state.scene?.groundBrushRuids);
+  const havePalette = useMemo(()=>new Set(gameObjects ? (prototypes ?? []).filter(item=>item.resourceId).map(item=>item.ruid) : inPalette.filter(tile=>!linked||groundBrushRuids?.includes(tile.ruid??"")).map(tile=>tile.ruid).filter(Boolean)),[inPalette,prototypes,gameObjects,linked,groundBrushRuids]);
   const dialog = useRef<HTMLDialogElement>(null);
   const generation = useRef(0), addingGeneration = useRef(0);
   const imageRequest = useRef<AbortController | null>(null);
@@ -88,6 +90,7 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
     const before=useEditorStore.getState(),projectIdentity=[before.mapName,before.gameSync?.baselineId,before.documentNonce].join(":");
     setAdding(true);setAddError("");
     try{
+      const groundResourceIds: string[] = [];
       if(gameObjects){
         if(!before.gameSync)throw new Error("게임 맵을 먼저 열어 주세요.");
         const result = await gameRequest<{resourceIds:string[]}>({ action:"register-object-resources", mapName:before.gameSync.mapName, baselineId:before.gameSync.baselineId, resources:pending.map(item=>({ruid:item.ruid,name:item.name})) });
@@ -98,6 +101,13 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
         useGamePreviewStore.getState().setShowObjects(true);
         close();return;
       }
+      if(before.gameSync){
+        for(let start=0;start<pending.length;start+=100){
+          const result=await gameRequest<{resourceIds:string[]}>({action:"register-ground-resources",mapName:before.gameSync.mapName,baselineId:before.gameSync.baselineId,resources:pending.slice(start,start+100).map(item=>({ruid:item.ruid,name:item.name}))});
+          if(token!==addingGeneration.current||controller.signal.aborted)return;
+          groundResourceIds.push(...result.resourceIds);
+        }
+      }
       const assets=await fetchSpriteAssets(pending.map(item=>item.ruid),controller.signal);
       if(token!==addingGeneration.current||controller.signal.aborted)return;
       const missing=pending.filter(item=>!assets.images[item.ruid]);
@@ -107,6 +117,7 @@ export function ResourceBrowser({ onClose, gameObjects = false }: { onClose: () 
       if(tiles.some(tile=>!tile.img))throw new Error("일부 이미지를 열지 못했습니다. 잠시 뒤 다시 추가해 주세요.");
       const current=useEditorStore.getState();
       if([current.mapName,current.gameSync?.baselineId,current.documentNonce].join(":")!==projectIdentity)throw new Error("편집 중인 프로젝트가 바뀌었습니다. 창을 닫고 다시 선택해 주세요.");
+      if(before.gameSync)tiles.forEach((tile,i)=>{tile.gameResourceId=groundResourceIds[i];tile.category="foothold";});
       tiles.forEach(markServerResourceImage);
       current.addResolvedTiles(tiles);close();
     }catch(failure){if(token===addingGeneration.current&&!controller.signal.aborted)setAddError(failure instanceof Error?failure.message:String(failure));}

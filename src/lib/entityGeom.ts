@@ -61,12 +61,14 @@ export function entityPivot(rect: [number, number, number, number]): [number, nu
   return [(x0 + x1) / 2, y1];
 }
 
-const CELL_DEPTH = GAME_TILE_HALF_H; // 0.14 = 셀 1칸당 world_y 변화량 (build_map CELL_DEPTH 와 동일)
+// 0.14 = 셀 1칸당 **z 공간** 깊이. 게임은 world 0.64(TILE_H/2) × DEPTH_SCALE 0.21875 = 0.14 로 같은 값을 만든다.
+// world 값(0.64)으로 "고치면" 순서가 깨진다 — 이 식은 z 공간에서 계산한다.
+const CELL_DEPTH = GAME_TILE_HALF_H;
 
 /**
- * 게임 z 미러 — **작을수록 앞(위)**. build_map.cjs:392 와 같은 식이어야 WYSIWYG 이 성립한다.
- * 계약서: legend_of_light/docs/map/isometric/DEPTH_SORT_CONTRACT.md §3 (요약: ../../DEPTH_SORT.md)
- *   식을 바꾸려면 계약서 → 이 함수 → build_map.cjs → 양쪽 테스트를 **한 커밋에서 같이** 바꾼다.
+ * 게임 z 미러 — **작을수록 앞(위)**. 게임 build_map.cjs objectDepthZ() 와 같은 순서여야 WYSIWYG 이 성립한다.
+ * 요약: DEPTH_SORT.md. 게임 쪽 검사: depth_check.cjs (1) z 파리티.
+ *   식을 바꾸려면 게임 build_map.cjs → 이 함수 → 양쪽 테스트를 **한 커밋에서 같이** 바꾼다.
  *
  *   game:   z = pos.y − sortOffset × CELL_DEPTH
  *           pos.y = cellToWorld(gx,gy).y + offset[1]

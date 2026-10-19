@@ -17,6 +17,7 @@ export interface GameSyncReport {
   groundEditingSupported?: boolean;
   objectEditingSupported?: boolean;
   objectSortingChanged?: number;
+  objectFlipsChanged?: number;
   objectChanges?: { moved: number; removed: number; added: number };
   editableObjects?: number;
   protectedObjects?: number;

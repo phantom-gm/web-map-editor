@@ -16,7 +16,7 @@ import { makeMovementFeedback, type GameMoveFeedback } from "../lib/gameMoveFeed
 import type { GamePreviewScene } from "../lib/gamePreview";
 import { currentGameObjects, mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
 import type { ObjectSortSetting } from "../lib/objectSorting.cjs";
-import { setGameObjectVisualOffset, setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
+import { setGameObjectFlip, setGameObjectVisualOffset, setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
 import { addGameNpcEdit, updateGameNpcEdit, removeGameNpcEdit, parseGameNpcEdits, parseGameNpcSync, npcEditsKey, npcCellInBounds, type GameNpcEdits, type GameNpcSync, type GameNpcPatch, type GameNpcCell } from "../lib/gameNpc";
 import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
@@ -273,6 +273,7 @@ export interface EditorState extends RuntimeProjectFields {
   moveGameObjectTo: (entityId: string, position: GameObjectPosition, commit?: boolean) => void;
   addGameResourceReferences: (ids: string[]) => void;
   scaleGameResource: (entityId: string, scale: number) => void;
+  flipGameObject: (entityId: string, scene: GamePreviewScene) => void;
   offsetGameObjectVisual: (entityId: string, offset: GameObjectPosition, scene: GamePreviewScene) => void;
   sortGameObject: (entityId: string, setting: ObjectSortSetting | undefined, scene: GamePreviewScene) => void;
   depthGameResource: (entityId: string, depthOffset: number) => void;
@@ -301,10 +302,16 @@ function assertNpcScene(state: EditorState, scene: GamePreviewScene): void {
   }
   if (scene.npcSource.stale) throw new Error("NPC 게임 원본이 바뀌었습니다. NPC 원본을 다시 불러오세요.");
 }
+// Game check 55 / PortalIdlePolicy: an enabled portal's source cell and its 4 neighbours.
+const PORTAL_GUARD = [[0,0],[1,0],[0,-1],[-1,0],[0,1]] as const;
+const guardsCell = (portal: {cell: [number, number]}, cell: readonly [number, number]) =>
+  PORTAL_GUARD.some(([dx,dy]) => portal.cell[0]+dx===cell[0] && portal.cell[1]+dy===cell[1]);
+const GUARD_MESSAGE = "포털 입구 칸(포털 칸과 상하좌우)에는 NPC를 둘 수 없습니다. 게임 검사 55가 막습니다.";
 function assertNpcCell(state: EditorState, scene: GamePreviewScene, cell: GameNpcCell, excludeId?: string): void {
   if (!npcCellInBounds(cell, state.size)) throw new Error("NPC를 맵 안의 칸에 배치하세요.");
   if (state.gameSpawnEdits?.cell[0] === cell[0] && state.gameSpawnEdits.cell[1] === cell[1]) throw new Error("수정한 시작점에는 NPC를 놓을 수 없습니다.");
   if (scene.npcs?.some(npc => npc.entityId !== excludeId && npc.enabled && npc.cell[0] === cell[0] && npc.cell[1] === cell[1])) throw new Error("다른 NPC가 있는 칸입니다. 옆 칸을 선택하세요.");
+  if (scene.portals?.some(portal => portal.enabled && guardsCell(portal, cell))) throw new Error(GUARD_MESSAGE);
 }
 
 
@@ -346,6 +353,7 @@ function assertPortal(state: EditorState, scene: GamePreviewScene, fields: Porta
   const changedSource = !previous || JSON.stringify(previous.cell)!==JSON.stringify(fields.cell) || (!previous.enabled && fields.enabled);
   if (fields.enabled && changedSource) assertRuntimeCell(state,scene,fields.cell,true);
   if (fields.enabled && scene.portals?.some(p=>p.entityId!==excludeId && p.enabled && p.cell[0]===fields.cell[0] && p.cell[1]===fields.cell[1])) throw new Error("같은 출발 칸에 활성 포털이 있습니다.");
+  if (fields.enabled && changedSource && scene.npcs?.some(npc => npc.enabled && guardsCell(fields, npc.cell))) throw new Error(GUARD_MESSAGE);
   const target = scene.mapDestinations?.find(m=>m.mapName===fields.destMap);
   if (!target?.canTarget || !runtimeCellInBounds(fields.destCell,target.bounds)) throw new Error(target?.reason || "도착 맵과 도착 칸을 확인하세요.");
   const changedDestination = !previous || previous.destMap!==fields.destMap || JSON.stringify(previous.destCell)!==JSON.stringify(fields.destCell) || (!previous.enabled && fields.enabled);
@@ -441,10 +449,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // 동일 ruid 중복 추가 방지(이미 팔레트에 있으면 제외).
       const have = new Set(s.palette.map((t) => t.ruid).filter(Boolean));
       const fresh = tiles.filter((t) => !t.ruid || !have.has(t.ruid));
-      if (fresh.length === 0) return {};
-      const palette = [...s.palette, ...fresh];
+      const verified = new Map(tiles.filter(t=>t.gameResourceId).map(t=>[t.ruid,t]));
+      const existing = s.palette.map(t=>verified.has(t.ruid)?{...t,...verified.get(t.ruid)!}:t);
+      const upgraded = existing.some((t,i)=>t!==s.palette[i]);
+      if (fresh.length === 0 && !upgraded) return {};
+      const palette = [...existing, ...fresh];
       const activeIdx = s.palette.length === 0 ? 0 : s.activeIdx;
-      return { palette, activeIdx, activeTool: toolForCategory(palette[activeIdx]?.category) };
+      return { palette, activeIdx, dirty: true, activeTool: toolForCategory(palette[activeIdx]?.category) };
     }),
   // 팔레트 타일 삭제(여러 개). ground 가 팔레트 인덱스를 참조하므로 인덱스 리맵 필수:
   // 삭제된 타일을 쓰던 셀은 제거하고, 남은 타일 인덱스를 앞으로 당긴다.
@@ -1020,6 +1031,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
     } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
   }),
+  flipGameObject: (entityId, scene) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const object = currentGameObjects(s, scene).get(entityId);
+      if (!object?.canMove) throw new Error("보호된 오브젝트는 반전할 수 없습니다.");
+      const prototype = scene.objectPrototypes?.find(p => p.entityId === object.prototypeId);
+      const next = !(object.flipX === true);
+      const gameObjectEdits = setGameObjectFlip(s.gameObjectEdits, entityId, next === (prototype?.flipX === true) ? undefined : next);
+      return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null, gameMoveFeedback: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
+  }),
   offsetGameObjectVisual: (entityId, offset, scene) => set(s => {
     if (!s.gameSync) return {};
     try {
@@ -1275,7 +1298,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const gameNpcEdits = parseGameNpcEdits(p.gameNpcEdits), gameNpcSync = parseGameNpcSync(p.gameNpcSync);
       if ((gameNpcEdits || gameNpcSync) && !gameSync) throw new Error("NPC 편집 정보에는 게임 원본 연결이 필요합니다.");
       if (gameObjectEdits && !gameSync) throw new Error("게임 오브젝트 편집 정보에는 게임 원본 연결이 필요합니다.");
-      const merged = mergeProjectPalette(s.palette, tiles);
+      // Imported library entries do not carry another map's verified metadata references.
+      const library = s.palette.map(tile=>{const copy={...tile};delete copy.gameResourceId;return copy;});
+      const merged = mergeProjectPalette(library, tiles);
       s.ground.clear();
       for (const [gx, gy, idx] of p.ground) s.ground.set(cellKey(gx, gy), idx);
       s.blocked.clear();

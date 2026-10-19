@@ -2,10 +2,10 @@
 
 MSW 아이소 RPG용 맵 편집기. 아이소메트릭(2:1 다이아몬드) 그리드에 타일을 칠하고 **blueprint JSON**으로 export → 기존 빌드/런타임 파이프라인에 연결.
 
-> 설계: [`../../docs/map/WEB_MAP_EDITOR_MVP_DESIGN.md`](../../docs/map/WEB_MAP_EDITOR_MVP_DESIGN.md)
-> 파이프라인: [`../../docs/map/WEB_MAP_EDITOR_PIPELINE.md`](../../docs/map/WEB_MAP_EDITOR_PIPELINE.md)
-> RUID 연동/백엔드: [`../../docs/map/WEB_MAP_EDITOR_RUID_LINKAGE.md`](../../docs/map/WEB_MAP_EDITOR_RUID_LINKAGE.md)
-> Vercel 배포: [`../../docs/map/WEB_MAP_EDITOR_DEPLOY.md`](../../docs/map/WEB_MAP_EDITOR_DEPLOY.md)
+> 아래 문서는 **게임 repo**(`legend_of_light`)에 있습니다. 이 에디터는 별도 repo라 상대 링크가 닿지 않습니다.
+> 설계(보관): `docs/archive/map/WEB_MAP_EDITOR_MVP_DESIGN.md` · 파이프라인(보관): `docs/archive/map/WEB_MAP_EDITOR_PIPELINE.md`
+> RUID 연동/백엔드: `docs/map/WEB_MAP_EDITOR_RUID_LINKAGE.md` · Vercel 배포: `docs/map/WEB_MAP_EDITOR_DEPLOY.md`
+> 게임 연동 계약: `docs/map/WEB_MAP_EDITOR_EXPORT_CONTRACT.md`
 
 ## 스택 / 실행
 
@@ -14,7 +14,6 @@ Vite SPA 에서 Next.js 로 마이그레이션(에디터 로직 `src/*` 는 그�
 의 `"use client"` 경계에서 `src/App` 트리를 렌더.
 
 ```bash
-cd tools/web-map-editor
 npm install
 npm run dev      # http://localhost:3000
 ```
@@ -102,7 +101,7 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 
 현재 게임 배치는 `.map`과 런타임 CSV를 기준으로 유지합니다. 이전 `map/<map>.json`은 현재 배치를 모두 담지 않을 수 있으므로 기존 게임 맵에 `nocode_map --build`·`convert_map --apply`·`build_map`을 다시 실행하는 경로는 기본적으로 차단됩니다. 게임 맵을 수정할 때는 위 후보 출력 경로를 사용하세요. 구형 JSON으로 전체 재생성이 의도된 경우에만 게임 도구의 `--allow-legacy-rebuild`를 명시합니다. `--force`는 이 보호를 우회하지 않습니다.
 
-휠 확대 중에도 스트로크는 이어집니다. 창 포커스를 잃으면 마지막 위치에서 작업을 마쳐 실행 취소 기록에 남기며, `Esc`는 진행 중 작업을 취소합니다. 자동저장은 리소스 검색창과 선택을 유지합니다. 정렬 변경 후보는 게임 깊이 검사와 대조해 새 오류가 있으면 출력을 거부하며, 결과는 `report.json`의 `gameDepthValidation`에 기록합니다.
+휠 확대 중에도 스트로크는 이어집니다. 창 포커스를 잃으면 마지막 위치에서 작업을 마쳐 실행 취소 기록에 남기며, `Esc`는 진행 중 작업을 취소합니다. 자동저장은 리소스 검색창과 선택을 유지합니다. 오브젝트(이동·추가·삭제·미세 조정·반전·정렬)나 이동불가 칸을 바꾼 후보는 게임 깊이 검사(depth_check)와 대조해 새 오류가 있으면 출력을 거부하며, 결과는 `report.json`의 `gameDepthValidation`에 기록합니다(해당 편집이 없으면 `skipped`). 거부된 출력은 후보 폴더를 남기지 않습니다.
 
 런타임 원본 변경은 현재 맵의 배치·시작점·포털 도착 맵과 편집 중 참조하는 몬스터 종류·정지 외형·함정 효과만 비교합니다. 다른 몬스터나 상태이상 추가, 사용하지 않는 외형 변경, 몬스터의 전투 수치나 종류·효과 표의 주석 수정만으로 작업을 차단하지 않습니다. 실제로 참조하는 배치·외형·효과가 바뀌면 변경 파일을 안내하고 출력 단계에서 충돌을 차단합니다. 이 판정 때문에 저장 프로젝트나 포털·몬스터·함정 수정 내용을 초기화하지 않습니다.
 
@@ -134,7 +133,7 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
    **Ctrl+D**는 X 방향 한 칸 `(+1, 0)`에 복제합니다. **Del**은 선택한 오브젝트와
    선택한 이동불가 셀을 모두 삭제합니다.
 5. **Ctrl+Z 한 번**으로 오브젝트와 이동불가 셀을 함께 되돌립니다. **Ctrl+Y** 또는
-   **Ctrl+Shift+Z**로 다시 실행할 수 있습니다. **Esc**는 선택을 해제합니다.
+   **Ctrl+Shift+Z**로 다시 실행할 수 있습니다. **Esc**는 선택을 해제하고, 여러 개 선택·이동불가 칸 선택 모드는 그대로 유지합니다.
 
 오브젝트를 새로 단일 선택하면 이전 이동불가 선택도 비워집니다. 묶음을 구성한 뒤에는
 보조 키 없이 **이미 선택한 대상**을 잡아 이동하세요. **이동불가 선택 비우기**는
@@ -163,8 +162,9 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 
 맵 크기와 지원하지 않는 스크립트·자식·참조를 가진 오브젝트는
 원본을 보호합니다. 표준 바닥을 해석할 수 없는 맵도 검증된 오브젝트 바닥은 별도로
-선택·이동·복제할 수 있습니다. 새 일반 바닥 소재는 등록된 페른델 1×1 타일을 사용하며,
-길 경계는 1×1 방향 타일을 유지합니다.
+선택·이동·복제할 수 있습니다. 새 일반 바닥 소재는 등록된 페른델 1×1 타일 또는
+**＋ 서버 소재 추가**로 등록한 MSW 서버 정적 이미지(256×128·중앙 피벗·PPU 100, 1×1)를 사용하며,
+길 경계는 1×1 방향 타일을 유지합니다. 등록한 바닥 소재는 원본을 다시 가져와도 이어집니다.
 
 **게임 배치 보기**는 후보 출력과 같은 배치 계산을 사용합니다. 실제 .map의 4×4·2×2·1×1
 Sprite, 좌표·배율·회전·반전·색·정렬과 원본 이미지 크기·피벗·PPU를 반영합니다.
@@ -257,7 +257,8 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 **게임용 출력 만들기**가 끝나면 출력 경로 옆의 **후보 출력 검토**를 누릅니다.
 별도 창에서 적용 대상 파일, 변경 수량, 파일 검사 결과를 확인할 수 있습니다.
 
-- 적용 대상은 후보에 기록된 맵 파일과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv`입니다.
+- 적용 대상은 후보에 기록된 맵 파일과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
+  `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv`(시작점) / `DT_MapTrap.csv`입니다.
   `reference/` 아래 CSV는 참고 사본이며 적용 대상에 포함되지 않습니다.
 - **다시 검사**는 후보 생성 이후 게임 원본이나 후보 파일이 변경·누락되었는지 확인합니다.
   이동불가 후보는 CSV 전체 파일이므로, 다른 맵의 행만 바뀌어도 원본 불일치로 표시합니다.
@@ -283,16 +284,29 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 1. 기록에서 후보를 골라 **후보 출력 검토**를 엽니다. 파일 검사는 열 때 새로 수행합니다.
 2. **적용 파일 ZIP 받기**는 내려받기 직전에 다시 검사합니다. 게임 원본이나 후보가 바뀌거나
    누락되면 내려받기를 중단하고 문제를 표시합니다.
-3. ZIP에는 검사를 통과한 적용 대상 맵과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv`, 그리고
+3. ZIP에는 검사를 통과한 적용 대상 맵과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
+   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv` / `DT_MapTrap.csv`, 그리고
    검사 시각·파일 해시·변경 내역을 담은 `REVIEW.txt`만 들어갑니다. 게임 폴더와 같은 상대
    경로를 유지하며, 참고 CSV나 에디터 프로젝트·기준 스냅샷은 넣지 않습니다.
+
+4. 게임 폴더에 적용 파일을 복사한 뒤, **커밋 전에 게임 repo에서 전체 게이트를 반드시 실행**합니다.
+
+   ```bash
+   node scripts/check-all.cjs
+   ```
+
+   에디터는 깊이 검사(depth_check)만 후보를 만들 때 미리 돌립니다. 데이터 참조 검사
+   (dataset-ref-lint)와 이동로 검사(map-route-lint)는 게임 쪽에서만 돕니다. 특히 다른 맵으로
+   가는 **새 포탈**은 상대 맵의 돌아오는 포탈이 없어 ONE-WAY로 실패하므로, 게임 쪽에서
+   역방향 포탈을 함께 추가해야 합니다. 게임에는 CI가 없어 이 단계를 건너뛰면 아무도 막지 않습니다.
 
 목록 표시는 적용 가능 판정이 아닙니다. 실제 파일 검사는 후보를 열거나 내려받을 때 수행하며,
 다운로드 이후 게임 원본이 바뀌면 다시 검사해야 합니다. ZIP 내려받기는 게임 반영을 실행하지
 않습니다. 실제 반영·백업·복구·Maker Refresh/Play는 별도 작업입니다.
 
 후보 목록은 최근 100개까지 표시합니다. 손상되거나 인식할 수 없는 기록은 건너뛰고 건수를
-알립니다. 기준을 다시 가져온 뒤에도 이 맵의 이전 기준 후보를 찾을 수 있지만, 기준 폴더가
+알립니다. 기준을 다시 가져온 뒤에도 이 맵의 이전 기준 후보를 찾을 수 있습니다. 적용 파일
+목록은 그 후보를 만든 기준으로 확인하므로 게임 CSV 경로가 바뀌어도 목록에 남지만, 기준 폴더가
 없거나 파일이 달라졌다면 검사를 통과할 수 없습니다.
 
 ## NPC 표시와 편집 (8차)

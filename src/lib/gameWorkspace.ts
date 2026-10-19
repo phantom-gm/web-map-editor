@@ -14,7 +14,14 @@ interface WorkspaceSession {
   savedAt: string | null;
   status: "idle" | "saving" | "saved" | "error";
   error: string | null;
+  /** HTTP status of the last failed save (null = network/unknown) and consecutive failures, for autosave backoff. */
+  errorStatus?: number | null;
+  failures?: number;
   loading: boolean;
+}
+/** Carries the HTTP status so callers can tell a revision conflict (409) from a transient failure. */
+export class GameRequestError extends Error {
+  constructor(message: string, public status: number) { super(message); }
 }
 export const useWorkspaceSession = create<WorkspaceSession>(() => ({
   baselineId: null, revision: null, savedAt: null, status: "idle", error: null, loading: false,
@@ -33,7 +40,7 @@ export function finishProjectLoad(token: number): void {
 }
 export function clearWorkspaceSession(): void {
   generation += 1;
-  useWorkspaceSession.setState({ baselineId: null, revision: null, savedAt: null, status: "idle", error: null, loading: false });
+  useWorkspaceSession.setState({ baselineId: null, revision: null, savedAt: null, status: "idle", error: null, errorStatus: null, failures: 0, loading: false });
 }
 export async function loadEditorProject(project: ProjectFileInput, token: number, receipt?: WorkspaceReceipt, acceptFile?: () => void): Promise<boolean> {
   const link = parseGameSync(project.gameSync, project.map);
@@ -48,7 +55,7 @@ export async function loadEditorProject(project: ProjectFileInput, token: number
   useWorkspaceSession.setState({
     baselineId: receipt ? project.gameSync?.baselineId ?? null : null,
     revision: receipt?.revision ?? null, savedAt: receipt?.savedAt ?? null,
-    status: receipt ? "saved" : "idle", error: null,
+    status: receipt ? "saved" : "idle", error: null, errorStatus: null, failures: 0,
   });
   finishProjectLoad(token);
   return true;
@@ -58,7 +65,7 @@ export async function gameRequest<T>(body: unknown): Promise<T> {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "로컬 맵 작업에 실패했습니다.");
+  if (!response.ok) throw new GameRequestError(result.error || "로컬 맵 작업에 실패했습니다.", response.status);
   return result as T;
 }
 let saveQueue: Promise<unknown> = Promise.resolve();
@@ -78,7 +85,7 @@ export function saveManagedProject(): Promise<WorkspaceReceipt> {
         action: "save", project, expectedRevision: session.baselineId === baselineId ? session.revision : null,
       });
       if (generation === saveGeneration && useEditorStore.getState().gameSync?.baselineId === baselineId) {
-        useWorkspaceSession.setState({ baselineId, revision: receipt.revision, savedAt: receipt.savedAt, status: "saved", error: null });
+        useWorkspaceSession.setState({ baselineId, revision: receipt.revision, savedAt: receipt.savedAt, status: "saved", error: null, errorStatus: null, failures: 0 });
         if (JSON.stringify(useEditorStore.getState().exportProject()) === snapshot) {
           useEditorStore.getState().markSaved();
         } else {
@@ -90,7 +97,8 @@ export function saveManagedProject(): Promise<WorkspaceReceipt> {
       return receipt;
     } catch (error) {
       if (generation === saveGeneration && useEditorStore.getState().gameSync?.baselineId === baselineId) {
-        useWorkspaceSession.setState({ status: "error", error: error instanceof Error ? error.message : String(error) });
+        useWorkspaceSession.setState(state => ({ status: "error", error: error instanceof Error ? error.message : String(error),
+          errorStatus: error instanceof GameRequestError ? error.status : null, failures: (state.failures ?? 0) + 1 }));
       }
       throw error;
     }

@@ -13,4 +13,6 @@ export interface SpriteAssetsResponse {
   images: Record<string, string | null>;
   sprites: Record<string, SpriteMetadata>;
   errors: Record<string, string>;
+  /** Resource identity (version/content/pivot properties) for client cache revalidation. */
+  stamps?: Record<string, string>;
 }

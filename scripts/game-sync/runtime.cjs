@@ -4,7 +4,12 @@ const crypto = require('node:crypto');
 const { parseCsv, world } = require('./npcs.cjs');
 const traps = require('./traps.cjs');
 const { dependencies, catalogSignature } = require('./runtime-dependencies.cjs');
-const FILES = ['DT_MonsterSpawn.csv','DT_MonsterClass.csv','DT_MonsterAppearance.csv','ST_MonsterName.csv','DT_Portal.csv','DT_Bounds.csv','DT_Walk.csv','DT_GameConfig.csv','DT_MapTrap.csv','DT_Abnormality.csv','ST_ABNName.csv'];
+const FILES = ['DT_MonsterSpawn.csv','DT_MonsterClass.csv','DT_MonsterAppearance.csv','ST_MonsterName.csv','DT_Portal.csv','DT_Bounds.csv','DT_Walk.csv','DT_GameConfig.csv','DT_MapTrap.csv','DT_Abnormality.csv','ST_ABNName.csv','DT_MapMeta.csv'];
+// Game BossRoomPolicyLogic.OPEN_BOSS_CLEARED; map-route-lint BOSS-EXIT-OPEN requires it on every
+// enabled portal leaving a boss-zone template (DT_MapMeta.InstanceKind) for a map outside the zone.
+const OPEN_BOSS_CLEARED='BossCleared';
+// Portal guard cells: source cell + game MovementRulesLogic.DELTAS (4-way, no diagonals).
+const GUARD_DELTAS=[[0,0],[1,0],[0,-1],[-1,0],[0,1]];
 const ID = /^[A-Za-z0-9_-]{1,128}$/, UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const M_FIELDS = ['monsterClassId','cell','count','spread','respawnMinSec','respawnMaxSec','firstSpawnSec','enabled'];
 const P_FIELDS = ['cell','destMap','destCell','destFacing','enabled'];
@@ -19,7 +24,8 @@ function fail(code, message) { const e = new Error(message); e.name='GameSyncErr
 function exact(value, fields) { return value && typeof value==='object' && !Array.isArray(value) && Object.keys(value).every(k=>fields.includes(k)); }
 function number(value, fallback=0) { const n = value === '' || value == null ? fallback : Number(value); if (!Number.isFinite(n)) fail('UNSUPPORTED_RUNTIME','런타임 CSV 숫자 값이 올바르지 않습니다.'); return n; }
 function int(value, fallback=0) { const n=number(value,fallback); if (!Number.isSafeInteger(n)) fail('UNSUPPORTED_RUNTIME','런타임 CSV 좌표·수량은 정수여야 합니다.'); return n; }
-function bool(value, fallback=true) { if (value === '' || value == null) return fallback; if (/^(true|1)$/i.test(value)) return true; if (/^(false|0)$/i.test(value)) return false; fail('UNSUPPORTED_RUNTIME','런타임 CSV 활성 값이 올바르지 않습니다.'); }
+// Mirrors game DataSetRepoLogic.BoolCell (true/false any case; blank or anything else = default).
+function bool(value, fallback=true) { const v=String(value??'').toLowerCase(); return v==='true'?true:v==='false'?false:fallback; }
 function table(files,name,required) { const file=files[name]; if (!file) fail('UNSUPPORTED_RUNTIME',name+' CSV가 없습니다.'); return parseCsv(file.bytes,required); }
 function identify(parsed,idColumn,mapColumn) {
   const seen=new Set();
@@ -42,15 +48,27 @@ function analyzeRuntime(files,mapName,sourceId=null) {
     const appearances=table(files,'DT_MonsterAppearance',['MonsterAppearanceID','Action','BaseDir','Ruid']).rows;
     const classes=table(files,'DT_MonsterClass',['MonsterClassID','MonsterName','MonsterAppearanceID','ModelID','BodyScale']).rows;
     const names=new Map(files.ST_MonsterName ? table(files,'ST_MonsterName',['Key']).rows.map(r=>[r.data.Key,r.data.ko||r.data.Source||r.data.Key]) : []), seen=new Set();
+    // Game DATASET_SCHEMA: rows referenced by another row's OriginMonsterID are debug-only originals
+    // (spawnnpc); content placements must use the derived row (same name, possibly different AggroType).
+    const origins=new Map();for(const r of classes){const o=(r.data.OriginMonsterID||'').trim();if(o)origins.set(o,r.data.MonsterClassID);}
     out.catalog=classes.map(r=>{const d=r.data,id=int(d.MonsterClassID),arts=appearances.filter(a=>a.data.MonsterAppearanceID===d.MonsterAppearanceID&&a.data.Action==='Idle'&&a.data.BaseDir==='SE');
       if(seen.has(id))fail('UNSUPPORTED_RUNTIME','몬스터 종류 ID가 중복되었습니다.');seen.add(id);
-      const ruid=arts.length===1?arts[0].data.Ruid:'',bodyScale=number(d.BodyScale,1),canAdd=id>0&&!!d.ModelID&&/^[a-f0-9]{32}$/i.test(ruid)&&bodyScale>0&&bodyScale<=20&&!d.BodyTint;
-      return {monsterClassId:id,name:names.get(d.MonsterName)||d['#DevName']||d.MonsterName||String(id),ruid,bodyScale:bodyScale>0?bodyScale:1,canAdd,...(canAdd?{}:{reason:'모델·Idle SE 외형·배율 또는 몸 색상 지원을 확인할 수 없습니다.'})}; });
+      const ruid=arts.length===1?arts[0].data.Ruid:'',bodyScale=number(d.BodyScale,1),origin=origins.get(String(d.MonsterClassID).trim()),supported=id>0&&!!d.ModelID&&/^[a-f0-9]{32}$/i.test(ruid)&&bodyScale>0&&bodyScale<=20&&!d.BodyTint,canAdd=supported&&!origin;
+      const name=names.get(d.MonsterName)||d['#DevName']||d.MonsterName||String(id);
+      return {monsterClassId:id,name:origin?name+' (원본 '+id+')':name,ruid,bodyScale:bodyScale>0?bodyScale:1,canAdd,...(canAdd?{}:{reason:origin?'디버그 전용 원본 몬스터입니다. 배치에는 '+origin+' 를 쓰세요.':'모델·Idle SE 외형·배율 또는 몸 색상 지원을 확인할 수 없습니다.'}),...(origin?{origin:true}:{})}; });
     out.monsters=monsterRows(files);
   });
   tryKind('portals',()=>{if(!placementReady||!mapBounds)fail('UNSUPPORTED_RUNTIME','현재 맵 경계가 없습니다.');out.portals=portalRows(files);
     if(files.DT_GameConfig){const rows=table(files,'DT_GameConfig',['ConfigKey','ConfigValue']).rows.filter(r=>r.data.ConfigKey==='PortalSpriteRuid');if(rows.length===1&&/^[a-f0-9]{32}$/i.test(rows[0].data.ConfigValue))out.portalRuid=rows[0].data.ConfigValue;}
   });
+  // Boss-zone templates. null = unknown (older runtime sources without DT_MapMeta): checks are skipped.
+  out.templates=null;
+  out.meta=null;
+  if(files.DT_MapMeta){try{const rows=table(files,'DT_MapMeta',['MapName']).rows;out.templates=rows.filter(r=>(r.data.InstanceKind||'').trim()).map(r=>r.data.MapName);
+    // Runtime MapMetaCatalogLogic: a point exists when its Facing is filled; cells round like NumberCell.
+    const point=(d,prefix)=>(d[prefix+'Facing']||'').trim()?[Math.floor(Number(d[prefix+'CellX']||0)+.5),Math.floor(Number(d[prefix+'CellY']||0)+.5)]:null;
+    out.meta=rows.map(r=>({map:r.data.MapName,base:(r.data.DifficultyBaseMap||'').trim()||null,revive:point(r.data,'Revive'),ret:point(r.data,'Return')}));
+  }catch(e){if(e.name!=='GameSyncError')throw e;}}
   tryKind('spawn',()=>{if(!placementReady||!mapBounds)fail('UNSUPPORTED_RUNTIME','현재 맵 시작점이 없습니다.');if(mapBounds.bounds.minX>mapBounds.bounds.maxX||mapBounds.bounds.minY>mapBounds.bounds.maxY)fail('UNSUPPORTED_RUNTIME','맵 경계가 잘못되었습니다.');out.spawn=mapBounds;});
   return out;
 }
@@ -86,6 +104,40 @@ function inspectRuntime(project,profile,constants,npcs=[]) {
   }
   const monsters=editRows('monsters',profile.monsters,M_FIELDS,validateMonster),portals=editRows('portals',profile.portals,P_FIELDS,validatePortal);
   const touched=new Set([...portals.changed,...portals.added].map(r=>r.entityId)),occupied=new Map();for(const r of portals.records.values())if(r.values.enabled){const k=key(r.values.cell),other=occupied.get(k);if(other&&(touched.has(r.entityId)||touched.has(other)))fail('PORTAL_OCCUPIED','같은 출발 셀에 활성 포탈을 중복 배치할 수 없습니다.');occupied.set(k,r.entityId);}
+  // PI-1 portal guard (game dataset-ref-lint check 55, PortalIdlePolicyLogic.BuildGuardIndex):
+  // an enabled NPC must not stand on an enabled portal's source cell or its 4 neighbours
+  // (MovementRulesLogic.DELTAS). The runtime never moves NPCs, so the doorway would stay
+  // narrowed forever. Only conflicts this edit introduces are rejected.
+  const guardOwners=new Map();for(const r of portals.records.values())if(r.values.enabled)for(const [dx,dy] of GUARD_DELTAS){const k=key([r.values.cell[0]+dx,r.values.cell[1]+dy]);if(!guardOwners.has(k))guardOwners.set(k,[]);guardOwners.get(k).push(r);}
+  for(const n of npcs){if(!n.enabled)continue;const owners=guardOwners.get(key(n.cell));if(!owners)continue;const npcTouched=!n.sourceCell||!same(n.cell,n.sourceCell),hit=owners.find(o=>npcTouched||touched.has(o.entityId));
+    if(hit)fail('NPC_PORTAL_GUARD','NPC '+(n.spawnId||n.entityId)+' 가 포탈 '+hit.id+' 의 입구 칸(포탈 칸과 상하좌우)에 있습니다. 게임 검사 55(NPC-PORTAL-GUARD)가 막습니다 — NPC나 포탈을 옮기세요. 일부러 둔 것이면 게임 dataset-ref-lint 의 ALLOW_NPC_ON_PORTAL_GUARD 에 사유와 함께 등록해야 합니다.');}
+  // D-BR45: a boss-zone template must keep at least one enabled BossCleared exit, and every
+  // exit this edit adds or changes is written as BossCleared (game lint BOSS-EXIT-OPEN).
+  portals.forceBossCleared=new Set();
+  if(profile.templates&&profile.templates.includes(profile.mapName)){
+    const templates=new Set(profile.templates),isExit=v=>v.enabled&&!templates.has(v.destMap),cond=r=>(r.row?.data?.OpenCondition||'').trim();
+    for(const r of [...portals.changed,...portals.added])if(isExit(r.values)){portals.forceBossCleared.add(r.id);if(cond(r)!==OPEN_BOSS_CLEARED)warnings.push('보스 구역 포탈 '+r.id+' 은 존 밖으로 나가므로 보스 처치 후에만 열리도록(OpenCondition=BossCleared) 저장합니다.');}
+    const before=profile.portals.filter(r=>r.map===profile.mapName&&isExit(r.values)&&(r.data.OpenCondition||'').trim()===OPEN_BOSS_CLEARED);
+    const after=[...portals.records.values()].filter(r=>isExit(r.values)&&(portals.forceBossCleared.has(r.id)||cond(r)===OPEN_BOSS_CLEARED));
+    if(before.length&&!after.length)fail('BOSS_EXIT_REQUIRED','보스 구역의 처치 출구 포탈('+before.map(r=>r.id).join(', ')+')을 지우거나 끌 수 없습니다. 보스를 잡은 뒤 나갈 길이 없어집니다 — 위치만 옮기거나 다른 출구를 먼저 두세요.');
+  }
+  // Cells this walk edit newly blocks must not be where players arrive: incoming portals
+  // (also the base-map entrances a difficulty variant reuses, game MAPMETA-DIFFICULTY-ARRIVAL),
+  // this map's portal sources, start point and revive/return points.
+  if(profile.supported.portals){
+    const walkBefore=new Set(profile.walk.filter(r=>r.map===profile.mapName).map(r=>key(r.cell))),newlyBlocked=[...currentBlocked].filter(k=>!walkBefore.has(k));
+    if(newlyBlocked.length){
+      const arrivals=new Map(),add=(cell,label)=>{if(Array.isArray(cell)&&!arrivals.has(key(cell)))arrivals.set(key(cell),label);};
+      const templates=new Set(profile.templates||[]),own=profile.meta?.find(r=>r.map===profile.mapName),base=own?.base&&own.base!==profile.mapName?own.base:null;
+      for(const r of profile.portals)if(r.map!==profile.mapName&&r.values.enabled&&(r.values.destMap===profile.mapName||(base&&r.values.destMap===base&&!templates.has(r.map))))add(r.values.destCell,'포탈 '+r.id+'의 도착 칸');
+      for(const r of portals.records.values())if(r.values.enabled){add(r.values.cell,'포탈 '+r.id+'의 출발 칸');if(r.values.destMap===profile.mapName)add(r.values.destCell,'포탈 '+r.id+'의 도착 칸');}
+      if(profile.spawn)add(project.gameSpawnEdits?.cell||profile.spawn.cell,'맵 시작점');
+      if(own?.revive)add(own.revive,'부활 복귀 지점(DT_MapMeta Revive)');
+      if(own?.ret)add(own.ret,'귀환 도착 지점(DT_MapMeta Return)');
+      const hit=newlyBlocked.find(k=>arrivals.has(k));
+      if(hit)fail('BLOCKED_ARRIVAL','이동불가로 바꾼 칸 ('+hit+')은 '+arrivals.get(hit)+'입니다. 막으면 플레이어가 벽 안에 서게 됩니다 — 이 칸은 비워 두세요.');
+    }
+  }
   const descriptor=r=>({entityId:r.entityId,sourceCell:r.source?.cell||null,source:r.source?clone(r.source):null,...clone(r.values),position:world(r.values.cell,constants)});
   const monsterDescriptors=[...monsters.records.values()].map(r=>{const c=catalog.get(r.values.monsterClassId);return {...descriptor(r),spawnId:r.id,name:c?.name||String(r.values.monsterClassId),ruid:c?.ruid||'',bodyScale:c?.bodyScale||1,canEdit:!!c?.canAdd,...(c?.canAdd?{}:{reason:c?.reason||'몬스터 종류를 확인할 수 없습니다.'})};});
   const portalDescriptors=[...portals.records.values()].map(r=>({...descriptor(r),portalId:r.id,ruid:profile.portalRuid,canEdit:profile.supported.portals}));
@@ -109,6 +161,8 @@ function signature(files,name,mapName,maps,deps){
   else if(name==='DT_MapTrap')return JSON.stringify({header:parsed.header,rows:parsed.rows.filter(r=>r.data.MapName===mapName).map(r=>r.data)});
   else if(name==='DT_Bounds')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>{const d={...r.data};if(d.MapName!==mapName){delete d.SpawnX;delete d.SpawnY;}return d;});
   else if(name==='DT_Walk')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>r.data);
+  else if(name==='DT_MapMeta')rows=parsed.rows.filter(r=>maps.has(r.data.MapName)).map(r=>({MapName:r.data.MapName,InstanceKind:(r.data.InstanceKind||'').trim(),DifficultyBaseMap:(r.data.DifficultyBaseMap||'').trim(),
+    ...(r.data.MapName===mapName?Object.fromEntries(['ReviveCellX','ReviveCellY','ReviveFacing','ReturnCellX','ReturnCellY','ReturnFacing'].map(k=>[k,r.data[k]||''])):{})}));
   else if(name==='DT_GameConfig')rows=parsed.rows.filter(r=>r.data.ConfigKey==='PortalSpriteRuid').map(r=>({ConfigKey:r.data.ConfigKey,ConfigValue:r.data.ConfigValue}));
   else return hash(file.bytes);
   return JSON.stringify(rows.map(canonical).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
@@ -128,7 +182,9 @@ function patchTable(bytes,mapName,idColumn,mapColumn,changes,added,removed,rende
 }
 function buildCandidates(edit,currentFiles){const {profile}=edit;if(sourceDrift(profile,currentFiles,edit).length)fail('STALE_RUNTIME_SOURCE','몬스터·포탈·시작점 원본이 변경되었습니다. 최신 원본을 다시 가져오세요.');const result=[];
   const render=(kind)=>(r,original,header)=>{const v=r.values,data=original?{...original}:Object.fromEntries(header.map(h=>[h,''])),fields=kind==='monsters'?M_FIELDS:P_FIELDS,columns=kind==='monsters'?M_COLUMNS:P_COLUMNS;if(!original){data[kind==='monsters'?'MonsterSpawnID':'PortalID']=r.id;data[kind==='monsters'?'MapName':'SrcMap']=profile.mapName;}
-    for(const k of fields){if(original&&same(v[k],r.source[k]))continue;if(k==='cell'){data[kind==='monsters'?'CellX':'SrcX']=String(v.cell[0]);data[kind==='monsters'?'CellY':'SrcY']=String(v.cell[1]);}else if(k==='destCell'){data.DestX=String(v.destCell[0]);data.DestY=String(v.destCell[1]);}else data[columns[k]]=typeof v[k]==='boolean'?(v[k]?'True':'False'):String(v[k]);}return data;};
+    for(const k of fields){if(original&&same(v[k],r.source[k]))continue;if(k==='cell'){data[kind==='monsters'?'CellX':'SrcX']=String(v.cell[0]);data[kind==='monsters'?'CellY':'SrcY']=String(v.cell[1]);}else if(k==='destCell'){data.DestX=String(v.destCell[0]);data.DestY=String(v.destCell[1]);}else data[columns[k]]=typeof v[k]==='boolean'?(v[k]?'True':'False'):String(v[k]);}
+    if(kind==='portals'&&edit.portals.forceBossCleared?.has(r.id)){if(!header.includes('OpenCondition'))fail('UNSUPPORTED_RUNTIME','DT_Portal에 OpenCondition 열이 없어 보스 구역 출구를 저장할 수 없습니다.');data.OpenCondition=OPEN_BOSS_CLEARED;}
+    return data;};
   for(const [kind,name,idColumn,mapColumn]of [['monsters','DT_MonsterSpawn','MonsterSpawnID','MapName'],['portals','DT_Portal','PortalID','SrcMap']])if(edit[kind].edited){const file=currentFiles[name],e=edit[kind],bytes=patchTable(file.bytes,profile.mapName,idColumn,mapColumn,e.changed,e.added,e.removed,render(kind));result.push({name,relative:file.relative,sourceBytes:file.bytes,bytes,comparison:{sourceSha256:hash(file.bytes),candidateSha256:hash(bytes),unchangedRowsExact:true}});}
   if(edit.spawnChanged){const file=currentFiles.DT_Bounds,record={id:profile.mapName,cell:edit.spawn.cell};const bytes=patchTable(file.bytes,profile.mapName,'MapName','MapName',[record],[],[],(r,original)=>({...original,SpawnX:String(r.cell[0]),SpawnY:String(r.cell[1])}));result.push({name:'DT_Bounds',relative:file.relative,sourceBytes:file.bytes,bytes,comparison:{sourceSha256:hash(file.bytes),candidateSha256:hash(bytes),unchangedRowsExact:true}});}
   result.push(...traps.build(edit.traps,currentFiles));

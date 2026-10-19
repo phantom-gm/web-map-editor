@@ -1,4 +1,4 @@
-import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset } from "./mswMcp";
+import { withMcpClient, getGroupResourceMetadata, fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset } from "./mswMcp";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,7 +50,7 @@ interface SyncCore {
   packageCandidate(input: { candidateId: string; mapName: string; baselineId: string }, options: ReturnType<typeof gameSyncPaths>): { filename: string; bytes: Buffer; review: unknown };
   refreshRuntimeProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
   refreshNpcProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): unknown;
-  createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string }): { project: ProjectFile; report: SyncReport };
+  createSyncProject(options: { gameRoot: string; mapName: string; baselineRoot: string; previousProject?: ProjectFile }): { project: ProjectFile; report: SyncReport };
   exportEditedProject(project: ProjectFile, options: ReturnType<typeof gameSyncPaths>): {
     candidateId: string; candidateDir: string; mapPath: string; reportPath: string; report: SyncReport;
   };
@@ -105,22 +105,47 @@ export async function runGameSync(body: unknown) {
     if (input.action === "import" && (input.expectedRevision ?? null) !== (saved?.revision ?? null)) {
       throw new GameSyncError("이 맵에 저장된 작업이 있습니다. 맵을 먼저 열어 확인한 후 원본을 다시 가져와 주세요.", 409);
     }
-    const imported = compiler.createSyncProject({ ...paths, mapName: input.mapName });
+    const imported = compiler.createSyncProject({ ...paths, mapName: input.mapName, ...(saved ? { previousProject: saved.project } : {}) });
     const written = saveWorkspace(imported.project, saved?.revision ?? null, workspace);
     return { action: input.action, resumed: false, ...imported, ...written };
   }
-  if (input.action === "register-object-resources") {
+  if (input.action === "register-object-resources" || input.action === "register-ground-resources") {
     if (typeof input.mapName !== "string" || typeof input.baselineId !== "string" || !Array.isArray(input.resources) || !input.resources.length || input.resources.length > 100) throw new GameSyncError("소재 1~100개와 현재 맵 정보가 필요합니다.");
     const items = input.resources as Array<{ ruid?: unknown; name?: unknown }>;
     if (items.some(item => !item || typeof item.ruid !== "string" || !/^[a-f0-9]{32}$/.test(item.ruid) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 256) || new Set(items.map(item => item.ruid)).size !== items.length) throw new GameSyncError("소재 이름과 리소스 ID를 확인하세요.");
     const metadata = await withMcpClient(client => getGroupResourceMetadata(client, items.map(item => item.ruid as string)));
     const resources = [];
+    // Check every item before rejecting so the user learns exactly which ones to deselect.
+    const rejected: string[] = [];
     for (const item of items) {
       const resource = metadata.get(item.ruid as string);
-      if (!resource || resource.resourceType !== "sprite") throw new GameSyncError("건물·장식에는 MSW 서버의 정적 이미지를 선택하세요.");
-      const asset = await fetchSpriteAsset(resource);
+      const isGround = input.action === "register-ground-resources";
+      if (!resource || (resource.resourceType !== "sprite" && (isGround || resource.resourceType !== "animationclip"))) {
+        rejected.push(item.name + "(" + (resource ? resource.resourceType || "알 수 없는 종류" : "서버에 없음") + ")");
+        continue;
+      }
+      const asset = await (async () => {
+        if (resource.resourceType === "sprite") return fetchSpriteAsset(resource);
+        // Keep the clip RUID for game playback; use its verified first frame for editor geometry.
+        const frame = await fetchAnimationPreviewFrame(resource);
+        const frames = await withMcpClient(client => getGroupResourceMetadata(client, [frame.spriteRuid]));
+        const sprite = [...frames.values()].find(value => value.ruid.toLowerCase() === frame.spriteRuid.toLowerCase());
+        if (!sprite || sprite.resourceType !== "sprite") throw new GameSyncError("애니메이션 첫 프레임의 서버 이미지를 확인하지 못했습니다.");
+        return fetchAnimationFrameAsset(resource, frame, sprite);
+      })();
       if (!asset.imageUrl || !asset.metadata) throw new GameSyncError("소재의 이미지·크기·기준점을 확인하지 못했습니다. 다시 시도하세요.");
+      if(input.action === "register-ground-resources"){
+        const m=asset.metadata;
+        if(m.width!==256 || m.height!==128 || m.pixelsPerUnit!==100 || m.pivot[0]!==0.5 || m.pivot[1]!==0.5) {
+          rejected.push(item.name + "(" + m.width + "×" + m.height + ", 피벗 " + m.pivot.join(",") + ", PPU " + m.pixelsPerUnit + ")");
+          continue;
+        }
+      }
       resources.push({ ruid: item.ruid, name: item.name, metadata: asset.metadata });
+    }
+    if (rejected.length) {
+      const rule = input.action === "register-ground-resources" ? "바닥에는 256×128, 중앙 피벗, PPU 100인 1×1 정적 이미지만 쓸 수 있습니다." : "건물·장식에는 MSW 서버의 이미지 또는 애니메이션 클립만 쓸 수 있습니다.";
+      throw new GameSyncError(rule + " 맞지 않는 " + rejected.length + "개를 선택에서 빼 주세요: " + rejected.slice(0, 5).join(", ") + (rejected.length > 5 ? " 외 " + (rejected.length - 5) + "개" : "") + ". 아무것도 추가하지 않았습니다.");
     }
     return compiler.registerObjectResources({ mapName: input.mapName, baselineId: input.baselineId, resources }, paths);
   }

@@ -16,6 +16,10 @@ export interface MapValidation {
  * @param hasImage object 팔레트 이미지 해석 가능 여부(있으면 검사). 미해석이면 export 가 scale 을
  *   조용히 누락 → 게임에서 네이티브 크기(화면 뒤덮는 거대 스프라이트)로 배치되므로 사전 경고(D7).
  */
+function classType(catalog: { has(id: number): boolean } | undefined, id: number): string | undefined {
+  const entry = (catalog as { get?(id: number): unknown } | undefined)?.get?.(id) as { type?: unknown } | undefined;
+  return typeof entry?.type === "string" ? entry.type : undefined;
+}
 export function entityIssues(
   entities: MapEntity[],
   size: [number, number],
@@ -36,6 +40,11 @@ export function entityIssues(
     } else if (e.kind === "monster" || e.kind === "npc") {
       if (e.npcClassId == null) out.push(`${at}: NpcClassID 없음`);
       else if (npcClassIds && !npcClassIds.has(e.npcClassId)) out.push(`${at}: NpcClassID ${e.npcClassId} — 카탈로그에 없음`);
+      else {
+        // convert_map reads monsters from DT_MonsterClass and NPCs from DT_NpcClass: the kind must match.
+        const type = classType(npcClassIds, e.npcClassId), want = e.kind === "monster" ? "Monster" : "Npc";
+        if (type && type !== want) out.push(`${at}: NpcClassID ${e.npcClassId} — ${type === "Monster" ? "몬스터" : "NPC"} 종류입니다(${e.kind === "monster" ? "몬스터" : "NPC"} 자리에 쓸 수 없음)`);
+      }
     } else if (e.kind === "object") {
       if (!e.ruid) out.push(`${at}: RUID 없음 (팔레트에서 등록된 스프라이트로 배치)`);
       else if (hasImage && !hasImage(e)) {

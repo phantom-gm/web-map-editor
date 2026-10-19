@@ -46,7 +46,7 @@ export function EntityInspector() {
   // monster→Monster, npc→Npc 타입 카탈로그. 비어있으면 드롭다운 대신 id 직접입력 폴백.
   const wantType = entity.kind === "monster" ? "Monster" : "Npc";
   const npcOptions = npcCatalog.entries.filter((e) => e.type === wantType);
-  const currentInCatalog = entity.npcClassId != null && npcCatalog.byId.has(entity.npcClassId);
+  const currentInCatalog = entity.npcClassId != null && npcCatalog.byId.get(entity.npcClassId)?.type === wantType;
 
   return (
     <div className="entity-inspector">

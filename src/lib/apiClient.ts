@@ -61,6 +61,17 @@ export async function fetchImages(ruids: string[]): Promise<Record<string, strin
 }
 
 /** Fresh native metrics and original images. Chunk requests so large maps are never truncated. */
+/** Metadata-only identity per RUID, used to revalidate decoded images without re-downloading them. */
+export async function fetchSpriteStamps(ruids: string[], signal?: AbortSignal): Promise<Record<string, string>> {
+  const unique = [...new Set(ruids)], stamps: Record<string, string> = {};
+  for (let i = 0; i < unique.length; i += 100) {
+    signal?.throwIfAborted();
+    const response = (await postJson("/api/images", { ruids: unique.slice(i, i + 100), metaOnly: true }, undefined, signal)) as { stamps?: Record<string, string> };
+    Object.assign(stamps, response.stamps ?? {});
+  }
+  return stamps;
+}
+
 export async function fetchSpriteAssets(ruids: string[], signal?: AbortSignal): Promise<SpriteAssetsResponse> {
   const unique = [...new Set(ruids)];
   const result: SpriteAssetsResponse = { images: {}, sprites: {}, errors: {} };
@@ -71,6 +82,7 @@ export async function fetchSpriteAssets(ruids: string[], signal?: AbortSignal): 
     for (const ruid of batch) {
       result.images[ruid] = response.images?.[ruid] ?? null;
       if (response.sprites?.[ruid]) result.sprites[ruid] = response.sprites[ruid];
+      if (response.stamps?.[ruid]) (result.stamps ??= {})[ruid] = response.stamps[ruid];
       if (response.errors?.[ruid]) result.errors[ruid] = response.errors[ruid];
       else if (!response.images?.[ruid]) result.errors[ruid] = "image-unresolved";
     }

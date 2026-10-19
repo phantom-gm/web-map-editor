@@ -21,15 +21,16 @@ export function ObjectSortingPanel({ object, scene, disabled, cells }: {
   const asset = preview.images.get(object.ruid)?.asset;
   const locked = disabled || !object.canMove;
   const set = (value?: ObjectSortSetting) => { setChoosingSupport(false); useEditorStore.getState().sortGameObject(object.entityId, value, scene); };
-  // Runtime gates are centred on the anchor. Enclose an off-centre/rotated image
-  // conservatively so changing its footprint never drops adjacent sorting checks.
+  // Game IsoDepthMetaComponent: BaseW/BaseH are the unscaled native size in px/64 world units
+  // (width / ppu / 0.64), independent of the pivot — the runtime already offsets bottom pivots
+  // in its footprint test. Rotation still encloses the rotated rectangle.
   let bounds = object.sortInfo?.bounds ?? [0, 0];
   if (asset && sprite) {
     const ppu = asset.pixelsPerUnit ?? scene.constants.PPU;
     const sx = Math.abs(sprite.scale[0]), sy = Math.abs(sprite.scale[1]);
     const angle = sprite.rotationDeg * Math.PI / 180;
-    const x = asset.width / ppu * Math.max(Math.abs(asset.pivot[0]), Math.abs(1 - asset.pivot[0])) * sx;
-    const y = asset.height / ppu * Math.max(Math.abs(asset.pivot[1]), Math.abs(1 - asset.pivot[1])) * sy;
+    const x = asset.width / ppu / 2 * sx;
+    const y = asset.height / ppu / 2 * sy;
     if (sx > 0 && sy > 0) bounds = [2 * (Math.abs(Math.cos(angle)) * x + Math.abs(Math.sin(angle)) * y) / .64 / sx,
       2 * (Math.abs(Math.sin(angle)) * x + Math.abs(Math.cos(angle)) * y) / .64 / sy];
   }

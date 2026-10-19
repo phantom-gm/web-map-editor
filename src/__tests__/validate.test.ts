@@ -96,3 +96,15 @@ describe("buildBlueprint 경계 클램프", () => {
     expect(bp.layers.TileAttributeTileMap.cellCount).toBe(1); // (10,10) 제외
   });
 });
+
+describe("entityIssues NpcClassID kind (convert_map reads monsters and NPCs from separate tables)", () => {
+  it("rejects an NPC ID on a monster and a monster ID on an NPC, but accepts matching kinds", async () => {
+    const { entityIssues } = await import("../lib/validate");
+    const byId = new Map([[101, { id: 101, name: "엘드릭", type: "Npc" }], [101000, { id: 101000, name: "잎새슬라임", type: "Monster" }]]);
+    const entity = (kind: "monster" | "npc", npcClassId: number) => ({ id: kind + npcClassId, kind, gx: 1, gy: 1, npcClassId }) as never;
+    expect(entityIssues([entity("monster", 101)], [10, 10], byId)).toEqual([expect.stringContaining("NPC 종류")]);
+    expect(entityIssues([entity("npc", 101000)], [10, 10], byId)).toEqual([expect.stringContaining("몬스터 종류")]);
+    expect(entityIssues([entity("monster", 101000), entity("npc", 101)], [10, 10], byId)).toEqual([]);
+    expect(entityIssues([entity("monster", 101)], [10, 10], new Set([101]))).toEqual([]); // membership-only catalogs stay compatible
+  });
+});

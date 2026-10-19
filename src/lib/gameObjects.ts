@@ -1,3 +1,4 @@
+import { parseObjectFlips, type ObjectFlip } from "./objectFlip.cjs";
 import { parseObjectVisualOffsets, type ObjectVisualOffset } from "./objectVisualOffset.cjs";
 import { parseObjectSorting, type ObjectSortSetting, type ObjectSortEdit } from "./objectSorting.cjs";
 /** Sparse edits to native game objects; legacy project entities stay unchanged. */
@@ -9,6 +10,7 @@ export interface GameObjectEdits {
   resources?: string[];
   sorting?: ObjectSortEdit[];
   visualOffsets?: ObjectVisualOffset[];
+  flips?: ObjectFlip[];
   moved: GameObjectMove[];
   removed: string[];
   added: GameObjectAddition[];
@@ -23,6 +25,7 @@ export interface GameObjectDescriptor {
   sourcePosition: [number, number, number];
   /** Image translation in world units; position remains the logical anchor. */
   visualOffset?: [number, number];
+  flipX?: boolean;
   canMove: boolean;
   canDuplicate: boolean;
   canDelete: boolean;
@@ -48,7 +51,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 const empty = (): GameObjectEdits => ({ version: 1, moved: [], removed: [], added: [] });
 function compact(value: GameObjectEdits): GameObjectEdits | undefined {
-  return value.moved.length || value.removed.length || value.added.length || value.resources?.length || value.sorting?.length || value.visualOffsets?.length ? value : undefined;
+  return value.moved.length || value.removed.length || value.added.length || value.resources?.length || value.sorting?.length || value.visualOffsets?.length || value.flips?.length ? value : undefined;
 }
 
 /** Validate before changing editor state. Absence and an empty v1 overlay both mean no native edits. */
@@ -60,6 +63,7 @@ export function parseGameObjectEdits(value: unknown): GameObjectEdits | undefine
   }
   const resources = value.resources;
   if (resources !== undefined && (!Array.isArray(resources) || resources.length > 500 || new Set(resources).size !== resources.length || resources.some(id => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)))) throw new Error("서버 소재 목록을 확인하세요.");
+  const flips = parseObjectFlips(value.flips);
   const sorting = parseObjectSorting(value.sorting);
   const visualOffsets = parseObjectVisualOffsets(value.visualOffsets);
   const seen = new Set<string>();
@@ -87,7 +91,8 @@ export function parseGameObjectEdits(value: unknown): GameObjectEdits | undefine
   }
   if (sorting.some(row => removed.includes(row.entityId) || row.setting.mode === "surface" && removed.includes(row.setting.supportId))) throw new Error("정렬 대상이나 받치는 가구가 삭제되어 있습니다.");
   if (visualOffsets.some(row => removed.includes(row.entityId))) throw new Error("삭제된 오브젝트의 이미지는 조정할 수 없습니다.");
-  return compact({ version: 1, moved, removed, added, ...(visualOffsets.length ? { visualOffsets } : {}), ...(sorting.length ? { sorting } : {}), ...(resources !== undefined ? { resources: [...resources] as string[] } : {}) });
+  if (flips.some(row => removed.includes(row.entityId))) throw new Error("삭제된 오브젝트는 반전할 수 없습니다.");
+  return compact({ version: 1, moved, removed, added, ...(flips.length ? { flips } : {}), ...(visualOffsets.length ? { visualOffsets } : {}), ...(sorting.length ? { sorting } : {}), ...(resources !== undefined ? { resources: [...resources] as string[] } : {}) });
 }
 
 function checkTarget(entityId: string, position?: GameObjectPosition): void {
@@ -132,7 +137,7 @@ export function removeGameObjectEdit(current: GameObjectEdits | undefined, entit
   if (edits.removed.includes(entityId)) return current;
   const addition = edits.added.some(item => item.entityId === entityId);
   return compact({
-    ...edits, ...(edits.visualOffsets ? { visualOffsets: edits.visualOffsets.filter(row => row.entityId !== entityId) } : {}), ...(edits.sorting ? { sorting: edits.sorting.filter(row => row.entityId !== entityId) } : {}), moved: edits.moved.filter(item => item.entityId !== entityId),
+    ...edits, ...(edits.flips ? { flips: edits.flips.filter(row => row.entityId !== entityId) } : {}), ...(edits.visualOffsets ? { visualOffsets: edits.visualOffsets.filter(row => row.entityId !== entityId) } : {}), ...(edits.sorting ? { sorting: edits.sorting.filter(row => row.entityId !== entityId) } : {}), moved: edits.moved.filter(item => item.entityId !== entityId),
     added: edits.added.filter(item => item.entityId !== entityId),
     removed: addition ? edits.removed : [...edits.removed, entityId],
   });
@@ -169,4 +174,14 @@ export function setGameObjectVisualOffset(current: GameObjectEdits | undefined, 
   if (edits.removed.includes(entityId)) throw new Error("삭제된 오브젝트의 이미지는 조정할 수 없습니다.");
   const visualOffsets = [...(edits.visualOffsets ?? []).filter(row => row.entityId !== entityId), { entityId, offset }];
   return parseGameObjectEdits({ ...edits, visualOffsets });
+}
+
+/** undefined restores the prototype renderer state; false is a valid override. */
+export function setGameObjectFlip(current: GameObjectEdits | undefined, entityId: string, flipX?: boolean): GameObjectEdits | undefined {
+  checkTarget(entityId);
+  const edits = current ?? empty();
+  if (edits.removed.includes(entityId)) throw new Error("삭제된 오브젝트는 반전할 수 없습니다.");
+  const flips = (edits.flips ?? []).filter(row => row.entityId !== entityId);
+  if (flipX !== undefined) flips.push({ entityId, flipX });
+  return parseGameObjectEdits({ ...edits, flips });
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { activateEditorTool, editorShortcutsBlocked, rollbackEditorStroke, palettePlacementIssue } from "../lib/editorCommands";
+import { activateEditorTool, escapeEditorSelection, editorShortcutsBlocked, rollbackEditorStroke, palettePlacementIssue } from "../lib/editorCommands";
 import { captureEditorSnapshot, useEditorStore, type Tool } from "../store/editorStore";
 import { useGamePreviewStore } from "../store/gamePreviewStore";
 import { useWorkspaceSession } from "../lib/gameWorkspace";
@@ -40,6 +40,23 @@ beforeEach(() => {
 });
 
 describe("shared editor tool commands", () => {
+  it("Escape clears the selection and placement but keeps the blocked-cell and multi-select modes", () => {
+    useEditorStore.setState({ activeTool: "cursor" });
+    selectEverything();
+    const before = editor().exportProject();
+    escapeEditorSelection();
+    expectNoSelection();
+    expect(view().selectionMode).toBe("blocked");
+    expect(view().multiSelect).toBe(true);
+    expect(editor().exportProject()).toEqual(before);
+  });
+  it("Escape from another tool returns to the cursor like the toolbar", () => {
+    useEditorStore.setState({ activeTool: "brush" });
+    selectEverything();
+    escapeEditorSelection();
+    expect(editor().activeTool).toBe("cursor");
+    expect(view().selectionMode).toBe("objects");
+  });
   it("allows continuous ground editing while a matching validated preview is refreshing", () => {
     const ruid = "a".repeat(32);
     useEditorStore.setState({ palette: [{ name: "grass", ruid }] as PaletteTile[] });

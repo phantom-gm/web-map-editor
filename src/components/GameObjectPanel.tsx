@@ -38,15 +38,23 @@ export function GameObjectLibrary() {
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [showRemovedMaterials, setShowRemovedMaterials] = useState(false);
   const preview = useGamePreviewStore();
   const linked = useEditorStore(s => s.gameSync);
+  const removed = useEditorStore(s => s.gameObjectEdits?.removed);
   const selected = useEditorStore(s => s.selectedGameObjectIds);
   const loading = useWorkspaceSession(s => s.loading);
   const current = preview.scene?.baselineId === linked?.baselineId;
   const objects = current ? preview.scene?.objects ?? [] : [];
   const prototypes = current ? preview.scene?.objectPrototypes ?? [] : [];
+  const activePrototypes = new Set(objects.map(object => object.prototypeId));
+  const removedIds = new Set(removed ?? []);
   const unique = new Map<string, GameObjectDescriptor>();
-  for (const object of prototypes) if (object.canDuplicate && (object.resourceId || !unique.has(object.ruid + object.name))) unique.set(object.ruid + object.name, object);
+  for (const object of prototypes) {
+    // Keep registered resources and prototypes still used by a remaining copy.
+    if (!showRemovedMaterials && !object.resourceId && removedIds.has(object.entityId) && !activePrototypes.has(object.prototypeId)) continue;
+    if (object.canDuplicate && (object.resourceId || !unique.has(object.ruid + object.name))) unique.set(object.ruid + object.name, object);
+  }
   const items = (adding ? [...unique.values()] : objects).filter(object => !search ||
     object.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()) || object.entityId.includes(search));
   const ready = current && preview.status === "ready" && !loading;
@@ -60,6 +68,8 @@ export function GameObjectLibrary() {
       <button aria-pressed={!adding} onClick={() => setAdding(false)}>배치된 오브젝트 {objects.length}</button>
       <button aria-pressed={adding} onClick={() => setAdding(true)}>소재 골라 배치</button>
     </div>
+    {adding && <label className="object-help"><input type="checkbox" checked={showRemovedMaterials}
+      onChange={e => setShowRemovedMaterials(e.target.checked)} /> 삭제한 기존 맵 소재 보기</label>}
     <input className="object-search" aria-label="오브젝트 검색" placeholder="건물·나무·광산바닥 검색" value={search} onChange={e => setSearch(e.target.value)} />
     <p className="object-help">{adding ? "소재를 선택한 뒤 맵을 클릭하세요. 새 서버 소재는 배치 후 크기도 조절할 수 있습니다." : "Ctrl·Shift+클릭으로 여러 개를 선택합니다. Shift+빈 곳 드래그로 범위를 추가하고, 선택한 대상을 잡아 함께 옮깁니다."}</p>
     {!adding && <div className="object-selection-tools">
@@ -85,7 +95,7 @@ export function GameObjectLibrary() {
           }
         }}>
         {preview.images.get(object.ruid)?.image.src && <img src={preview.images.get(object.ruid)!.image.src} alt="" />}
-        <span>{object.name}<small>{adding ? "클릭하여 추가 배치" : object.canMove ? "선택 · 이동" : "원본 보존"}</small></span>
+        <span>{object.name}<small>{object.resourceId ? "서버에서 추가 · 크기 조절 가능" : "기존 맵 소재"}</small><small>{adding ? "클릭하여 추가 배치" : object.canMove ? "선택 · 이동" : "원본 보존"}</small></span>
       </button>)}
       {!items.length && <p className="object-help">{ready ? "검색 결과가 없습니다." : "게임 오브젝트를 읽는 중…"}</p>}
     </div>
@@ -128,8 +138,13 @@ export function GameObjectInspector() {
       }}>✕</button>
     </div>
     <p className="selection-count" role="status">오브젝트 {selected.length}개 · 이동불가 {cells.length}칸 선택</p>
+    {single && <p className="object-help">{object.resourceId ? "서버에서 추가한 소재 · 크기 조절 가능" : "기존 맵에서 가져온 배치"}</p>}
     {error && <div className="selection-error" role="alert">{error}</div>}
     {objects.length === 1 && <ObjectSortingPanel key={object.entityId} object={object} scene={scene} disabled={locked} cells={cells} />}
+    {single && <button className="ei-fit" aria-label="오브젝트 좌우반전" aria-pressed={object.flipX === true}
+      disabled={!canMove} onClick={() => useEditorStore.getState().flipGameObject(object.entityId, scene)}>
+      ⇄ 좌우반전 {object.flipX ? "켜짐" : "꺼짐"}
+    </button>}
     {single && <fieldset className="object-visual-offset" disabled={!canMove} aria-label="이미지만 미세 조정">
       <legend>이미지만 미세 조정</legend>
       <div className="ei-grid2">

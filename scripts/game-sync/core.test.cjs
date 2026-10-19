@@ -494,9 +494,22 @@ test('sorting exports run the game depth gate and reject new legacy dimension dr
     const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
     const object = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
     project.gameObjectEdits = { ...objectPatch(), sorting: [{entityId:object.entityId,setting:{mode:'wall'}}] };
-    if (regresses) assert.throws(() => exportEditedProject(project, f.options), { code: 'DEPTH_GATE_FAILED' });
-    else assert.equal(exportEditedProject(project, f.options).report.gameDepthValidation.status, 'passed');
+    if (regresses) {
+      assert.throws(() => exportEditedProject(project, f.options), { code: 'DEPTH_GATE_FAILED' });
+      // A rejected export must not leave a reviewable-looking candidate folder behind.
+      assert.deepEqual(fs.existsSync(f.options.outputRoot) ? fs.readdirSync(f.options.outputRoot) : [], []);
+    } else assert.equal(exportEditedProject(project, f.options).report.gameDepthValidation.status, 'passed');
   }
+});
+test('the game depth gate also covers plain moves and stays skipped for untouched objects', fixtureOptions, t => {
+  const f = objectFixture(t), checker = path.join(f.root, 'scripts/depth_check.cjs');
+  fs.writeFileSync(checker, 'module.exports.runCheck = ({mapPath}) => ({ok:true,crossCells:mapPath.includes("candidates") ? 1 : 0});');
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const object = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
+  project.gameObjectEdits = objectPatch([{ entityId: object.entityId, position: [8.28, 7.36] }]);
+  assert.throws(() => exportEditedProject(project, f.options), { code: 'DEPTH_GATE_FAILED', message: /crossCells/ });
+  delete project.gameObjectEdits;
+  assert.equal(exportEditedProject(project, f.options).report.gameDepthValidation.status, 'skipped');
 });
 test('surface sorting follows moved supports for both native and newly added objects', fixtureOptions, t => {
   const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -512,6 +525,18 @@ test('surface sorting follows moved supports for both native and newly added obj
     const meta = mb.component(sprite.path, 'script.IsoDepthMetaComponent');
     assert.equal(meta.W, 1); assert.equal(meta.H, 1); assert.equal(meta.StaticZ, z);
   }
+});
+test('surface props stay just in front of a support whose image is shifted down', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const base = previewEditedProject(project, f.options), table = base.objects.find(o => o.name === 'Obj_editable'), prop = base.objects.find(o => o.name === 'Obj_floor');
+  project.gameObjectEdits = { ...objectPatch(), sorting: [{ entityId: prop.entityId, setting: { mode: 'surface', supportId: table.entityId } }],
+    visualOffsets: [{ entityId: table.entityId, offset: [0, -0.4] }, { entityId: prop.entityId, offset: [0.1, 0.2] }] };
+  const scene = previewEditedProject(project, f.options), mb = f.MapBuilder.read(exportEditedProject(project, f.options).mapPath);
+  const tableZ = mb.component('Obj_editable', 'MOD.Core.TransformComponent').Position.z, propSprite = scene.sprites.find(s => s.objectEntityId === prop.entityId);
+  assert.ok(Math.abs(tableZ - (table.position[2] - 0.4 * 0.21875)) < 1e-9);
+  assert.equal(mb.component(propSprite.path, 'MOD.Core.TransformComponent').Position.z, tableZ - .0001);
+  assert.equal(mb.component(propSprite.path, 'script.IsoDepthMetaComponent').StaticZ, tableZ - .0001);
+  assert.equal(scene.objects.find(o => o.entityId === prop.entityId).position[2], tableZ - .0001);
 });
 test('sorting rejects protected targets, dangling links, self links, chains and invalid footprints', fixtureOptions, t => {
   const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -1259,6 +1284,28 @@ test('fresh synchronization uses runtime walk cells when authoring JSON lags beh
   assert.deepEqual(fileTreeHashes(f.root), before);
 });
 const runtimePatch=(updated=[],removed=[],added=[])=>({version:1,updated,removed,added});
+test('portal guard cells (game check 55) reject new NPC/portal conflicts in both directions', () => {
+  const runtime = require('./runtime.cjs'), c = { TILE_W: 2.56, TILE_H: 1.28, ORIGIN_X: 15, ORIGIN_Y: 15, DEPTH_SCALE: .21875 };
+  const files = {
+    DT_Portal: { relative: 'portal.csv', bytes: Buffer.from('PortalID,SrcMap,SrcX,SrcY,DestMap,DestX,DestY,DestFacing,Enabled,OpenCondition\nP1,fixture,3,3,other,1,1,SE,True,\nP_off,fixture,6,1,other,2,2,SE,False,\n') },
+    DT_Bounds: { relative: 'bounds.csv', bytes: Buffer.from('MapName,MinX,MaxX,MinY,MaxY,SpawnX,SpawnY\nfixture,0,7,0,7,0,0\nother,0,7,0,7,1,1\n') },
+    DT_Walk: { relative: 'walk.csv', bytes: Buffer.from('MapName,CellX,CellY\n') },
+  };
+  const profile = runtime.analyzeRuntime(files, 'fixture');
+  const npc = (cell, sourceCell = cell, enabled = true) => ({ entityId: 'N', spawnId: 'fixture_N', cell, sourceCell, enabled });
+  const inspect = (npcs, portals) => runtime.inspectRuntime({ blocked: [], ...(portals ? { gamePortalEdits: portals } : {}) }, profile, c, npcs);
+  const guard = e => e.code === 'NPC_PORTAL_GUARD';
+  assert.doesNotThrow(() => inspect([npc([3, 4])]));                       // existing data is left to the game's ALLOW list
+  for (const cell of [[3, 3], [4, 3], [2, 3], [3, 2], [3, 4]]) assert.throws(() => inspect([npc(cell, [0, 7])]), guard);
+  assert.throws(() => inspect([npc([4, 3], null)]), guard);               // newly added NPC
+  assert.doesNotThrow(() => inspect([npc([4, 4], null)]));                // diagonal is not a guard cell
+  assert.doesNotThrow(() => inspect([npc([3, 4], [0, 7], false)]));       // disabled NPC is ignored
+  assert.doesNotThrow(() => inspect([npc([6, 2], [0, 7])]));              // disabled portal is ignored
+  const added = id => runtimePatch([], [], [{ entityId: id, cell: [5, 5], destMap: 'other', destCell: [3, 3], destFacing: 'SE', enabled: true }]);
+  assert.throws(() => inspect([npc([5, 6])], added('11111111-1111-4111-8111-111111111111')), guard);
+  assert.throws(() => inspect([npc([0, 0])], runtimePatch([{ entityId: 'P1', cell: [0, 1] }])), guard);
+  assert.doesNotThrow(() => inspect([npc([5, 7])], added('22222222-2222-4222-8222-222222222222')));
+});
 test('unrelated monster/effect additions preserve pending portal edits, export and candidate review',fixtureOptions,t=>{
   const f=trapFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});
   project.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NE'}]);
@@ -1396,7 +1443,9 @@ test('runtime new placements enforce occupancy, bounds, walkability and strict f
  check('gameSpawnEdits',{version:1,cell:[2,2]},'BLOCKED_SPAWN');check('gameSpawnEdits',{version:1,cell:[1,1]},'OCCUPIED_SPAWN');check('gameSpawnEdits',{version:1,cell:[8,1]},'INVALID_RUNTIME_EDIT');
  check('gamePortalEdits',runtimePatch([{entityId:'P1',cell:[2,2]}]),'BLOCKED_PORTAL');check('gamePortalEdits',runtimePatch([{entityId:'P2',cell:[5,5],enabled:true}]),'PORTAL_OCCUPIED');check('gamePortalEdits',runtimePatch([{entityId:'P1',destMap:'missing'}]),'INVALID_RUNTIME_EDIT');
  check('gameMonsterEdits',runtimePatch([{entityId:'M1',cell:[2,2],spread:0}]),'NO_MONSTER_CELLS');check('gameMonsterEdits',runtimePatch([{entityId:'M1',count:201}]),'INVALID_RUNTIME_EDIT');check('gameMonsterEdits',runtimePatch([{entityId:'M1',flipX:true}]),'INVALID_RUNTIME_EDIT');
- const q=structuredClone(project);q.blocked.push([5,5]);q.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NW'}]);assert.doesNotThrow(()=>previewEditedProject(q,f.options));
+ const q=structuredClone(project);q.blocked.push([0,7]);q.gamePortalEdits=runtimePatch([{entityId:'P1',destFacing:'NW'}]);assert.doesNotThrow(()=>previewEditedProject(q,f.options));
+ // Newly blocked cells must not swallow a portal source, or the start point.
+ for(const cell of [[5,5],[3,6]]){const r=structuredClone(project);r.blocked.push(cell);assert.throws(()=>previewEditedProject(r,f.options),e=>e.code==='BLOCKED_ARRIVAL');}
 });
 
 test('runtime dependencies guard destination walk and bounds while unrelated walk rows stay mergeable',fixtureOptions,t=>{
@@ -1439,6 +1488,7 @@ test('unrelated inventory additions preserve previews, drafts, exact output and 
   inventory.resources.reverse();
   inventory.resources.push({ ruid: 'new-ui-resource', name: '디스코드_닫기_기본', category: 'sprite' });
   inventory.count = inventory.resources.length; inventory.generatedAt = '2026-10-04T00:00:00Z';
+  inventory.verifiedAdditions = [{ verifiedAt: '2026-10-15T00:00:00Z', ruids: ['new-ui-resource'] }];
   fs.writeFileSync(lockPath, JSON.stringify(inventory, null, 2));
   const gameBefore = fileTreeHashes(f.root);
   const scene = previewEditedProject(project, f.options);
@@ -1640,7 +1690,7 @@ test('blank-floor support does not unlock native terrain, image backgrounds or s
   }
 });
 
-test('visual XY offsets preserve logical anchors, footprint, Z, blocked cells and source bytes through preview/export', fixtureOptions, t => {
+test('visual offsets keep logical anchors and footprint while Z follows the drawn Y like game objectDepthZ', fixtureOptions, t => {
   const f = objectFixture(t), before = fileTreeHashes(f.root);
   const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
   const original = f.MapBuilder.read(f.mapPath), id = original.find('Obj_editable').id;
@@ -1648,17 +1698,20 @@ test('visual XY offsets preserve logical anchors, footprint, Z, blocked cells an
   project.gameObjectEdits = { ...objectPatch(), visualOffsets: [{ entityId: id, offset }] };
   const scene = previewEditedProject(JSON.parse(JSON.stringify(project)), f.options);
   const object = scene.objects.find(o => o.entityId === id), sprite = scene.sprites.find(o => o.objectEntityId === id);
-  assert.deepEqual(object.position, [7,8,1.77]); assert.deepEqual(sprite.position, object.position);
+  const shiftedZ = 1.77 + offset[1] * 0.21875;
+  assert.deepEqual(object.position, [7,8,shiftedZ]); assert.deepEqual(sprite.position, object.position);
   assert.deepEqual(sprite.visualOffset, offset); assert.deepEqual(object.sortInfo.footprint, [2,3,2,3]);
   const output = exportEditedProject(project, f.options), candidate = f.MapBuilder.read(output.mapPath);
   const old = original.component('Obj_editable', 'MOD.Core.TransformComponent'), actual = candidate.component('Obj_editable', 'MOD.Core.TransformComponent');
-  assert.deepEqual(actual, { ...old, Position: { ...old.Position, x:7.13, y:8.27 } });
-  assert.deepEqual(candidate.component('Obj_editable', 'script.IsoDepthMetaComponent'), original.component('Obj_editable', 'script.IsoDepthMetaComponent'));
+  assert.deepEqual(actual, { ...old, Position: { ...old.Position, x:7.13, y:8.27, z:shiftedZ } });
+  assert.deepEqual(candidate.component('Obj_editable', 'script.IsoDepthMetaComponent'), { ...original.component('Obj_editable', 'script.IsoDepthMetaComponent'), StaticZ: shiftedZ });
+  // Game depth_check (1): z must equal objectDepthZ(pos.y) = old z + dy * DEPTH_SCALE.
+  assert.ok(Math.abs(actual.Position.z - (old.Position.z + (actual.Position.y - old.Position.y) * 0.21875)) < 1e-9);
   assert.equal(output.report.objectChanges.moved, 1); assert.equal(output.report.changedCells, 0); assert.equal(output.report.walkChangedCells, 0);
   assert.equal(output.report.objectComparison.permittedFieldsOnly, true);
   for(const e of original.listEntities()) if(e.id !== id) assert.deepEqual(candidate.find(e.path), original.find(e.path));
   const comparison = compareEditedProject(project, f.options).comparison;
-  assert.deepEqual(comparison.objects.moved[0].to,[7.13,8.27,1.77]);
+  assert.deepEqual(comparison.objects.moved[0].to,[7.13,8.27,shiftedZ]);
   assert.deepEqual(fileTreeHashes(f.root), before);
   project.gameObjectEdits.visualOffsets[0].offset=[0,0];
   assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
@@ -1670,7 +1723,7 @@ test('visual offsets compose with native cell moves, copies, resource scaling an
   project.gameObjectEdits={...objectPatch([{entityId:id,position:[8.28,7.36]}],[],[
     {entityId:copy,prototypeId:id,position:[8.28,7.36]},
     {entityId:added,prototypeId:'resource_'+resource,position:[1.28,-.64],scale:.75}]),
-    resources:[resource], sorting:[{entityId:added,setting:{mode:'floor',offset:[0,0],size:[1,1],bounds:[3,5],padX:0}}],
+    resources:[resource], sorting:[{entityId:added,setting:{mode:'floor',offset:[0,0],size:[1,1],bounds:[4.69,7.81],padX:0}}],
     visualOffsets:[{entityId:id,offset:[.12,.2]},{entityId:copy,offset:[-.2,.3]},{entityId:added,offset:[.8,1.2]}]};
   const scene=previewEditedProject(project,f.options), output=exportEditedProject(project,f.options), mb=f.MapBuilder.read(output.mapPath);
   for(const object of scene.objects.filter(o=>o.visualOffset)){
@@ -1699,4 +1752,225 @@ test('visual offset input rejects protected, removed, unknown and library-only t
   }
   project.gameObjectEdits={...objectPatch([],[id]),visualOffsets:[{entityId:id,offset:[0,.1]}]};
   assert.throws(()=>exportEditedProject(project,f.options));
+});
+
+
+function registerGroundFixture(f, project, metadata = {}) {
+  const resource = { ruid: 'c'.repeat(32), name: 'Velos_stone_1111_u0_v0',
+    metadata: { width: 256, height: 128, pixelsPerUnit: 100, pivot: [0.5,0.5], ...metadata } };
+  const id = registerObjectResources({ ...project.gameSync, resources: [resource] }, f.options).resourceIds[0];
+  const index = project.palette.length;
+  project.palette.push({ name: resource.name, ruid: resource.ruid, px: [256,128], category: 'foothold', gameResourceId: id });
+  return { id, index, ruid: resource.ruid };
+}
+test('registered ground brushes survive reopen, preserve exact artwork, preview and export without changing originals', fixtureOptions, t => {
+  const f=fixture(t), before=fileTreeHashes(f.root);
+  const {project}=createSyncProject({...f.options,mapName:'fixture'});
+  const baselineBefore=fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId));
+  const tile=registerGroundFixture(f,project);
+  const library=previewEditedProject(project,f.options);
+  assert(library.groundBrushRuids.includes(tile.ruid));
+  assert(!library.objectPrototypes.some(p=>p.ruid===tile.ruid));
+  assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
+  for(const cell of project.ground)if(cell[0]<4&&cell[1]<4)cell[2]=tile.index;
+  const reopened=JSON.parse(JSON.stringify(project));
+  const scene=previewEditedProject(reopened,f.options),out=exportEditedProject(reopened,f.options);
+  const candidate=f.MapBuilder.read(out.mapPath);
+  const custom=scene.sprites.filter(p=>p.ruid===tile.ruid);
+  assert.equal(custom.length,16);
+  for(let y=0;y<4;y++)for(let x=0;x<4;x++){
+    assert.equal(candidate.component('Tile_'+x+'_'+y,'MOD.Core.SpriteRendererComponent').SpriteRUID,tile.ruid);
+    assert.deepEqual(candidate.component('Tile_'+x+'_'+y,'MOD.Core.TransformComponent').Scale,{x:1,y:1,z:1});
+  }
+  assert.deepEqual(candidate.find('Obj_keep'),f.MapBuilder.read(path.join(f.root,'map/fixture.map')).find('Obj_keep'));
+  assert.equal(out.report.changedCells,16);
+  assert.deepEqual(fileTreeHashes(f.root),before);
+  assert.deepEqual(fileTreeHashes(path.join(f.options.baselineRoot,project.gameSync.baselineId)),baselineBefore);
+});
+test('ground brushes reject metadata mismatches, missing verification, foreign maps and modified resource receipts',fixtureOptions,t=>{
+  const f=fixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'});
+  const tile=registerGroundFixture(f,project), entry=project.palette[tile.index];
+  for(const mutation of [{ruid:'d'.repeat(32)},{px:[512,256]},{category:'background'},{gameResourceId:'../bad'}]){
+    const bad=structuredClone(project);Object.assign(bad.palette[tile.index],mutation);
+    assert.throws(()=>previewEditedProject(bad,f.options));
+  }
+  const missing=structuredClone(project);delete missing.palette[tile.index].gameResourceId;missing.ground[0][2]=tile.index;
+  assert.throws(()=>previewEditedProject(missing,f.options),e=>e.code==='UNSUPPORTED_TILE');
+  const foreign=createSyncProject({...f.options,mapName:'fixture'}).project;foreign.palette.push(entry);
+  assert.throws(()=>previewEditedProject(foreign,f.options),e=>e.code==='RESOURCE_MISMATCH');
+  fs.appendFileSync(path.join(f.options.baselineRoot,'resource-'+tile.id+'.json'),' ');
+  assert.throws(()=>previewEditedProject(project,f.options),e=>e.code==='RESOURCE_CORRUPT');
+});
+test('oversized and off-center object sprites cannot be registered as ground brushes',fixtureOptions,t=>{
+  const f=fixture(t);
+  for(const metadata of [{width:512,height:256},{pivot:[0.5,0]},{pixelsPerUnit:200}]){
+    const {project}=createSyncProject({...f.options,mapName:'fixture'});
+    registerGroundFixture(f,project,metadata);
+    assert.throws(()=>previewEditedProject(project,f.options),e=>e.code==='INVALID_GROUND_RESOURCE');
+  }
+});
+
+test('applied registered floor brushes remain editable after a fresh source import', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const brush = registerGroundFixture(f, project);
+  for (const cell of project.ground) if (cell[0] < 4 && cell[1] < 4) cell[2] = brush.index;
+  const out = exportEditedProject(project, f.options);
+  fs.copyFileSync(out.mapPath, path.join(f.root, 'map/fixture.map'));
+  const first = createSyncProject({ ...f.options, mapName: 'fixture', previousProject: project });
+  assert.equal(first.report.groundEditingSupported, true);
+  assert.equal(first.project.ground.length, project.ground.length);
+  assert.deepEqual([..._test.groundMap(first.project)], [..._test.groundMap(project)]);
+  assert.equal(exportEditedProject(first.project, f.options).report.exactMapBytes, true);
+  const second = createSyncProject({ ...f.options, mapName: 'fixture', previousProject: first.project });
+  assert.equal(second.report.groundEditingSupported, true);
+  assert.equal(exportEditedProject(second.project, f.options).report.exactMapBytes, true);
+  const edited = structuredClone(second.project);
+  edited.ground[0][2] = edited.palette.findIndex(p => p.ruid === tile('물').ruid);
+  assert.equal(exportEditedProject(edited, f.options).report.changedCells, 1);
+});
+
+test('fresh source import still succeeds when the prior baseline is missing, moved or damaged', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const dir = path.join(f.options.baselineRoot, project.gameSync.baselineId);
+  const corruptProject = path.join(dir, 'project.json'), corruptBytes = fs.readFileSync(corruptProject);
+  const manifestPath = path.join(dir, 'manifest.json'), manifestBytes = fs.readFileSync(manifestPath);
+  const damage = [
+    () => fs.writeFileSync(corruptProject, Buffer.concat([corruptBytes, Buffer.from(' ')])),
+    () => { const m = JSON.parse(manifestBytes); m.gameRoot = path.join(f.root, 'elsewhere'); fs.writeFileSync(manifestPath, JSON.stringify(m)); },
+    () => fs.rmSync(dir, { recursive: true, force: true }),
+  ];
+  for (const breakIt of damage) {
+    breakIt();
+    const next = createSyncProject({ ...f.options, mapName: 'fixture', previousProject: project });
+    assert.notEqual(next.project.gameSync.baselineId, project.gameSync.baselineId);
+    assert.ok(next.report.warnings.some(w => w.includes('이전 기준의 등록 바닥 소재')));
+    assert.equal(exportEditedProject(next.project, f.options).report.exactMapBytes, true);
+    if (fs.existsSync(dir)) { fs.writeFileSync(corruptProject, corruptBytes); fs.writeFileSync(manifestPath, manifestBytes); }
+  }
+});
+
+test('renderer flip overrides preserve transform/depth and survive preview, comparison and candidate export', fixtureOptions, t => {
+ const f=objectFixture(t),{project}=createSyncProject({...f.options,mapName:'fixture'}), before=fileTreeHashes(f.root);
+ const original=f.MapBuilder.read(f.mapPath),id=original.find('Obj_editable').id,copy=crypto.randomUUID();
+ project.gameObjectEdits={...objectPatch([],[],[{entityId:copy,prototypeId:id,position:[8.28,7.36]}]),flips:[{entityId:id,flipX:false},{entityId:copy,flipX:false}],visualOffsets:[{entityId:copy,offset:[.12,.24]}]};
+ const scene=previewEditedProject(project,f.options),out=exportEditedProject(project,f.options), mb=f.MapBuilder.read(out.mapPath);
+ assert.equal(scene.objects.find(o=>o.entityId===id).flipX,false);assert.equal(scene.sprites.find(o=>o.objectEntityId===copy).flipX,false);
+ const expected=structuredClone(original.find('Obj_editable'));expected.jsonString['@components'].find(c=>c['@type']==='MOD.Core.SpriteRendererComponent').FlipX=false;
+ assert.deepEqual(mb.find('Obj_editable'),expected);assert.equal(mb.component('Obj_Editor_'+copy,'MOD.Core.SpriteRendererComponent').FlipX,false);
+ assert.equal(out.report.objectFlipsChanged,2);assert.equal(compareEditedProject(project,f.options).comparison.objects.flipped.length,2);assert.deepEqual(fileTreeHashes(f.root),before);
+ project.gameObjectEdits={...objectPatch(),flips:[{entityId:id,flipX:true}]};assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
+ for(const rows of [[{entityId:original.find('Obj_keep').id,flipX:true}],[{entityId:'missing',flipX:true}],[{entityId:id,flipX:'true'}],[{entityId:id,flipX:true},{entityId:id,flipX:false}]]){
+ project.gameObjectEdits={...objectPatch(),flips:rows};assert.throws(()=>previewEditedProject(project,f.options));}
+ project.gameObjectEdits={...objectPatch([],[id]),flips:[{entityId:id,flipX:false}]};assert.throws(()=>previewEditedProject(project,f.options));
+});
+test('map names must match the game file spelling exactly, including case', fixtureOptions, t => {
+  const f = objectFixture(t);
+  assert.throws(() => createSyncProject({ ...f.options, mapName: 'Fixture' }), { code: 'MAP_NAME_CASE', message: /fixture/ });
+  assert.equal(createSyncProject({ ...f.options, mapName: 'fixture' }).project.map, 'fixture');
+});
+test('boss-zone exits stay BossCleared and the last kill exit cannot be removed or disabled (D-BR45)', () => {
+  const runtime = require('./runtime.cjs'), c = { TILE_W: 2.56, TILE_H: 1.28, ORIGIN_X: 15, ORIGIN_Y: 15, DEPTH_SCALE: .21875 };
+  const csv = text => Buffer.from(text.split('|').join(String.fromCharCode(10)));
+  const files = withMeta => ({
+    DT_Portal: { relative: 'portal.csv', bytes: csv('PortalID,SrcMap,SrcX,SrcY,DestMap,DestX,DestY,DestFacing,Enabled,OpenCondition|shade_P01,shade,3,3,town,1,1,NW,True,BossCleared|shade_P02,shade,5,5,shade2,1,1,SE,True,|') },
+    DT_Bounds: { relative: 'bounds.csv', bytes: csv('MapName,MinX,MaxX,MinY,MaxY,SpawnX,SpawnY|shade,0,7,0,7,0,0|shade2,0,7,0,7,1,1|town,0,7,0,7,1,1|') },
+    DT_Walk: { relative: 'walk.csv', bytes: csv('MapName,CellX,CellY|') },
+    ...(withMeta ? { DT_MapMeta: { relative: 'meta.csv', bytes: csv('MapName,InstanceKind|shade,BossZone|shade2,BossZone|town,|') } } : {}),
+  });
+  const run = (patch, withMeta = true) => {
+    const profile = runtime.analyzeRuntime(files(withMeta), 'shade');
+    return runtime.inspectRuntime({ blocked: [], gamePortalEdits: patch }, profile, c, []);
+  };
+  const required = e => e.code === 'BOSS_EXIT_REQUIRED';
+  assert.throws(() => run(runtimePatch([], ['shade_P01'])), required);
+  assert.throws(() => run(runtimePatch([{ entityId: 'shade_P01', enabled: false }])), required);
+  assert.doesNotThrow(() => run(runtimePatch([{ entityId: 'shade_P01', cell: [4, 4] }])));
+  assert.doesNotThrow(() => run(runtimePatch([], ['shade_P01']), false));   // unknown zones are not guessed
+  const id = '33333333-3333-4333-8333-333333333333';
+  const edit = run(runtimePatch([{ entityId: 'shade_P02', cell: [6, 6] }], ['shade_P01'], [{ entityId: id, cell: [2, 2], destMap: 'town', destCell: [2, 2], destFacing: 'NW', enabled: true }]));
+  assert.ok(edit.warnings.some(w => w.includes('BossCleared')));
+  const out = runtime.buildCandidates(edit, files(true)).find(r => r.name === 'DT_Portal').bytes.toString('utf8');
+  assert.match(out, new RegExp('shade_Editor_' + id + ',shade,2,2,town,2,2,NW,True,BossCleared'));
+  assert.match(out, /shade_P02,shade,6,6,shade2,1,1,SE,True,(\r?\n|$)/);   // inside-zone links keep their condition
+  assert.doesNotMatch(out, /shade_P01/);
+});
+test('walk edits cannot block arrival cells: incoming portals, difficulty-variant entrances, revive and return points', () => {
+  const runtime = require('./runtime.cjs'), c = { TILE_W: 2.56, TILE_H: 1.28, ORIGIN_X: 15, ORIGIN_Y: 15, DEPTH_SCALE: .21875 };
+  const csv = text => Buffer.from(text.split('|').join(String.fromCharCode(10)));
+  const files = {
+    DT_Portal: { relative: 'portal.csv', bytes: csv('PortalID,SrcMap,SrcX,SrcY,DestMap,DestX,DestY,DestFacing,Enabled,OpenCondition|town_P1,town,1,1,cave,2,2,SE,True,|town_P2,town,2,1,cave,6,6,SE,False,|inner_P1,cavehard,1,1,cave,4,4,SE,True,|') },
+    DT_Bounds: { relative: 'bounds.csv', bytes: csv('MapName,MinX,MaxX,MinY,MaxY,SpawnX,SpawnY|cave,0,7,0,7,0,0|cavehard,0,7,0,7,0,0|town,0,7,0,7,1,1|') },
+    DT_Walk: { relative: 'walk.csv', bytes: csv('MapName,CellX,CellY|cavehard,7,7|') },
+    DT_MapMeta: { relative: 'meta.csv', bytes: csv('MapName,InstanceKind,DifficultyBaseMap,ReviveCellX,ReviveCellY,ReviveFacing,ReturnCellX,ReturnCellY,ReturnFacing|cave,,,,,,,,|cavehard,,cave,3,5,SE,5,3,NW|cavehard2,BossZone,,,,,,,|town,,,,,,,,|') },
+  };
+  const block = (map, cells) => runtime.inspectRuntime({ blocked: [[7, 7], ...cells] }, runtime.analyzeRuntime(files, map), c, []);
+  const arrival = e => e.code === 'BLOCKED_ARRIVAL';
+  assert.throws(() => block('cave', [[2, 2]]), arrival);       // incoming portal from town
+  assert.throws(() => block('cavehard', [[2, 2]]), arrival);   // hard variant reuses the base map entrance
+  assert.throws(() => block('cavehard', [[3, 5]]), arrival);   // revive point
+  assert.throws(() => block('cavehard', [[5, 3]]), arrival);   // return point
+  assert.doesNotThrow(() => block('cave', [[6, 6]]));          // disabled portal
+  assert.doesNotThrow(() => block('cavehard', [[7, 7]]));      // already blocked before the edit
+  assert.doesNotThrow(() => block('cave', [[3, 3]]));
+});
+test('debug-only origin monsters (referenced by OriginMonsterID) are labelled and cannot be placed', () => {
+  const runtime = require('./runtime.cjs');
+  const csv = text => Buffer.from(text.split('|').join(String.fromCharCode(10)));
+  const ruid = 'a'.repeat(32);
+  const profile = runtime.analyzeRuntime({
+    DT_MonsterClass: { relative: 'class.csv', bytes: csv('MonsterClassID,#DevName,MonsterName,MonsterAppearanceID,ModelID,BodyScale,OriginMonsterID|901000,slime(origin),SLIME,1,m,1,|101000,slime(field),SLIME,1,m,1,901000|') },
+    DT_MonsterAppearance: { relative: 'app.csv', bytes: csv('MonsterAppearanceID,Action,BaseDir,Ruid|1,Idle,SE,' + ruid + '|') },
+    DT_MonsterSpawn: { relative: 'spawn.csv', bytes: csv('MonsterSpawnID,MapName,MonsterClassID,CellX,CellY,Count,Spread,RespawnMinSec,RespawnMaxSec,FirstSpawnSec,Enabled,Scale,FlipX|') },
+    DT_Bounds: { relative: 'bounds.csv', bytes: csv('MapName,MinX,MaxX,MinY,MaxY,SpawnX,SpawnY|m,0,7,0,7,0,0|') },
+    DT_Walk: { relative: 'walk.csv', bytes: csv('MapName,CellX,CellY|') },
+  }, 'm');
+  const origin = profile.catalog.find(r => r.monsterClassId === 901000), placed = profile.catalog.find(r => r.monsterClassId === 101000);
+  assert.equal(origin.canAdd, false); assert.match(origin.reason, /101000/); assert.match(origin.name, /원본/);
+  assert.equal(placed.canAdd, true); assert.doesNotMatch(placed.name, /원본/);
+});
+test('a stale StaticZ record (game z-only patch) no longer locks the object and is re-recorded on edit', fixtureOptions, t => {
+  const f = objectFixture(t), mb = f.MapBuilder.read(f.mapPath);
+  mb.patchComponent('Obj_editable', 'script.IsoDepthMetaComponent', { StaticZ: 1.2 });
+  mb.write(f.mapPath);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const object = previewEditedProject(project, f.options).objects.find(o => o.name === 'Obj_editable');
+  assert.equal(object.canMove, true); assert.equal(object.staleStaticZ, true);
+  project.gameObjectEdits = objectPatch([{ entityId: object.entityId, position: [8.28, 7.36] }]);
+  const candidate = f.MapBuilder.read(exportEditedProject(project, f.options).mapPath);
+  assert.equal(candidate.component('Obj_editable', 'script.IsoDepthMetaComponent').StaticZ, candidate.component('Obj_editable', 'MOD.Core.TransformComponent').Position.z);
+});
+test('floor bounds far below the resource image size (px/100 style) are rejected', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const resource = registerTestResource(f, project), added = crypto.randomUUID();
+  const edits = bounds => ({ ...objectPatch([], [], [{ entityId: added, prototypeId: 'resource_' + resource, position: [1.28, -.64] }]),
+    resources: [resource], sorting: [{ entityId: added, setting: { mode: 'floor', offset: [0, 0], size: [1, 1], bounds, padX: 0 } }] });
+  project.gameObjectEdits = edits([3, 5]);       // 300x500 px / 100
+  assert.throws(() => previewEditedProject(project, f.options), { code: 'INVALID_OBJECT_SORTING' });
+  project.gameObjectEdits = edits([4.69, 7.81]); // 300x500 px / 64
+  assert.doesNotThrow(() => previewEditedProject(project, f.options));
+});
+test('NPC dialog groups follow the game IdCell rule and warn when the group speaks as another NPC', () => {
+  const npc = require('./npcs.cjs'), csv = text => Buffer.from(text.split('|').join(String.fromCharCode(10)));
+  const files = { DT_NpcSpawn: { relative: 'RootDesk/MyDesk/DataSet/npc/DT_NpcSpawn.csv', bytes: csv('MapName,NpcSpawnID,CellX,CellY,NpcClassID,Enabled,Scale,DialogID,FlipX|fixture,a,1,1,101,True,1,,False|') },
+    DT_NpcClass: { bytes: csv('NpcClassID,NpcName,NpcAppearanceID,BodyScale|101,A,9101,1|102,B,9101,1|') },
+    DT_NpcAppearance: { bytes: csv('NpcAppearanceID,Action,BaseDir,Ruid|9101,Idle,SE,' + '1'.repeat(32) + '|') },
+    DT_QuestSequence: { bytes: csv('SequenceGroupID,SequenceOrder,SpeakerNpcClassID|100,1,101|200,1,102|SHOP_INTRO,1,101|030020,1,101|300,,101|') } };
+  const profile = npc.analyzeNpcs(files, 'fixture');
+  assert.deepEqual(profile.dialogGroups, ['100', '200']);
+  const inspect = dialogId => npc.inspectNpcs({ size: [8, 8], blocked: [], ground: [], gameNpcEdits: npcPatch([{ entityId: 'a', dialogId }]) }, profile, { ORIGIN_X: 15, ORIGIN_Y: 15, TILE_W: 2.56, TILE_H: 1.28, DEPTH_SCALE: .21875 });
+  for (const id of ['SHOP_INTRO', '030020', '300']) assert.throws(() => inspect(id), { code: 'UNKNOWN_NPC_DIALOG' });
+  assert.ok(!inspect('100').warnings.some(w => w.includes('화자')));
+  assert.ok(inspect('200').warnings.some(w => w.includes('화자(102)')));
+});
+test('candidates from an older baseline stay listed after the game moves an applied CSV', fixtureOptions, t => {
+  const f = objectFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([4, 4]);
+  const old = exportEditedProject(project, f.options);
+  assert.deepEqual(old.report.applyFiles, ['map/fixture.map', f.walkRelative]);
+  const moved = path.join(f.root, 'RootDesk/MyDesk/DataSet/map/DT_Walk.csv');
+  fs.mkdirSync(path.dirname(moved), { recursive: true }); fs.renameSync(f.walkPath, moved);
+  const fresh = createSyncProject({ ...f.options, mapName: 'fixture' }).project;
+  const listed = listCandidates(compareIdentity(fresh), f.options);
+  assert.equal(listed.skipped, 0);
+  assert.deepEqual(listed.candidates.map(c => [c.candidateId, c.sameBaseline]), [[old.candidateId, false]]);
 });

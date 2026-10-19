@@ -6,6 +6,7 @@ import { resolveTileImages } from "./imageResolver";
 // img = 캔버스 렌더용 HTMLImageElement(로드 완료된 것).
 //   ⚠ url 은 **직렬화되지 않는다**(StoredTile 참조). 프로젝트 파일에는 ruid + px 만 들어간다.
 export interface PaletteTile {
+  gameResourceId?: string; // Verified metadata reference scoped to this game-map baseline.
   name: string;
   url: string; // dataURL ("" = 이미지 미해결 → 폴백색 스와치). 메모리/IDB 캐시 전용.
   img: HTMLImageElement | null;
@@ -132,6 +133,7 @@ export async function tilesFromStored(stored: StoredTileInput[]): Promise<Palett
         px: s.px ?? pxOf(img),
         regStatus: s.regStatus,
         category: s.category,
+        ...(s.gameResourceId ? { gameResourceId: s.gameResourceId } : {}),
       } satisfies PaletteTile;
     }),
   );
@@ -144,6 +146,7 @@ export async function tilesFromStored(stored: StoredTileInput[]): Promise<Palett
  *     (docs/map/MAP_PROJECT_ASSET_REFERENCE_PLAN.md). 회귀는 vitest + convert_map 게이트가 잡는다.
  */
 export interface StoredTile {
+  gameResourceId?: string;
   name: string;
   hash?: string | null;
   ruid?: string;
@@ -166,5 +169,6 @@ export function toStoredTile(t: PaletteTile): StoredTile {
     px: t.px,
     regStatus: t.regStatus,
     category: t.category,
+    ...(t.gameResourceId ? { gameResourceId: t.gameResourceId } : {}),
   };
 }

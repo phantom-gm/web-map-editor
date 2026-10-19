@@ -15,3 +15,5 @@ next-env.d.ts
 .env
 # Local game baselines and candidate outputs
 .game-sync/
+# Claude Code personal permission overrides
+.claude/settings.local.json
