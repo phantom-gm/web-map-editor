@@ -1984,3 +1984,46 @@ test('the editor backdrop plane must match the game BACKDROP_ORDER when the game
   delete require.cache[require.resolve(file)];
   assert.throws(() => createSyncProject({ ...f.options, mapName: 'fixture' }), { code: 'INVALID_CONSTANTS', message: /BACKDROP_ORDER/ });
 });
+test('registered floor brushes travel to the game ground registry so a fresh import anywhere can edit them', fixtureOptions, t => {
+  const f = fixture(t), registryPath = path.join(f.root, 'scripts/ground-tile-registry.json');
+  fs.writeFileSync(registryPath, JSON.stringify({ version: 1, description: 'test', tiles: [] }, null, 2) + '\n');
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const brush = registerGroundFixture(f, project), ruid = project.palette[brush.index].ruid;
+  for (const cell of project.ground) if (cell[0] < 4 && cell[1] < 4) cell[2] = brush.index;
+  const out = exportEditedProject(project, f.options);
+  assert.ok(out.report.applyFiles.includes('scripts/ground-tile-registry.json'));
+  assert.deepEqual(out.report.groundRegistryComparison.addedTiles, [ruid]);
+  const written = JSON.parse(fs.readFileSync(path.join(out.candidateDir, 'scripts/ground-tile-registry.json'), 'utf8'));
+  assert.deepEqual(written.tiles.map(x => [x.ruid, x.width, x.height, x.pivot, x.pixelsPerUnit]), [[ruid, 256, 128, [0.5, 0.5], 100]]);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'ready');
+  assert.deepEqual(listCandidates(compareIdentity(project), f.options).skipped, 0);
+  const zip = packageCandidate(reviewInput(out, project), f.options);
+  assert.ok(zip.bytes.includes(Buffer.from('scripts/ground-tile-registry.json')));
+  // Apply the candidate, then import with no prior workspace (another PC).
+  fs.copyFileSync(out.mapPath, path.join(f.root, 'map/fixture.map'));
+  fs.copyFileSync(path.join(out.candidateDir, 'scripts/ground-tile-registry.json'), registryPath);
+  const fresh = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.equal(fresh.report.groundEditingSupported, true);
+  assert.ok(fresh.project.palette.some(p => p.ruid === ruid));
+  const again = exportEditedProject(fresh.project, f.options);
+  assert.equal(again.report.exactMapBytes, true);
+  assert.ok(!again.report.applyFiles.includes('scripts/ground-tile-registry.json'));   // already listed
+  fs.rmSync(registryPath);
+  assert.equal(createSyncProject({ ...f.options, mapName: 'fixture' }).report.groundEditingSupported, false);
+});
+test('a missing game ground registry only warns and never adds an apply file', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  const brush = registerGroundFixture(f, project);
+  project.ground[0][2] = brush.index;
+  const out = exportEditedProject(project, f.options);
+  assert.ok(!out.report.applyFiles.includes('scripts/ground-tile-registry.json'));
+  assert.ok(out.report.warnings.some(w => w.includes('바닥 명단')));
+});
+test('invalid registry entries are skipped with a warning instead of failing the import', fixtureOptions, t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, 'scripts/ground-tile-registry.json'), JSON.stringify({ version: 1, tiles: [
+    { ruid: 'b'.repeat(32), name: 'wrong size', width: 300, height: 128, pivot: [0.5, 0.5], pixelsPerUnit: 100 },
+    { ruid: 'c'.repeat(32), name: 'ok', width: 256, height: 128, pivot: [0.5, 0.5], pixelsPerUnit: 100 }] }));
+  const { report } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.ok(report.warnings.some(w => w.includes('wrong size')));
+});

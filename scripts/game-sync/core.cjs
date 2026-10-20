@@ -120,6 +120,51 @@ function loadDependencies(root) {
   if (!MapBuilder || !vector3) fail('MISSING_BUILDER', 'MapBuilder API를 확인할 수 없습니다.');
   return { MapBuilder, vector3, constants, ppu: Number.isFinite(exported.PPU) && exported.PPU > 0 ? exported.PPU : 100, builderRelative: relative };
 }
+// Game-side list of editor ground brushes (1x1, 256x128, centre pivot, PPU 100) whose names are
+// outside the 페른델_NxN_ lock convention (e.g. Velos_grass). Import reads it so a fresh sync on any
+// PC can edit those floors. New registrations reach the game as an updated copy inside the
+// candidate; the editor itself never writes the game folder.
+const GROUND_REGISTRY = 'scripts/ground-tile-registry.json';
+function readGroundRegistry(root) {
+  let bytes;
+  try { bytes = fs.readFileSync(sourceRelative(root, GROUND_REGISTRY)); } catch (e) { if (e.code === 'ENOENT') return { bytes: null, value: null }; throw e; }
+  let value = null;
+  try { value = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')); } catch { /* reported by callers as invalid */ }
+  return { bytes, value };
+}
+function registryTiles(value, constants, ppu) {
+  const tiles = [], rejected = [];
+  if (!value || value.version !== 1 || !Array.isArray(value.tiles)) return { tiles, rejected, valid: false };
+  const seen = new Set();
+  for (const t of value.tiles) {
+    const fits = !!t && /^[a-f0-9]{32}$/.test(t.ruid || '') && typeof t.name === 'string' && !!t.name.trim() &&
+      groundResourceFits({ width: t.width, height: t.height, pivot: t.pivot, pixelsPerUnit: t.pixelsPerUnit }, constants, ppu);
+    if (!fits || seen.has(t.ruid)) { rejected.push(String(t?.name || t?.ruid || '?')); continue; }
+    seen.add(t.ruid);
+    tiles.push({ name: t.name, ruid: t.ruid, n: 1, family: 'resource:' + t.ruid, material: '길경계', variant: 1, px: [t.width, t.height] });
+  }
+  return { tiles, rejected, valid: true };
+}
+function buildRegistryCandidate(root, checked) {
+  const used = new Set(checked.after.values());
+  const resourceTiles = checked.catalog.filter(t => String(t.family || '').startsWith('resource:') && used.has(t.ruid));
+  if (!resourceTiles.length) return null;
+  const current = readGroundRegistry(root);
+  if (!current.bytes) return { warning: '게임 repo에 바닥 명단(' + GROUND_REGISTRY + ')이 없어 등록한 바닥을 명단에 남기지 못했습니다. 다른 PC에서 이 바닥을 편집하려면 명단 파일이 필요합니다.' };
+  const parsed = registryTiles(current.value, checked.manifest.constants, checked.manifest.ppu ?? 100);
+  if (!parsed.valid) fail('INVALID_GROUND_REGISTRY', '게임 바닥 명단(' + GROUND_REGISTRY + ') 형식을 읽을 수 없습니다. 게임 쪽 파일을 먼저 고쳐 주세요.');
+  const listed = new Set(current.value.tiles.map(t => t && t.ruid));
+  const missing = resourceTiles.filter(t => !listed.has(t.ruid));
+  if (!missing.length) return null;
+  const value = clone(current.value);
+  for (const t of missing) value.tiles.push({ ruid: t.ruid, name: t.name, width: t.px[0], height: t.px[1], pivot: [0.5, 0.5], pixelsPerUnit: checked.manifest.ppu ?? 100 });
+  value.tiles.sort((a, b) => String(a?.name).localeCompare(String(b?.name)) || String(a?.ruid).localeCompare(String(b?.ruid)));
+  let text = JSON.stringify(value, null, 2) + '\n';
+  if (current.bytes.includes(Buffer.from('\r\n'))) text = text.replace(/\n/g, '\r\n');
+  const bytes = Buffer.from(text, 'utf8');
+  return { relative: GROUND_REGISTRY, sourceBytes: current.bytes, bytes,
+    comparison: { sourceSha256: hash(current.bytes), candidateSha256: hash(bytes), addedTiles: missing.map(t => t.ruid) } };
+}
 function catalogFromLock(lock) {
   const entries = [];
   const seen = new Map();
@@ -352,6 +397,11 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
   const project = projectDefaults(raw, mapName);
   if (!Array.isArray(project.size) || project.size.length !== 2 || project.size.some(n => !Number.isInteger(n) || n < 1)) fail('INVALID_SIZE', '프로젝트 맵 크기가 유효하지 않습니다.');
   const catalog = catalogFromLock(JSON.parse(snapshot('scripts/storage-inventory.lock.json').bytes.toString('utf8')));
+  const registry = readGroundRegistry(root), registered = registryTiles(registry.value, deps.constants, deps.ppu);
+  const registryWarnings = [];
+  if (registry.bytes && !registered.valid) registryWarnings.push('게임 바닥 명단(' + GROUND_REGISTRY + ')을 읽지 못했습니다. 에디터로 등록한 바닥은 편집할 수 없을 수 있습니다.');
+  if (registered.rejected.length) registryWarnings.push('게임 바닥 명단에서 규격(256×128·중앙 피벗·PPU 100)에 맞지 않거나 중복된 ' + registered.rejected.length + '개를 건너뛰었습니다: ' + registered.rejected.slice(0, 5).join(', '));
+  { const known = new Set(catalog.map(t => t.ruid)); for (const t of registered.tiles) if (!known.has(t.ruid)) { catalog.push(t); known.add(t.ruid); } }
   // Applied editor tiles may not exist in the legacy game's inventory naming scheme.
   // Recover only registered 1x1 brushes from the prior immutable baseline/receipts.
   // Read placement from the current native map; never replay prior object edits.
@@ -409,6 +459,7 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
     createdAt: new Date().toISOString(), mapRelative, projectRelative, datasetFiles: ds,
     baselineProjectSha256: hash(jsonBytes(project)),
     sourceFiles: snapshots.map(f => ({ relative: f.relative, exists: f.exists, sha256: f.sha256 })), constants: deps.constants, ppu: deps.ppu, builderRelative: deps.builderRelative,
+    groundRegistry: { relative: GROUND_REGISTRY, exists: !!registry.bytes, sha256: registry.bytes ? hash(registry.bytes) : null, tiles: registered.tiles.length },
     catalog, blocks: analysis.blocks, groundEditingSupported: analysis.supported, unsupportedReasons: analysis.reasons,
     totalEntities: analysis.totalEntities, counts: counts(analysis.blocks, analysis.coverage.size, analysis.groundEntities)
   };
@@ -423,7 +474,7 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
   const report = { mapName: project.map, baselineId, counts: manifest.counts,
     groundEditingSupported: analysis.supported, preservedEntities: analysis.totalEntities,
     sourceFilesUnchanged: true, sourceFiles: manifest.sourceFiles.length, datasetFiles: ds.length,
-    warnings: [...recoveryWarnings, ...(analysis.supported
+    warnings: [...registryWarnings, ...recoveryWarnings, ...(analysis.supported
       ? ['게임 배치 미리보기와 후보 출력은 실제 게임의 4×4/2×2/1×1 배치를 보존합니다.',
          '바닥 블록 일부를 수정하면 그 블록 안의 그림은 같은 소재의 작은 타일로 다시 구성될 수 있습니다.']
       : analysis.reasons)] };
@@ -1030,6 +1081,8 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   const walkReference = checked.walk.changed ? references.captured.find(r => r.relative === checked.walk.relative) : null;
   if (checked.walk.changed && !walkReference?.bytes) fail('STALE_WALK_ROWS', 'DT_Walk 원본이 없어졌습니다. 게임 원본을 다시 가져오세요.');
   const walkCandidate = checked.walk.changed ? walkEdits.buildWalkCandidate(walkReference.bytes, checked.walk, manifest.mapName) : null;
+  const registryResult = buildRegistryCandidate(root, checked), registryCandidate = registryResult?.bytes ? registryResult : null;
+  if (registryResult?.warning) report.warnings.push(registryResult.warning);
   const output = outsideGame(outputRoot, root);
   const storage = outsideGame(baselineRoot, root);
   if (contained(output, storage) || contained(storage, output)) fail('OVERLAPPING_OUTPUT', '후보 출력과 기준 보관 폴더는 서로 겹칠 수 없습니다.');
@@ -1065,6 +1118,7 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
   if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
   for (const candidate of runtimeCandidates) writeFile(candidateDir, candidate.relative, candidate.bytes, root);
+  if (registryCandidate) writeFile(candidateDir, registryCandidate.relative, registryCandidate.bytes, root);
   for (const reference of references.captured) {
     writeFile(candidateDir, 'reference/' + reference.relative, reference.bytes, root);
   }
@@ -1080,7 +1134,8 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
-    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : []), ...runtimeCandidates.map(c => c.relative)], datasetReferenceDirectory: 'reference',
+    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : []), ...runtimeCandidates.map(c => c.relative), ...(registryCandidate ? [GROUND_REGISTRY] : [])], datasetReferenceDirectory: 'reference',
+    ...(registryCandidate ? { groundRegistryComparison: registryCandidate.comparison } : {}),
     walkComparison: walkCandidate ? walkCandidate.comparison : { unchanged: true },
     ...(npcCandidate ? { npcComparison: npcCandidate.comparison, npcSourceFiles: Object.values(checked.npcs.profile.files).filter(f => f.relative !== checked.npcs.profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) })) } : {}),
     ...(runtimeCandidates.length ? { runtimeComparisons: Object.fromEntries(runtimeCandidates.map(c => [c.relative, c.comparison])),
@@ -1095,13 +1150,14 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     version: VERSION, candidateId, mapName: manifest.mapName, baselineId: manifest.baselineId, createdAt,
     baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
     applyFiles: report.applyFiles.map(relative => {
-      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : references.captured.find(f => f.relative === relative).bytes;
+      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : relative === GROUND_REGISTRY ? registryCandidate.sourceBytes : references.captured.find(f => f.relative === relative).bytes;
       return { path: relative, bytes: candidate.bytes, sourceBytes: source.length, sourceSha256: hash(source), candidateSha256: candidate.sha256 };
     }),
     referenceFiles: references.captured.map(item => descriptor('reference/' + item.relative)),
     project: descriptor('editor-project.json'), report: descriptor('report.json'),
     summary: candidateSummary(report)
   };
+  if (registryCandidate && hash(readGroundRegistry(root).bytes || Buffer.alloc(0)) !== registryCandidate.comparison.sourceSha256) fail('REFERENCE_CHANGED_DURING_EXPORT', '후보를 만드는 동안 게임 바닥 명단이 변경되었습니다. 다시 시도하세요.');
   writeFile(candidateDir, 'review-manifest.json', jsonBytes(reviewManifest), root);
   return { candidateId, candidateDir, mapPath, reportPath, report };
   } catch (error) {
@@ -1156,7 +1212,7 @@ function validReviewManifest(review, identity) {
   const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
   return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
     typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 7 &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 8 &&
     review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
     Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
     artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
@@ -1210,7 +1266,7 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
       const walk = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
       const npcFiles = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
       const npcChanged = Object.values(report.npcChanges || {}).some(n => n > 0);
-      const applyFiles = [recorded.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, recorded)];
+      const applyFiles = [recorded.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, recorded), ...(report.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
       if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
       for (const relative of applyFiles) candidateChild(dir, relative, root);
       if (review) {
@@ -1352,7 +1408,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   const walkPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
   const npcPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
   const npcChanged = Object.values(report?.npcChanges || {}).some(n => n > 0);
-  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : []), ...runtimeApplyPaths(report, manifest)];
+  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : []), ...runtimeApplyPaths(report, manifest), ...(report?.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
   const runtimeChanged = runtimeApplyPaths(report, manifest).length > 0;
   if (npcChanged && project) attempt('NPC 원본 기준', () => {
     const profile = loadNpcProfile(project, state), drift = npcEdits.sourceDrift(profile, currentNpcFiles(root, profile));
@@ -1372,7 +1428,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   });
   const filePaths = review.applyFiles.map(item => item.path);
   if (!check('적용 대상 파일 목록', stable(filePaths) === stable(applyPaths) && stable(report?.applyFiles) === stable(applyPaths),
-    '후보 적용 파일은 해당 맵과 변경된 이동불가·NPC·몬스터·포탈·시작점 CSV만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+    '후보 적용 파일은 해당 맵과 변경된 이동불가·NPC·몬스터·포탈·시작점 CSV, 바닥 명단만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
   for (const item of review.applyFiles) {
     const sourceFile = sourceRelative(root, item.path), candidateBytes = read(item.path);
     let sourceBytes = null;
@@ -1383,9 +1439,9 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
     const candidateMatches = currentCandidateSha256 === item.candidateSha256 && candidateBytes?.length === item.bytes;
     result.files.push({ path: item.path, bytes: item.bytes, sourceSha256: item.sourceSha256, candidateSha256: item.candidateSha256,
       currentSourceSha256, currentCandidateSha256, sourceMatches, candidateMatches });
-    const isMap = item.path === manifest.mapRelative;
-    const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
-    const csvComparison = item.path === npcPaths[0] ? report.npcComparison : item.path === walkPaths[0] ? report.walkComparison : report.runtimeComparisons?.[item.path];
+    const isMap = item.path === manifest.mapRelative, isRegistry = item.path === GROUND_REGISTRY;
+    const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : isRegistry ? report.groundRegistryComparison?.sourceSha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
+    const csvComparison = isRegistry ? report.groundRegistryComparison : item.path === npcPaths[0] ? report.npcComparison : item.path === walkPaths[0] ? report.walkComparison : report.runtimeComparisons?.[item.path];
     const expectedCandidate = isMap ? report.candidateMapSha256 : csvComparison?.candidateSha256;
     check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : csvComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
     check(item.path + ' 현재 게임 원본', sourceMatches, sourceMatches ? undefined : item.path + ': 후보 작성 이후 게임 원본이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');

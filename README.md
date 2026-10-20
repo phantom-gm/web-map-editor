@@ -164,7 +164,8 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 원본을 보호합니다. 표준 바닥을 해석할 수 없는 맵도 검증된 오브젝트 바닥은 별도로
 선택·이동·복제할 수 있습니다. 새 일반 바닥 소재는 등록된 페른델 1×1 타일 또는
 **＋ 서버 소재 추가**로 등록한 MSW 서버 정적 이미지(256×128·중앙 피벗·PPU 100, 1×1)를 사용하며,
-길 경계는 1×1 방향 타일을 유지합니다. 등록한 바닥 소재는 원본을 다시 가져와도 이어집니다.
+길 경계는 1×1 방향 타일을 유지합니다. 페른델 이름 규칙 밖의 바닥(벨로스 등)은 게임 repo의
+`scripts/ground-tile-registry.json` 명단으로 알아보므로, 작업 기록이 없는 PC에서도 바닥을 편집할 수 있습니다.
 
 **게임 배치 보기**는 후보 출력과 같은 배치 계산을 사용합니다. 실제 .map의 4×4·2×2·1×1
 Sprite, 좌표·배율·회전·반전·색·정렬과 원본 이미지 크기·피벗·PPU를 반영합니다.
@@ -259,6 +260,8 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 
 - 적용 대상은 후보에 기록된 맵 파일과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv`(시작점) / `DT_MapTrap.csv`입니다.
+  새로 등록한 바닥 소재를 맵에 썼다면 게임 바닥 명단 `scripts/ground-tile-registry.json` 갱신본도 함께 들어갑니다.
+  이 명단을 같이 적용해야 다른 PC에서 원본을 새로 가져와도 그 바닥을 편집할 수 있습니다.
   `reference/` 아래 CSV는 참고 사본이며 적용 대상에 포함되지 않습니다.
 - **다시 검사**는 후보 생성 이후 게임 원본이나 후보 파일이 변경·누락되었는지 확인합니다.
   이동불가 후보는 CSV 전체 파일이므로, 다른 맵의 행만 바뀌어도 원본 불일치로 표시합니다.
@@ -285,7 +288,7 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 2. **적용 파일 ZIP 받기**는 내려받기 직전에 다시 검사합니다. 게임 원본이나 후보가 바뀌거나
    누락되면 내려받기를 중단하고 문제를 표시합니다.
 3. ZIP에는 검사를 통과한 적용 대상 맵과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
-   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv` / `DT_MapTrap.csv`, 그리고
+   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv` / `DT_MapTrap.csv` / 바닥 명단, 그리고
    검사 시각·파일 해시·변경 내역을 담은 `REVIEW.txt`만 들어갑니다. 게임 폴더와 같은 상대
    경로를 유지하며, 참고 CSV나 에디터 프로젝트·기준 스냅샷은 넣지 않습니다.
 

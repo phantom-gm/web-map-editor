@@ -503,3 +503,8 @@
 - 게임: IsoProjectLogic에 `BACKDROP_ORDER = -998`, `BACKDROP_OVER_ORDER = -997`(벨로스 데크처럼 배경끼리 위에 둘 한 장)을 선언하고 build_map이 미러·export, 평면 parity 테스트에 추가. depth_check에 (12) 정의 밖 평면 검사(차단) 추가, 현재 전 맵 0건.
 - 에디터: 정렬 역할 이름·도움말을 '배경(뒷벽·바닥 패치)'으로, 굽는 값은 상수로. 게임이 BACKDROP_ORDER를 export하는데 값이 다르면 가져오기를 `INVALID_CONSTANTS`로 멈춤(기존 기준 호환을 위해 manifest 상수에는 넣지 않음). 깊이 게이트 카운터에 planeUnknown 추가.
 - 남은 선택 사항: 배경 오브젝트가 order 0 오브젝트와 겹칠 때 경고는 넣지 않았다(실사례 0건).
+
+### 12-2. B4·D4 처리 (2026-10-20)
+
+- B4(가구 위 소품 연결): 코드 대신 규칙으로 정리. 게임 sortpad_census 머리 주석과 에디터 README에 "받침 z를 손으로 고친 맵은 에디터에서 다시 출력" 명시(게임 8492ad869).
+- D4(벨로스 바닥): 게임 repo에 `scripts/ground-tile-registry.json` 바닥 명단(1×1·256×128·중앙 피벗·PPU 100)을 새로 두고 268개를 채웠다(편집 기록의 등록 영수증·기준 manifest에서 크기를 확인한 것만, 크기를 모르는 ironhallminedepths 1개 제외). 에디터는 가져올 때 명단을 읽고, 새로 등록한 바닥을 맵에 쓰면 후보 적용 파일에 갱신 명단을 함께 담는다(검토·목록·ZIP 지원). 확인: 기록 없이 새로 가져온 velos 2608칸·velosgreenroad·velossilverforge·velosvelvet·veloscoast가 바닥 편집 가능, 무편집 출력은 바이트 동일, 한 칸 칠한 velos 후보 검토 통과.
