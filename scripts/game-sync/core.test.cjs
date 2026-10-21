@@ -2027,3 +2027,18 @@ test('invalid registry entries are skipped with a warning instead of failing the
   const { report } = createSyncProject({ ...f.options, mapName: 'fixture' });
   assert.ok(report.warnings.some(w => w.includes('wrong size')));
 });
+
+test('object-only map discards stale authoring ground and previews without changing native art', fixtureOptions, t => {
+  const f = fixture(t, { noGround: true });
+  const file = path.join(f.root, 'map/fixture.json');
+  const author = JSON.parse(fs.readFileSync(file)); author.ground = [[0, 0, 0]];
+  fs.writeFileSync(file, JSON.stringify(author));
+  const before = f.hashes();
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(project.ground, []);
+  assert.equal(previewEditedProject(project, f.options).report.groundEditingSupported, false);
+  assert.equal(exportEditedProject(project, f.options).report.exactMapBytes, true);
+  assert.deepEqual(f.hashes(), before);
+  project.ground = [[0, 0, 0]];
+  assert.throws(() => previewEditedProject(project, f.options), { code: 'UNSUPPORTED_GROUND' });
+});

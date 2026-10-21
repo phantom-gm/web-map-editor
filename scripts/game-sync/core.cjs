@@ -442,6 +442,12 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
     project.groundOrigin = [0, 0];
     project.ground = sortedKeys(analysis.coverage).map(k => { const [x, y] = coord(k); return [x, y, index.get(analysis.coverage.get(k).leafRuid)]; });
   }
+  // A successfully parsed object-only map has no tile floor. Do not retain
+  // obsolete authoring JSON ground cells in its immutable editor baseline.
+  if (analysis.groundEntities === 0 && analysis.totalEntities > 0) {
+    project.groundOrigin = [0, 0];
+    project.ground = [];
+  }
   // Authoring JSON can lag behind an applied editor candidate. Import the
   // validated runtime walk table so a fresh baseline reflects actual collision.
   const importedRuntime = runtimeEdits.analyzeRuntime(readRuntimeFiles(root, ds), mapName);
