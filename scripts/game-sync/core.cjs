@@ -143,6 +143,21 @@ function registryTiles(value, constants, ppu) {
     seen.add(t.ruid);
     tiles.push({ name: t.name, ruid: t.ruid, n: 1, family: 'resource:' + t.ruid, material: '길경계', variant: 1, px: [t.width, t.height] });
   }
+  // Composite sprites retain every original cell RUID (row-major: dy * n + dx).
+  // Only known 1x1 leaves may be referenced; nested composites are rejected.
+  const leaves = new Set(tiles.map(t => t.ruid));
+  if (value.composites !== undefined && !Array.isArray(value.composites)) return { tiles, rejected, valid: false };
+  for (const t of value.composites || []) {
+    const n = t?.size;
+    const fits = [2, 4].includes(n) && /^[a-f0-9]{32}$/.test(t.ruid || '') && typeof t.name === 'string' && !!t.name.trim()
+      && near([t.width, t.height], [n * constants.TILE_W * ppu, n * constants.TILE_H * ppu])
+      && Array.isArray(t.pivot) && near(t.pivot, [0.5, 0.5]) && t.pixelsPerUnit === ppu
+      && Array.isArray(t.cells) && t.cells.length === n * n && t.cells.every(r => leaves.has(r));
+    if (!fits || seen.has(t.ruid)) { rejected.push(String(t?.name || t?.ruid || '?')); continue; }
+    seen.add(t.ruid);
+    tiles.push({ name: t.name, ruid: t.ruid, n, family: 'composite:' + t.ruid, material: '복합바닥', variant: 1,
+      px: [t.width, t.height], cells: [...t.cells] });
+  }
   return { tiles, rejected, valid: true };
 }
 function buildRegistryCandidate(root, checked) {
@@ -217,7 +232,7 @@ function analyzeMap(mb, catalog, constants, size) {
       && (sr.EndFrameIndex == null || sr.EndFrameIndex === 2147483647)
       && !entities.some(e => e.path.startsWith(item.path + '/'));
     if (!standard) reasons.push('표준 위치/배율/레이어가 아닌 바닥: ' + item.name);
-    const leaf = n === 1 ? asset : catalog.find(t => t.family === asset.family && t.n === 1);
+    const leaf = n === 1 ? asset : catalog.find(t => t.n === 1 && (asset.cells ? t.ruid === asset.cells[0] : t.family === asset.family));
     if (!leaf) reasons.push('1×1 대체 타일이 없는 소재: ' + asset.material);
     const block = { name: item.name, gx, gy, n, ruid: asset.ruid, family: asset.family, leafRuid: leaf?.ruid, standard };
     blocks.push(block);
@@ -225,7 +240,7 @@ function analyzeMap(mb, catalog, constants, size) {
       const x = gx + dx, y = gy + dy, k = key(x, y);
       if (coverage.has(k)) reasons.push('바닥 블록 겹침: ' + k);
       if (x < 0 || y < 0 || x >= size[0] || y >= size[1]) reasons.push('맵 경계 밖 바닥: ' + k);
-      coverage.set(k, block);
+      coverage.set(k, asset.cells ? { ...block, leafRuid: asset.cells[dy * n + dx] } : block);
     }
   }
   // A new blank canvas can accept its first floor. Keep object floors, native
@@ -533,14 +548,25 @@ function hash32(a, b) {
 // Unlike the CLI it never merges grass with flower grass or changes unedited blocks.
 function packCells(cells, catalog) {
   const byRuid = new Map(catalog.map(t => [t.ruid, t]));
+  const remaining = new Map(cells), composites = [];
+  const patterns = catalog.filter(t => [2, 4].includes(t.n) && Array.isArray(t.cells))
+    .sort((a, b) => b.n - a.n || a.ruid.localeCompare(b.ruid));
+  for (const asset of patterns) for (const k of sortedKeys(remaining)) {
+    if (!remaining.has(k)) continue;
+    const [gx, gy] = coord(k), keys = [];
+    for (let dy = 0; dy < asset.n; dy++) for (let dx = 0; dx < asset.n; dx++) keys.push(key(gx + dx, gy + dy));
+    if (!keys.every((cell, i) => remaining.get(cell) === asset.cells[i])) continue;
+    keys.forEach(cell => remaining.delete(cell));
+    composites.push({ gx, gy, n: asset.n, ruid: asset.ruid });
+  }
   const groups = new Map();
-  for (const [k, ruid] of cells) {
+  for (const [k, ruid] of remaining) {
     const t = byRuid.get(ruid);
     if (!t || t.n !== 1) fail('UNSUPPORTED_TILE', '편집에는 등록된 1×1 바닥 소재를 사용하세요: ' + ruid);
     const group = groups.get(ruid) || { tile: t, cells: new Set() };
     group.cells.add(k); groups.set(ruid, group);
   }
-  const result = [];
+  const result = [...composites];
   for (const { tile, cells: target } of groups.values()) {
     const variants = [4, 2, 1].map(n => catalog.filter(t => t.family === tile.family && t.n === n).sort((a, b) => a.variant - b.variant));
     // Transition tiles are directional individual artwork and must never be merged.

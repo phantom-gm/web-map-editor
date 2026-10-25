@@ -2042,3 +2042,46 @@ test('object-only map discards stale authoring ground and previews without chang
   project.ground = [[0, 0, 0]];
   assert.throws(() => previewEditedProject(project, f.options), { code: 'UNSUPPORTED_GROUND' });
 });
+
+test('phase composites round-trip every source cell and preserve neighbours when one cell is erased', fixtureOptions, t => {
+  const f = fixture(t, { noGround: true });
+  const leaves = Array.from({ length: 16 }, (_, i) => ({ ruid: (1000 + i).toString(16).padStart(32, '0'), name: 'Velos_phase_' + i,
+    width: 256, height: 128, pivot: [0.5, 0.5], pixelsPerUnit: 100 }));
+  const largeRuid = 'e'.repeat(32), small = [];
+  for (const [x,y] of [[0,0],[2,0],[0,2],[2,2]]) small.push({ ruid: (2000 + x + y*4).toString(16).padStart(32,'0'), name: 'Velos_2_' + x + '_' + y,
+    size: 2, width: 512, height: 256, pivot: [0.5,0.5], pixelsPerUnit:100,
+    cells: [leaves[y*4+x].ruid, leaves[y*4+x+1].ruid, leaves[(y+1)*4+x].ruid, leaves[(y+1)*4+x+1].ruid] });
+  const registry = { version: 1, tiles: leaves, composites: [{ ruid: largeRuid, name:'Velos_4x4', size:4,
+    width:1024, height:512, pivot:[0.5,0.5], pixelsPerUnit:100, cells:leaves.map(t=>t.ruid) }, ...small] };
+  fs.writeFileSync(path.join(f.root,'scripts/ground-tile-registry.json'),JSON.stringify(registry));
+  const mapPath=path.join(f.root,'map/fixture.map'), mb=f.MapBuilder.read(mapPath);
+  const constants={ TILE_W:2.56,TILE_H:1.28,ORIGIN_X:15,ORIGIN_Y:15,DEPTH_SCALE:0.21875,GROUND_ORDER:-1000 };
+  mb.sprite('Tile_0_0',{ruid:largeRuid,pos:_test.blockPos(0,0,4,constants),order:-1000}).write(mapPath);
+  const imported=createSyncProject({...f.options,mapName:'fixture'}), p=imported.project;
+  assert.equal(JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).groundEditingSupported,true);
+  const exact=_test.groundMap(p);
+  for(let y=0;y<4;y++)for(let x=0;x<4;x++)assert.equal(exact.get(x+','+y),leaves[y*4+x].ruid);
+  assert.equal(exportEditedProject(p,f.options).report.exactMapBytes,true);
+  assert.deepEqual(_test.packCells(exact,JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).catalog),[{gx:0,gy:0,n:4,ruid:largeRuid}]);
+  p.ground=p.ground.filter(([x,y])=>x!==1||y!==1);
+  const out=exportEditedProject(p,f.options);
+  const packed=_test.packCells(_test.groundMap(p),JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).catalog);
+  assert.deepEqual(covered(packed),[...exact.keys()].filter(k=>k!=='1,1').sort());
+  fs.copyFileSync(out.mapPath,mapPath);
+  const reimported=createSyncProject({...f.options,mapName:'fixture'}).project;
+  exact.delete('1,1');
+  assert.deepEqual([..._test.groundMap(reimported)].sort(),[...exact].sort());
+  assert.equal(f.MapBuilder.read(mapPath).find('Obj_keep').jsonString['@components'].find(c=>c['@type']==='script.UnknownPreservedComponent').Value,'protected');
+  const reversed=_test.packCells(new Map([...exact].reverse()),JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).catalog);
+  assert.deepEqual(reversed,packed);
+});
+
+test('invalid composite leaf references never become editable map floor', fixtureOptions, t=>{
+  const f=fixture(t,{noGround:true}), ruid='e'.repeat(32);
+  fs.writeFileSync(path.join(f.root,'scripts/ground-tile-registry.json'),JSON.stringify({version:1,tiles:[],composites:[
+    {ruid,name:'broken',size:2,width:512,height:256,pivot:[0.5,0.5],pixelsPerUnit:100,cells:Array(4).fill('f'.repeat(32))}]}));
+  f.MapBuilder.read(path.join(f.root,'map/fixture.map')).sprite('Tile_0_0',{ruid,pos:[0,18.56,4.06],order:-1000}).write(path.join(f.root,'map/fixture.map'));
+  const imported=createSyncProject({...f.options,mapName:'fixture'});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).groundEditingSupported,false);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).unsupportedReasons.some(r=>r.includes('Tile_0_0')));
+});
