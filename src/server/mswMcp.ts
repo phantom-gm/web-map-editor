@@ -300,7 +300,7 @@ export async function fetchAnimationPreviewFrame(resource: SpriteResourceMetadat
   return parseAnimationClipMod(await latestSpriteBytes(resource));
 }
 
-/** Frame offsets are pixels in sprite local space; folding them into the pivot preserves scale and mirroring. */
+/** Frame offsets use image coordinates (Y down); native pivots use Y up. Preserve scale and mirroring. */
 export async function fetchAnimationFrameAsset(
   resource: SpriteResourceMetadata, frame: AnimationPreviewFrame, sprite: SpriteResourceMetadata,
 ): ReturnType<typeof fetchSpriteAsset> {
@@ -309,7 +309,7 @@ export async function fetchAnimationFrameAsset(
   if (!asset.metadata) return asset;
   const metrics = asset.metadata;
   return { ...asset, metadata: { ...metrics,
-    pivot: [metrics.pivot[0] - frame.offset[0] / metrics.width, metrics.pivot[1] - frame.offset[1] / metrics.height],
+    pivot: [metrics.pivot[0] - frame.offset[0] / metrics.width, metrics.pivot[1] + frame.offset[1] / metrics.height],
     pivotSource: "animation", version: resource.version + ":" + metrics.version,
     animationFrame: { ...frame, frameIndex: 0 },
   } };

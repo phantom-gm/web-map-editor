@@ -63,3 +63,13 @@ describe("NPC dialogue groups from the immutable quest source", () => {
     expect(npc.sourceDrift(profile, current)).toEqual(["tables/DT_QuestSequence.csv"]);
   });
 });
+
+describe("NPC head line metadata", () => {
+  it.each(["550", "", "NaN", "-1"])("reads and validates HeadPx=%s from the same Idle SE appearance", head => {
+    const files = source();
+    files.DT_NpcAppearance.bytes = Buffer.from(
+      "NpcAppearanceID,Action,BaseDir,Ruid,HeadPx\r\n9101,Idle,SE," + "1".repeat(32) + "," + head + "\r\n");
+    const result = npc.inspectNpcs(project(), npc.analyzeNpcs(files, "fixture"), constants);
+    expect(result.descriptors[0]).toMatchObject({ headPx: head === "550" ? 550 : null });
+  });
+});

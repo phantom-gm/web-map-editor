@@ -73,3 +73,16 @@ describe("NPC preview editing geometry",()=>{
     current.npcs![0].enabled=false;drawGameNpcLabels(ctx,current,camera);expect(labels).toHaveLength(1);
   });
 });
+
+describe("native NPC name heights", () => {
+  it.each([[550, .7, 4.13], [246, 1.1, 2.986], [0, 2, 3.03], [null, .7, 3.03], [NaN, 1, 3.03]])(
+    "uses head pixels %s with BodyScale %s", (headPx, bodyScale, height) => {
+      const current = scene([sprite("npc")]);
+      Object.assign(current.npcs![0], { headPx, bodyScale });
+      const fillText = vi.fn();
+      const ctx = { save(){}, restore(){}, strokeText(){}, fillText } as unknown as CanvasRenderingContext2D;
+      drawGameNpcLabels(ctx, current, camera);
+      const expected = previewWorldToScreen([1.28, 16 + height!], current, camera);
+      expect(fillText).toHaveBeenCalledWith("엘드릭", expected[0], expect.closeTo(expected[1], 8));
+    });
+});

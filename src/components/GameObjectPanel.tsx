@@ -138,7 +138,7 @@ export function GameObjectInspector() {
       }}>✕</button>
     </div>
     <p className="selection-count" role="status">오브젝트 {selected.length}개 · 이동불가 {cells.length}칸 선택</p>
-    {single && <p className="object-help">{object.resourceId ? "서버에서 추가한 소재 · 크기 조절 가능" : "기존 맵에서 가져온 배치"}</p>}
+    {single && <p className="object-help">{object.resourceId ? "서버에서 추가한 소재 · 크기 조절 가능" : object.canScale ? "기존 맵 배경 · 원본 대비 크기 조절 가능" : "기존 맵에서 가져온 배치"}</p>}
     {error && <div className="selection-error" role="alert">{error}</div>}
     {objects.length === 1 && <ObjectSortingPanel key={object.entityId} object={object} scene={scene} disabled={locked} cells={cells} />}
     {single && <button className="ei-fit" aria-label="오브젝트 좌우반전" aria-pressed={object.flipX === true}
@@ -171,7 +171,14 @@ export function GameObjectInspector() {
     {!canEditCells && <p className="object-help">현재 맵의 이동불가 원본 연결을 확인할 수 없어 칸 묶음 편집이 잠겨 있습니다.</p>}
     {pickingCells ? <p className="object-help selection-help">빨간 칸을 클릭하면 선택·해제됩니다. 드래그한 범위의 이동불가 칸을 묶음에 추가합니다. 선택 후 「오브젝트 선택」으로 돌아가 함께 옮기세요.</p>
       : <p className="object-help">선택한 대상을 드래그하거나 아래 버튼으로 옮기세요. 원본 모양·배율·깊이 설정을 유지하며, Ctrl+Z 한 번으로 함께 되돌립니다.</p>}
-    {single && object.resourceId && <label className="ei-row"><span>크기 (%)</span><NumberField value={Number(((object.scale ?? 1) * 100).toFixed(4))} float step={0.1} min={1} max={10000} disabled={locked} onCommit={n => useEditorStore.getState().scaleGameResource(object.entityId, n / 100)} /></label>}
+    {single && object.canScale && <fieldset className="ei-box"><legend>배경 크기</legend>
+        <label className="ei-row"><span>원본 대비 크기 (%)</span>
+          <NumberField value={Number(((object.visualScale ?? 1) * 100).toFixed(4))} float step={1} min={1} max={10000} disabled={locked}
+            onCommit={n => useEditorStore.getState().scaleGameObjectVisual(object.entityId, n / 100, scene)} />
+        </label>
+        <div className="ei-help">100%는 불러온 크기입니다. 가로·세로 비율을 유지하며 그림만 확대합니다. 포탈과 이동불가 칸은 그대로입니다.</div>
+      </fieldset>}
+      {single && object.resourceId && <label className="ei-row"><span>크기 (%)</span><NumberField value={Number(((object.scale ?? 1) * 100).toFixed(4))} float step={0.1} min={1} max={10000} disabled={locked} onCommit={n => useEditorStore.getState().scaleGameResource(object.entityId, n / 100)} /></label>}
     {single && object.resourceId && <>
       <label className="ei-row"><span>가로 위치</span><NumberField value={object.position[0]} float step={0.01} disabled={locked} onCommit={n => useEditorStore.getState().moveGameObjectTo(object.entityId, [n, object.position[1]])} /></label>
       <label className="ei-row"><span>세로 위치</span><NumberField value={object.position[1]} float step={0.01} disabled={locked} onCommit={n => useEditorStore.getState().moveGameObjectTo(object.entityId, [object.position[0], n])} /></label>

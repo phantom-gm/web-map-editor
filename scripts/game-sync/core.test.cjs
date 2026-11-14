@@ -133,6 +133,19 @@ test('unrelated resource removals and inventory notes preserve a saved draft; re
   fs.writeFileSync(file, JSON.stringify(lock));
   assert.throws(() => previewEditedProject(project, f.options), { code: 'STALE_SOURCE' });
 });
+test('moving referenced art to another storage folder (subcategory) preserves a saved draft', fixtureOptions, t => {
+  const f = fixture(t), file = path.join(f.root, 'scripts/storage-inventory.lock.json');
+  const lock = JSON.parse(fs.readFileSync(file));
+  lock.resources.push({ ruid: 'object-ruid', name: 'required object', category: 'sprite', subcategory: 'object' });
+  fs.writeFileSync(file, JSON.stringify(lock));
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  lock.resources.find(r => r.ruid === 'object-ruid').subcategory = 'background';
+  fs.writeFileSync(file, JSON.stringify(lock));
+  const out = exportEditedProject(project, f.options);
+  assert.equal(out.report.exactMapBytes, true);
+  assert.equal(out.report.sourceFilesUnchanged, false);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'ready');
+});
 test('legacy guard edits do not invalidate constants-only dependencies; coordinate/PPU changes do', fixtureOptions, t => {
   const f = fixture(t), file = path.join(f.root, 'scripts/build_map.cjs');
   const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
@@ -280,15 +293,29 @@ test('CSV additions and deletions since baseline copy only the current reference
   assert.equal(changes[1].currentSha256, null);
   assert.deepEqual(result.report.applyFiles, ['map/fixture.map']);
 });
+// Appends code that changes what MapBuilder serialises, so the update is not behaviour-equivalent.
+function changeBuilderOutput(file) {
+  fs.appendFileSync(file, '\n{ const build = MapBuilder.prototype.build; MapBuilder.prototype.build = function () { const data = build.call(this); data.EditorTestChanged = true; return data; }; }\n');
+}
 test('map, project, constants and builder changes remain strictly stale', fixtureOptions, t => {
   for (const relative of ['map/fixture.map', 'map/fixture.json',
     'scripts/build_map.cjs', '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs']) {
     const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
     const file = path.join(f.root, relative);
     if (relative === 'scripts/build_map.cjs') fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"TILE_W":2.56', '"TILE_W":2.57'));
+    else if (relative.endsWith('msw_map_builder.cjs')) changeBuilderOutput(file);
     else fs.appendFileSync(file, ' ');
     assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_SOURCE', relative);
   }
+});
+test('a MapBuilder update that reads and writes the baseline map identically is accepted', fixtureOptions, t => {
+  const f = fixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  fs.appendFileSync(path.join(f.root, '.agents/skills/msw-general/scripts/map/msw_map_builder.cjs'), '\n// skill-set refresh: comment-only change\n');
+  assert.doesNotThrow(() => previewEditedProject(project, f.options));
+  const output = exportEditedProject(project, f.options);
+  assert.equal(output.report.sourceFilesUnchanged, false);
+  assert.equal(output.report.exactMapBytes, true);
+  assert.equal(reviewCandidate(reviewInput(output, project), f.options).status, 'ready');
 });
 test('CSV modification or reference-list change during export requests a retry', fixtureOptions, t => {
   for (const change of ['modify', 'add', 'delete']) {
@@ -946,6 +973,7 @@ test('review strictly checks current native map, project, catalog, constants and
     if (relative === 'scripts/storage-inventory.lock.json') {
       const lock = JSON.parse(original); lock.resources[0].name = 'changed-resource'; fs.writeFileSync(file, JSON.stringify(lock));
     } else if (relative === 'scripts/build_map.cjs') fs.writeFileSync(file, original.toString().replace('"TILE_W":2.56', '"TILE_W":2.57'));
+    else if (relative.endsWith('msw_map_builder.cjs')) changeBuilderOutput(file);
     else fs.appendFileSync(file, ' ');
     const review = reviewCandidate(input, f.options); assert.equal(review.status, 'blocked', relative);
     assert.ok(review.issues.some(issue => issue.includes(relative))); fs.writeFileSync(file, original);
@@ -2041,6 +2069,25 @@ test('object-only map discards stale authoring ground and previews without chang
   assert.deepEqual(f.hashes(), before);
   project.ground = [[0, 0, 0]];
   assert.throws(() => previewEditedProject(project, f.options), { code: 'UNSUPPORTED_GROUND' });
+});
+
+test('imported backdrop scaling preserves geometry and other entities in preview and export', fixtureOptions, t => {
+ const f=objectFixture(t), source=f.MapBuilder.read(f.mapPath), TF='MOD.Core.TransformComponent';
+ source.patchComponent('Obj_editable','MOD.Core.SpriteRendererComponent',{OrderInLayer:-998});
+ source.patchComponent('Obj_editable','script.IsoDepthMetaComponent',{StaticOrder:-998});
+ source.patchComponent('Obj_editable',TF,{Scale:{x:-.8,y:.4,z:1}});source.write(f.mapPath);
+ const before=fileTreeHashes(f.root), {project}=createSyncProject({...f.options,mapName:'fixture'});
+ const base=previewEditedProject(project,f.options), item=base.objects.find(o=>o.name==='Obj_editable');assert.equal(item.canScale,true);
+ project.gameObjectEdits={...objectPatch(),visualScales:[{entityId:item.entityId,scale:1.1}]};
+ const preview=previewEditedProject(project,f.options), output=exportEditedProject(project,f.options), candidate=f.MapBuilder.read(output.mapPath), tf=candidate.component('Obj_editable',TF);
+ assert.ok(Math.abs(tf.Scale.x+.88)<1e-10);assert.ok(Math.abs(tf.Scale.y-.44)<1e-10);assert.equal(tf.Scale.z,1);
+ assert.deepEqual(tf.Position,source.component('Obj_editable',TF).Position);
+ assert.equal(preview.objects.find(o=>o.entityId===item.entityId).visualScale,1.1);
+ assert.deepEqual(preview.sprites.find(o=>o.objectEntityId===item.entityId).scale,[tf.Scale.x,tf.Scale.y]);
+ assert.equal(output.report.objectScalesChanged,1);assert.equal(output.report.walkChangedCells,0);assert.deepEqual(output.report.applyFiles,['map/fixture.map']);assert.deepEqual(fileTreeHashes(f.root),before);
+ for(const e of source.listEntities().filter(e=>e.name!=='Obj_editable'))assert.deepEqual(candidate.find(e.path),source.find(e.path));
+ project.gameObjectEdits.visualScales[0].scale=1;assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
+ project.gameObjectEdits.visualScales=[{entityId:base.objects.find(o=>o.name==='Obj_floor').entityId,scale:1.2}];assert.throws(()=>previewEditedProject(project,f.options),{code:'INVALID_OBJECT_SCALE'});
 });
 
 test('phase composites round-trip every source cell and preserve neighbours when one cell is erased', fixtureOptions, t => {

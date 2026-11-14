@@ -160,6 +160,7 @@ export function FileMenu() {
           <div className="workflow-file-help">{linked ? "작업은 이 PC에 자동 저장됩니다. 파일 사본으로 별도 보관할 수 있습니다." : "일반 프로젝트를 파일로 열거나 저장합니다."}</div>
           <button onClick={doNew}>새 빈 프로젝트…</button>
           <button onClick={doOpen}>파일 사본 열기…</button>
+          <button onClick={() => { setOpen(false); inputRef.current?.click(); }}>호환 방식으로 파일 열기…</button>
           <button onClick={() => doSave(false)}>{linked ? "작업 저장" : "저장"} (⌘/Ctrl+S)</button>
           <button onClick={() => doSave(true)}>{linked ? "백업 사본 저장…" : "다른 이름으로 저장…"}</button>
           {fileName && <div className="fm-current" title={fileName}>📄 {fileName}</div>}

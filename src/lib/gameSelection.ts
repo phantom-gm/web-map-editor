@@ -1,7 +1,7 @@
 import { SURFACE_EPSILON } from "./objectSorting.cjs";
 import { cellKey, parseCellKey, type CellKey } from "./cell";
 import {
-  addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting, setGameObjectVisualOffset, setGameObjectFlip,
+  setGameObjectVisualScale, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, setGameObjectSorting, setGameObjectVisualOffset, setGameObjectFlip,
   type GameObjectDescriptor, type GameObjectEdits, type GameObjectPosition,
 } from "./gameObjects";
 import type { GamePreviewScene } from "./gamePreview";
@@ -88,6 +88,7 @@ export function currentGameObjects(input: GameSelectionInput, scene: GamePreview
     if (!near(object.visualOffset ?? [0, 0], visualOffset)) throw stale();
     const flipX = input.gameObjectEdits?.flips?.find(row => row.entityId === id)?.flipX ?? (prototype.flipX === true);
     if ((object.flipX === true) !== flipX) throw stale();
+    if ((object.visualScale ?? 1) !== (input.gameObjectEdits?.visualScales?.find(row => row.entityId === id)?.scale ?? 1)) throw stale();
     if (prototype.resourceId && object.scale !== (addition?.scale ?? 1)) throw stale();
     if (object.canMove !== prototype.canMove || object.canDelete !== prototype.canDelete || object.canDuplicate !== prototype.canDuplicate) throw stale();
   }
@@ -179,6 +180,7 @@ export function planGameSelectionTransform(
         : removeGameObjectEdit(gameObjectEdits, object.entityId);
   }
   if (operation === "duplicate") for (let i = 0; i < objects.length; i++) {
+    if (objects[i].visualScale !== undefined) gameObjectEdits = setGameObjectVisualScale(gameObjectEdits, copyIds[i], objects[i].visualScale!);
     if (objects[i].visualOffset) gameObjectEdits = setGameObjectVisualOffset(gameObjectEdits, copyIds[i], objects[i].visualOffset!);
     const prototype = scene.objectPrototypes?.find(p => p.entityId === objects[i].prototypeId);
     if ((objects[i].flipX === true) !== (prototype?.flipX === true)) gameObjectEdits = setGameObjectFlip(gameObjectEdits, copyIds[i], objects[i].flipX === true);

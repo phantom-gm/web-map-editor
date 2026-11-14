@@ -79,6 +79,51 @@
       "type": "Npc"
     },
     {
+      "id": 114,
+      "name": "에드윈",
+      "type": "Npc"
+    },
+    {
+      "id": 115,
+      "name": "벨라",
+      "type": "Npc"
+    },
+    {
+      "id": 116,
+      "name": "브리나",
+      "type": "Npc"
+    },
+    {
+      "id": 117,
+      "name": "창고지기 릴리",
+      "type": "Npc"
+    },
+    {
+      "id": 118,
+      "name": "로나",
+      "type": "Npc"
+    },
+    {
+      "id": 119,
+      "name": "소피아",
+      "type": "Npc"
+    },
+    {
+      "id": 120,
+      "name": "파티모집 게시판",
+      "type": "Npc"
+    },
+    {
+      "id": 121,
+      "name": "무스",
+      "type": "Npc"
+    },
+    {
+      "id": 122,
+      "name": "다나",
+      "type": "Npc"
+    },
+    {
       "id": 101000,
       "name": "잎새슬라임",
       "type": "Monster"
@@ -184,6 +229,81 @@
       "type": "Monster"
     },
     {
+      "id": 115000,
+      "name": "붉은새우",
+      "type": "Monster"
+    },
+    {
+      "id": 116000,
+      "name": "코코",
+      "type": "Monster"
+    },
+    {
+      "id": 117000,
+      "name": "맹독조개",
+      "type": "Monster"
+    },
+    {
+      "id": 118000,
+      "name": "해적선원",
+      "type": "Monster"
+    },
+    {
+      "id": 119000,
+      "name": "황금해마",
+      "type": "Monster"
+    },
+    {
+      "id": 120000,
+      "name": "해적전사",
+      "type": "Monster"
+    },
+    {
+      "id": 121000,
+      "name": "해적도적",
+      "type": "Monster"
+    },
+    {
+      "id": 122000,
+      "name": "해적마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 123000,
+      "name": "해적성직자",
+      "type": "Monster"
+    },
+    {
+      "id": 124000,
+      "name": "대포거북",
+      "type": "Monster"
+    },
+    {
+      "id": 125000,
+      "name": "해적선장",
+      "type": "Monster"
+    },
+    {
+      "id": 126000,
+      "name": "정예해적전사",
+      "type": "Monster"
+    },
+    {
+      "id": 127000,
+      "name": "정예해적도적",
+      "type": "Monster"
+    },
+    {
+      "id": 128000,
+      "name": "정예해적마법사",
+      "type": "Monster"
+    },
+    {
+      "id": 129000,
+      "name": "정예해적성직자",
+      "type": "Monster"
+    },
+    {
       "id": 901000,
       "name": "잎새슬라임 (원본·디버그 전용)",
       "type": "Monster"
@@ -286,6 +406,81 @@
     {
       "id": 914000,
       "name": "상어 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 915000,
+      "name": "붉은새우 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 916000,
+      "name": "코코 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 917000,
+      "name": "맹독조개 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 918000,
+      "name": "해적선원 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 919000,
+      "name": "황금해마 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 920000,
+      "name": "해적전사 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 921000,
+      "name": "해적도적 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 922000,
+      "name": "해적마법사 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 923000,
+      "name": "해적성직자 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 924000,
+      "name": "대포거북 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 925000,
+      "name": "해적선장 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 926000,
+      "name": "정예해적전사 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 927000,
+      "name": "정예해적도적 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 928000,
+      "name": "정예해적마법사 (원본·디버그 전용)",
+      "type": "Monster"
+    },
+    {
+      "id": 929000,
+      "name": "정예해적성직자 (원본·디버그 전용)",
       "type": "Monster"
     }
   ]

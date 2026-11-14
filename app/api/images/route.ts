@@ -11,7 +11,10 @@ import type { SpriteAssetsResponse } from "../../../src/lib/spriteAsset";
 
 const IMG_CONCURRENCY = 8;
 // Identity of what the client decoded: an in-place Maker update keeps the RUID but changes these.
-const stampOf = (resource: SpriteResourceMetadata) => JSON.stringify([resource.version, resource.contentHash, resource.properties]);
+const stampOf = (resource: SpriteResourceMetadata) => JSON.stringify([resource.version, resource.contentHash, resource.properties,
+  // Refresh old animation geometry even when its remote resource version is unchanged.
+  ...(resource.resourceType === "animationclip" ? ["frame-y-down-v2"] : []),
+]);
 const MAX_RUIDS = 500;
 
 export async function POST(req: Request) {

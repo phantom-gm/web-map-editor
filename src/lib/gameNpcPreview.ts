@@ -44,8 +44,10 @@ export function drawGameNpcLabels(ctx: CanvasRenderingContext2D, scene: GamePrev
   ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.fillStyle = "#fff5ca";
   for (const npc of scene.npcs ?? []) {
     if (!npc.enabled) continue;
-    // Runtime's fallback head height is 2.75 world + 0.28; BodyScale already cancels out.
-    const [x, y] = previewWorldToScreen([npc.position[0], npc.position[1] + 3.03], scene, camera);
+    // Match NpcComponent.HeadLocalY and HpBarLogic.OverheadNameY (100 px/world).
+    const headY = typeof npc.headPx === "number" && Number.isFinite(npc.headPx) && npc.headPx > 0
+      ? npc.headPx / 100 * Math.abs(npc.bodyScale) : 2.75;
+    const [x, y] = previewWorldToScreen([npc.position[0], npc.position[1] + headY + 0.28], scene, camera);
     ctx.strokeText(npc.name, x, y); ctx.fillText(npc.name, x, y);
   }
   ctx.restore();

@@ -11,6 +11,8 @@ export interface GameNpcDescriptor {
   entityId: string; spawnId: string; npcClassId: number; name: string;
   cell: GameNpcCell; sourceCell: GameNpcCell | null; position: [number, number, number];
   ruid: string; bodyScale: number; flipX: boolean; dialogId: string; enabled: boolean;
+  /** Idle SE head line in source pixels; null/absent uses the runtime fallback. */
+  headPx?: number | null;
   sourceFlipX: boolean | null; sourceDialogId: string | null;
   canEdit: boolean; reason?: string;
 }

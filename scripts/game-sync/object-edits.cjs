@@ -4,6 +4,7 @@
 const { parseObjectSorting, objectAnchor, SURFACE_EPSILON } = require('../../src/lib/objectSorting.cjs');
 const { parseObjectVisualOffsets } = require('../../src/lib/objectVisualOffset.cjs');
 const { parseObjectFlips } = require('../../src/lib/objectFlip.cjs');
+const { parseObjectVisualScales } = require('../../src/lib/objectVisualScale.cjs');
 const TF = 'MOD.Core.TransformComponent';
 const SR = 'MOD.Core.SpriteRendererComponent';
 const DEPTH = 'script.IsoDepthMetaComponent';
@@ -65,6 +66,7 @@ function analyzeObjects(mb, project, preview) {
       ? '선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.' : undefined;
     records.set(item.id, { item, native: clone(native), meta: meta && clone(meta),
       descriptor: { entityId: item.id, prototypeId: item.id, spriteId: item.id, name, ruid: ruid || '',
+        canScale: reasons.length === 0 && sr.OrderInLayer === BACKDROP_ORDER && vector(tf.Scale, [1, 1, 1]).every(Number.isFinite),
         position, sourcePosition: [...position], flipX: sr.FlipX === true, sortInfo: sortInfo(mb, item.path), canMove: reasons.length === 0,
         canDelete: reasons.length === 0, canDuplicate: reasons.length === 0 && !cloneReason,
         ...(reasons.length || cloneReason ? { reason: [...reasons, cloneReason].filter(Boolean).join(' ') } : {}),
@@ -109,13 +111,13 @@ function moveTarget(record, position, constants) {
   return { position: dgx === 0 && dgy === 0 ? [...original] : [original[0] + sx, original[1] + sy, original[2] + sy * constants.DEPTH_SCALE], dgx, dgy };
 }
 function inspectObjectEdits(value, profile, constants) {
-  const empty = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], flips: [], changed: false };
+  const empty = { moved: [], removed: [], added: [], sorting: [], visualScales: [], visualOffsets: [], flips: [], changed: false };
   if (value === undefined) return empty;
-  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : []), ...(value.visualOffsets !== undefined ? ['visualOffsets'] : []), ...(value.flips !== undefined ? ['flips'] : [])], '오브젝트 편집');
+  exactKeys(value, ['version', 'moved', 'removed', 'added', ...(value.resources !== undefined ? ['resources'] : []), ...(value.sorting !== undefined ? ['sorting'] : []), ...(value.visualScales !== undefined ? ['visualScales'] : []), ...(value.visualOffsets !== undefined ? ['visualOffsets'] : []), ...(value.flips !== undefined ? ['flips'] : [])], '오브젝트 편집');
   if (value.version !== 1 || !['moved', 'removed', 'added'].every(k => Array.isArray(value[k]))
     || value.moved.length + value.removed.length + value.added.length > 10000) fail('INVALID_OBJECT_EDITS', '오브젝트 편집 버전 또는 배열이 유효하지 않습니다.');
   const used = new Set(), existing = new Set(profile.entities.map(e => e.id));
-  const result = { moved: [], removed: [], added: [], sorting: [], visualOffsets: [], flips: [], constants, changed: false };
+  const result = { moved: [], removed: [], added: [], sorting: [], visualScales: [], visualOffsets: [], flips: [], constants, changed: false };
   const get = (id, capability) => {
     const record = typeof id === 'string' && profile.records.get(id);
     if (!record) fail('UNKNOWN_OBJECT', '원본 오브젝트를 찾을 수 없습니다: ' + id);
@@ -168,6 +170,14 @@ function inspectObjectEdits(value, profile, constants) {
     }
     result.sorting.push({ ...row, record, added: additions.has(row.entityId) });
   }
+  let scales;
+  try { scales = parseObjectVisualScales(value.visualScales); } catch (e) { fail('INVALID_OBJECT_SCALE', e.message); }
+  for (const row of scales) {
+    const record = additions.get(row.entityId)?.record || profile.records.get(row.entityId);
+    const sort = result.sorting.find(e => e.entityId === row.entityId);
+    if (!record?.descriptor.canScale || removed.has(row.entityId) || record.resource || sort && sort.setting.mode !== 'wall') fail('INVALID_OBJECT_SCALE', '가져온 배경 배치만 크기를 조정할 수 있습니다.');
+    result.visualScales.push({ ...row, record, added: additions.has(row.entityId) });
+  }
   let offsets;
   try { offsets = parseObjectVisualOffsets(value.visualOffsets); } catch (e) { fail('INVALID_OBJECT_OFFSET', e.message); }
   for (const row of offsets) {
@@ -184,7 +194,7 @@ function inspectObjectEdits(value, profile, constants) {
     if (!record.descriptor.canMove) fail('PROTECTED_OBJECT', '보호된 오브젝트는 반전할 수 없습니다.');
     if (row.flipX !== (record.descriptor.flipX === true)) result.flips.push({ ...row, record, added: additions.has(row.entityId) });
   }
-  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length + result.visualOffsets.length + result.flips.length > 0;
+  result.changed = result.moved.length + result.removed.length + result.added.length + result.sorting.length + result.visualOffsets.length + result.flips.length + result.visualScales.length > 0;
   return result;
 }
 function changedComponents(edit) {
@@ -222,6 +232,24 @@ function applyObjectEdits(mb, edits, stable) {
   const byId = new Map(edits.added.map(e => [e.entityId, 'Obj_Editor_' + e.entityId]));
   for (const row of edits.sorting || []) if (!byId.has(row.entityId)) byId.set(row.entityId, row.record.item.path);
   const pathFor = id => byId.get(id) || mb.listEntities().find(e => e.id === id)?.path;
+  // Scale imported backdrops around their existing pivot, preserving XY ratio and signs.
+  for (const row of edits.visualScales || []) {
+    const name = pathFor(row.entityId), expected = clone(mb.find(name));
+    const components = expected.jsonString['@components'], tf = components.find(c => c['@type'] === TF);
+    const source = row.record.native.jsonString['@components'].find(c => c['@type'] === TF).Scale || {};
+    tf.Scale = { ...source, x: (source.x ?? 1) * row.scale, y: (source.y ?? 1) * row.scale };
+    mb.patchComponent(name, TF, { Scale: tf.Scale });
+    const meta = components.find(c => c['@type'] === DEPTH);
+    if (meta) {
+      const patch = {};
+      for (const [key, axis] of [['ScaleX', 'x'], ['ScaleY', 'y']]) if (key in meta) patch[key] = meta[key] = Math.abs(tf.Scale[axis]);
+      if (Object.keys(patch).length) mb.patchComponent(name, DEPTH, patch);
+    }
+    if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '배경 크기 조정이 허용된 값 이외의 항목을 변경했습니다.');
+    const actualPath = mb.find(name).path, old = edited.findIndex(e => e[0] === actualPath);
+    if (old >= 0) edited.splice(old, 1);
+    edited.push([actualPath, stable(expected)]);
+  }
   // Floor/wall first; a surface uses the final support Z and never contributes a second footprint.
   for (const row of [...(edits.sorting || [])].sort((a,b) => Number(a.setting.mode === 'surface') - Number(b.setting.mode === 'surface'))) {
     const name = pathFor(row.entityId), before = clone(mb.find(name)), s = row.setting;
@@ -307,6 +335,8 @@ function objectScene(mb, profile, edits) {
     const row = (edits.sorting || []).find(e => e.entityId === object.entityId);
     if (row) object.sortSetting = clone(row.setting);
     const name = edits.added.some(e => e.entityId === object.entityId) ? 'Obj_Editor_' + object.entityId : profile.records.get(object.entityId).item.path;
+    const visualScale = (edits.visualScales || []).find(e => e.entityId === object.entityId)?.scale;
+    if (visualScale !== undefined) object.visualScale = visualScale;
     object.flipX = mb.component(name, SR).FlipX === true;
     object.sortInfo = sortInfo(mb, name);
     const offset = (edits.visualOffsets || []).find(e => e.entityId === object.entityId)?.offset;

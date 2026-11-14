@@ -43,7 +43,7 @@ function fixture() {
     const relative = "scripts/game-sync/" + name;
     put(localEditor, relative, fs.readFileSync(path.join(editorRoot, relative)));
   }
-  for (const name of ["objectSorting.cjs", "objectVisualOffset.cjs", "objectFlip.cjs"]) {
+  for (const name of ["objectSorting.cjs", "objectVisualOffset.cjs", "objectVisualScale.cjs", "objectFlip.cjs"]) {
     put(localEditor, "src/lib/" + name, fs.readFileSync(path.join(editorRoot, "src/lib/" + name)));
   }
   const builder = put(gameRoot, ".agents/skills/msw-general/scripts/map/msw_map_builder.cjs", fs.readFileSync(sourceBuilder));

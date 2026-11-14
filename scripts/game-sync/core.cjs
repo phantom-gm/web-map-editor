@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const NodeModule = require('node:module');
 const objectEdits = require('./object-edits.cjs');
 const walkEdits = require('./walk-edits.cjs');
 const npcEdits = require('./npcs.cjs');
@@ -313,7 +314,10 @@ function compatibleInventory(before, after, requiredRuids = []) {
   for (const id of required) {
     const resource = oldRecords.get(id);
     if (!resource) continue; // Native built-in resources can be outside the group inventory.
-    if (stable(resource) !== stable(newRecords.get(id))) return false;
+    // Moving a resource between storage folders (subcategory) keeps its RUID and name, and the
+    // compiler never reads the folder, so only that key is left out of the identity check.
+    const identity = record => record && { ...record, subcategory: undefined };
+    if (stable(identity(resource)) !== stable(identity(newRecords.get(id)))) return false;
   }
   // Non-tile sprites are referenced by RUID, so a new same-named upload is harmless.
   // Tile-family name ambiguity still fails closed in catalogFromLock below.
@@ -329,6 +333,42 @@ function baselineResourceIds(root, manifest, baselineDir) {
     const ruid = mb.component(e.path, COMPONENT.sprite)?.SpriteRUID;
     return typeof ruid === 'string' ? ruid : ruid?.DataId;
   })].filter(Boolean))];
+}
+// A MapBuilder update (e.g. a game skill-set refresh) changes the file bytes without necessarily
+// changing how this baseline's map is read and written. Both versions are compiled in isolation from
+// their verified bytes — never through the shared require cache, which may still hold an older copy —
+// and the update is accepted only when they read and serialise the baseline snapshot map identically.
+// Verdicts are kept per (baseline builder, current builder, map) hash for the life of the process.
+const BUILDER_EQUIVALENCE = globalThis.__mswGameSyncBuilderEquivalence || (globalThis.__mswGameSyncBuilderEquivalence = new Map());
+function compileBuilder(bytes, filename) {
+  const compiled = new NodeModule(filename, module);
+  compiled.filename = filename;
+  compiled.paths = NodeModule._nodeModulePaths(path.dirname(filename));
+  compiled._compile(bytes.toString('utf8'), filename);
+  if (!compiled.exports || typeof compiled.exports.MapBuilder?.read !== 'function') throw new Error('MapBuilder API missing');
+  return compiled.exports.MapBuilder;
+}
+function builderView(MapBuilder, mapPath) {
+  try {
+    const mb = MapBuilder.read(mapPath);
+    return stable({ mode: mb.getTileMapMode(), entities: mb.listEntities(), data: mb.build() });
+  } catch { return 'unreadable'; } // Opaque native maps stay exact-copy only under either version.
+}
+function equivalentBuilder(root, manifest, baselineDir, f, currentBytes) {
+  const oldPath = safeChild(baselineDir, 'snapshot/' + f.relative, root), oldBytes = fs.readFileSync(oldPath);
+  if (hash(oldBytes) !== f.sha256) fail('BASELINE_CORRUPT', '기준 MapBuilder 사본이 변경되었습니다. 다시 동기화하세요.');
+  const mapRecord = manifest.sourceFiles.find(s => s.relative === manifest.mapRelative);
+  const mapPath = safeChild(baselineDir, 'snapshot/' + manifest.mapRelative, root);
+  if (!mapRecord?.exists || hash(fs.readFileSync(mapPath)) !== mapRecord.sha256) fail('BASELINE_CORRUPT', '기준 맵 사본이 변경되었습니다. 다시 동기화하세요.');
+  const cacheKey = [f.sha256, hash(currentBytes), mapRecord.sha256].join('|');
+  if (!BUILDER_EQUIVALENCE.has(cacheKey)) {
+    let same = false;
+    try {
+      same = builderView(compileBuilder(oldBytes, oldPath), mapPath) === builderView(compileBuilder(currentBytes, sourceRelative(root, f.relative)), mapPath);
+    } catch { /* A builder that cannot be compiled stays strictly stale. */ }
+    BUILDER_EQUIVALENCE.set(cacheKey, same);
+  }
+  return BUILDER_EQUIVALENCE.get(cacheKey);
 }
 function verifySources(root, manifest, { includeDatasets = false, baselineDir } = {}) {
   let strictSourceFilesUnchangedSinceBaseline = true;
@@ -356,6 +396,8 @@ function verifySources(root, manifest, { includeDatasets = false, baselineDir } 
         try { compatible = compatibleInventory(JSON.parse(snapshot.toString('utf8')), JSON.parse(bytes.toString('utf8')), baselineResourceIds(root, manifest, baselineDir)); } catch { /* Invalid inventory stays blocked. */ }
         if (compatible) { strictSourceFilesUnchangedSinceBaseline = false; continue; }
       }
+      if (!includeDatasets && baselineDir && exists && f.exists && f.relative === manifest.builderRelative &&
+          equivalentBuilder(root, manifest, baselineDir, f, bytes)) { strictSourceFilesUnchangedSinceBaseline = false; continue; }
       fail('STALE_SOURCE', '게임 원본이 기준 시점과 달라졌습니다: ' + f.relative + '. 다시 동기화하세요.');
     }
   }
@@ -860,6 +902,7 @@ function inspectLoadedProject(project, state) {
       runtimeEditingSupported: runtimeProfile.supported, runtimeEditingReasons: runtimeProfile.reasons,
       objectChanges: { moved: new Set([...objects.moved, ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size, removed: objects.removed.length, added: objects.added.length },
       ...(objects.sorting.length ? { objectSortingChanged: objects.sorting.length } : {}),
+      ...(objects.visualScales.length ? { objectScalesChanged: objects.visualScales.length } : {}),
       ...(objects.flips.length ? { objectFlipsChanged: objects.flips.length } : {}),
       objectEditingSupported: [...objectProfile.records.values()].some(r => r.descriptor.canMove),
       editableObjects: [...objectProfile.records.values()].filter(r => r.descriptor.canMove).length,
@@ -871,7 +914,7 @@ function inspectLoadedProject(project, state) {
       before: manifest.counts,
       counts: counts(manifest.blocks.filter(b => !affected.includes(b)).concat(replacements), after.size,
         manifest.counts.groundEntities - affected.length + replacements.length),
-      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size,
+      preservedEntities: manifest.totalEntities - affected.length - new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualScales.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.entityId)).size,
       warnings } };
 }
 // Shared in-memory map construction keeps preview and export on the same packing path.
@@ -881,7 +924,7 @@ function buildCandidateMap(project, checked) {
   if (stable(deps.constants) !== stable(manifest.constants)) fail('STALE_SOURCE', '게임 좌표 상수가 변경되었습니다.');
   const originalPath = safeChild(dir, 'snapshot/' + manifest.mapRelative, root);
   const mb = deps.MapBuilder.read(originalPath);
-  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.record.item.path));
+  const changedPaths = new Set([...objects.moved, ...objects.removed, ...objects.sorting.filter(e => !e.added), ...objects.flips.filter(e => !e.added), ...objects.visualScales.filter(e => !e.added), ...objects.visualOffsets.filter(e => !e.added)].map(e => e.record.item.path));
   const removedNames = new Set(affected.map(b => b.name));
   const preserved = mb.listEntities().filter(e => !removedNames.has(e.name) && !changedPaths.has(e.path)).map(e => [e.path, stable(mb.find(e.path))]);
   if (report.changedCells > 0) {

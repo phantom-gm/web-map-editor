@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { fetchSpriteAsset, fetchAnimationPreviewFrame, fetchAnimationFrameAsset, type SpriteResourceMetadata } from "../server/mswMcp";
+import { previewSpriteGeometry, type GamePreviewScene, type GamePreviewSprite } from "../lib/gamePreview";
 import { parseSpriteMod, extractEmbeddedPng, parseAnimationClipMod } from "../server/spriteMetadata";
 
 const uint = (n: number) => { const a: number[] = []; do { const b = n % 128; n = Math.floor(n / 128); a.push(b | (n ? 128 : 0)); } while (n); return Buffer.from(a); };
@@ -107,7 +108,7 @@ describe("native animation preview", () => {
     const sprite = resource(frameRuid, "frame-v1", [{ key: "pivot_x", value: ".5" }, { key: "pivot_y", value: "0" }]);
     const result = await fetchAnimationFrameAsset(source, frame, sprite);
     expect(result.imageUrl).toMatch(/^data:image\/png;base64,/);
-    expect(result.metadata).toMatchObject({ width: 256, height: 256, pixelsPerUnit: 100, pivot: [.53125, -.09765625],
+    expect(result.metadata).toMatchObject({ width: 256, height: 256, pixelsPerUnit: 100, pivot: [.53125, .09765625],
       version: "idle-v1:frame-v1", pivotSource: "animation", animationFrame: { spriteRuid: frameRuid, offset: [-8, 25], frameIndex: 0, frameCount: 1 } });
     // A changed storage pivot must take effect even when clip and sprite bytes are cached.
     sprite.properties = [{ key: "pivot_x", value: ".25" }, { key: "pivot_y", value: "0" }];
@@ -120,5 +121,22 @@ describe("native animation preview", () => {
     const source = { ...resource("clip-version", "v1"), resourceType: "animationclip" };
     expect((await fetchAnimationPreviewFrame(source)).offset).toEqual([-8, 25]);
     expect((await fetchAnimationPreviewFrame({ ...source, version: "v2", modPath: "clip-v2.mod" })).offset).toEqual([12, 0]);
+  });
+});
+
+describe("runtime board frame alignment", () => {
+  it.each([false, true])("keeps the native -300px Y offset above the anchor at 0.7 scale, flipX=%s", async flipX => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(fixture(622, 955)))));
+    const spriteResource = resource("board-frame", "board-frame-v1");
+    const asset = await fetchAnimationFrameAsset(
+      { ...resource("board-clip"), resourceType: "animationclip" },
+      { spriteRuid: "board-frame", offset: [0, -300], frameCount: 1 }, spriteResource);
+    const scene = { groundOrigin: [0, 0], constants: { TILE_W: 2.56, TILE_H: 1.28, ORIGIN_X: 0, ORIGIN_Y: 0 } } as GamePreviewScene;
+    const sprite = { position: [0, 0, 0], scale: [.7, .7], rotationDeg: 0, flipX, flipY: false } as GamePreviewSprite;
+    const geometry = previewSpriteGeometry(sprite, asset.metadata!, scene, { x: 0, y: 0, zoom: 4 });
+    // Actual native board canvas: 668.5px high, center 210px ABOVE its NPC root.
+    expect(geometry.bounds[1]).toBeCloseTo(-544.25);
+    expect(geometry.bounds[3]).toBeCloseTo(124.25);
+    expect(geometry.bounds[2] - geometry.bounds[0]).toBeCloseTo(435.4);
   });
 });

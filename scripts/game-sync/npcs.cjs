@@ -98,6 +98,7 @@ function analyzeNpcs(files, mapName, sourceId = null) {
       const canAdd = (!d.ModelID || d.ModelID === 'npc') && /^[a-f0-9]{32}$/i.test(ruid) && Number.isFinite(bodyScale) && bodyScale > 0 && bodyScale <= 20;
       return { npcClassId, name: names.get(d.NpcName) || d['#DevName'] || d.NpcName || String(npcClassId), ruid,
         bodyScale: canAdd ? bodyScale : 1, canAdd, ...(canAdd ? {} : { reason: '기본 npc 모델·Idle SE 외형 또는 몸통 배율을 확인할 수 없습니다.' }),
+        headPx: Number.isFinite(Number(art?.data.HeadPx)) && Number(art?.data.HeadPx) > 0 ? Number(art.data.HeadPx) : null,
         footPx: art?.data.FootPx === '' || art?.data.FootPx == null ? null : Number(art.data.FootPx) };
     });
     const parsed = spawnRows(get('DT_NpcSpawn.csv'));
@@ -166,7 +167,7 @@ function inspectNpcs(project, profile, constants) {
     const art = classes.get(row.npcClassId);
     return { entityId: row.entityId, spawnId: row.spawnId, npcClassId: row.npcClassId, name: art?.name || String(row.npcClassId), cell: [...row.cell],
       sourceCell: row.sourceCell, sourceFlipX: row.sourceFlipX, sourceDialogId: row.sourceDialogId, position: world(row.cell, constants),
-      ruid: art?.ruid || '', bodyScale: art?.bodyScale || 1, flipX: row.flipX, dialogId: row.dialogId, enabled: row.enabled,
+      ruid: art?.ruid || '', bodyScale: art?.bodyScale || 1, headPx: art?.headPx ?? null, flipX: row.flipX, dialogId: row.dialogId, enabled: row.enabled,
       canEdit: !!art?.canAdd, ...(art?.canAdd ? {} : { reason: art?.reason || 'NPC 종류를 찾을 수 없습니다.' }) };
   };
   return { profile, records, changed, added, removed, moves, updates, warnings, edited: changed.length + added.length + removed.length,
@@ -174,7 +175,7 @@ function inspectNpcs(project, profile, constants) {
     requested: raw && (raw.updated.length || raw.removed.length || raw.added.length) ? { version: 1,
       updated: raw.updated.map(r => ({ entityId: r.entityId, ...(r.cell !== undefined ? { cell: r.cell } : {}), ...(r.flipX !== undefined ? { flipX: r.flipX } : {}), ...(r.dialogId !== undefined ? { dialogId: r.dialogId } : {}) })),
       removed: [...raw.removed], added: raw.added.map(r => ({ entityId: r.entityId, npcClassId: r.npcClassId, cell: r.cell, flipX: r.flipX, dialogId: r.dialogId })) } : null,
-    descriptors: [...records.values()].map(descriptor), catalog: profile.catalog.map(entry => { const result = { ...entry }; delete result.footPx; return result; }),
+    descriptors: [...records.values()].map(descriptor), catalog: profile.catalog.map(entry => { const result = { ...entry }; delete result.footPx; delete result.headPx; return result; }),
     comparison: { moved: moves.map(r => ({ entityId: r.entityId, from: world(r.sourceCell, constants), to: world(r.cell, constants) })),
       added: added.map(r => ({ entityId: r.entityId, position: world(r.cell, constants) })), removed: removed.map(r => ({ entityId: r.entityId, position: world(r.cell, constants) })),
       updated: updates.map(r => ({ entityId: r.entityId, position: world(r.cell, constants) })) } };

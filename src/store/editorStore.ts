@@ -16,7 +16,7 @@ import { makeMovementFeedback, type GameMoveFeedback } from "../lib/gameMoveFeed
 import type { GamePreviewScene } from "../lib/gamePreview";
 import { currentGameObjects, mergeGameSelection, planGameSelectionTransform, type GameSelectionMode, type GameSelectionOperation } from "../lib/gameSelection";
 import type { ObjectSortSetting } from "../lib/objectSorting.cjs";
-import { setGameObjectFlip, setGameObjectVisualOffset, setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
+import { setGameObjectVisualScale, setGameObjectFlip, setGameObjectVisualOffset, setGameObjectSorting, addGameResourceReferences, scaleGameResourceEdit, depthGameResourceEdit, addGameObjectEdit, moveGameObjectEdit, removeGameObjectEdit, parseGameObjectEdits, type GameObjectEdits, type GameObjectPosition } from "../lib/gameObjects";
 import { addGameNpcEdit, updateGameNpcEdit, removeGameNpcEdit, parseGameNpcEdits, parseGameNpcSync, npcEditsKey, npcCellInBounds, type GameNpcEdits, type GameNpcSync, type GameNpcPatch, type GameNpcCell } from "../lib/gameNpc";
 import { PROJECT_TYPE, PROJECT_VERSION, parseGameSync, type GameSyncMetadata, type ProjectFile, type ProjectFileInput } from "../lib/projectIO";
 import { footprintWH, migrateEntity, newEntityId, renderWH, type EntityKind, type MapEntity } from "../types/entity";
@@ -272,6 +272,7 @@ export interface EditorState extends RuntimeProjectFields {
   transformGameSelection: (operation: GameSelectionOperation, scene: GamePreviewScene, delta?: [number, number]) => boolean;
   moveGameObjectTo: (entityId: string, position: GameObjectPosition, commit?: boolean) => void;
   addGameResourceReferences: (ids: string[]) => void;
+  scaleGameObjectVisual: (entityId: string, scale: number, scene: GamePreviewScene) => void;
   scaleGameResource: (entityId: string, scale: number) => void;
   flipGameObject: (entityId: string, scene: GamePreviewScene) => void;
   offsetGameObjectVisual: (entityId: string, offset: GameObjectPosition, scene: GamePreviewScene) => void;
@@ -1021,6 +1022,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
     return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true,
       undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+  }),
+  scaleGameObjectVisual: (entityId, scale, scene) => set(s => {
+    if (!s.gameSync) return {};
+    try {
+      const object = currentGameObjects(s, scene).get(entityId);
+      if (!object?.canScale) throw new Error("이 배치는 배경 크기 조정을 지원하지 않습니다.");
+      const gameObjectEdits = setGameObjectVisualScale(s.gameObjectEdits, entityId, scale);
+      if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
+      return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null, gameMoveFeedback: null,
+        undoStack: [...s.undoStack, captureEditorSnapshot(s)].slice(-UNDO_CAP), redoStack: [] };
+    } catch (e) { return { gameSelectionError: e instanceof Error ? e.message : String(e) }; }
   }),
   scaleGameResource: (entityId, scale) => set(s => {
     if (!s.gameSync) return {};
