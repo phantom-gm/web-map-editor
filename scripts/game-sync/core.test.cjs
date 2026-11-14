@@ -1097,7 +1097,8 @@ test('candidate package contains only exact apply files and review text, preserv
   const before = fileTreeHashes(f.temp), packaged = readWithoutWrites(() => packageCandidate(reviewInput(output, project), f.options));
   assert.deepEqual(fileTreeHashes(f.temp), before); assert.equal(packaged.filename, 'fixture-' + output.candidateId + '.zip'); assert.equal(packaged.review.status, 'ready');
   const entries = unzipStored(packaged.bytes);
-  assert.deepEqual([...entries.keys()], [...output.report.applyFiles, 'REVIEW.txt']);
+  // A walk edit also ships the map's full blocked set for the game's 'walk-table.cjs put' command.
+  assert.deepEqual([...entries.keys()], [...output.report.applyFiles, ...(output.report.walkCells ? ['walk-cells.json'] : []), 'REVIEW.txt']);
   for (const relative of output.report.applyFiles) assert.deepEqual(entries.get(relative), fs.readFileSync(path.join(output.candidateDir, relative)));
   const note = entries.get('REVIEW.txt').toString('utf8');
   assert.match(note, /gameApplied: false/); assert.match(note, /runtimeVerified: false/); assert.ok(note.includes(output.candidateId));
@@ -1201,7 +1202,7 @@ test('NPC move/add/delete/flip/dialog emit only current-map CSV changes and exac
   const changed = rows.rows.find(r => r.spawnId === 'fixture_N1'); assert.equal(changed.data.Scale, '0.875'); assert.equal(changed.data['#Note'], 'keep, quoted'); assert.equal(changed.data.DialogID, '30100');
   assert.ok(rows.rows.some(r => r.spawnId === 'fixture_Editor_' + id));
   const review = reviewCandidate(reviewInput(out, project), f.options); assert.equal(review.status, 'ready'); assert.equal(review.summary.npcsMoved, 1); assert.equal(review.summary.npcsUpdated, 1);
-  assert.deepEqual([...unzipStored(packageCandidate(reviewInput(out, project), f.options).bytes).keys()], [...out.report.applyFiles, 'REVIEW.txt']);
+  assert.deepEqual([...unzipStored(packageCandidate(reviewInput(out, project), f.options).bytes).keys()], [...out.report.applyFiles, ...(out.report.walkCells ? ['walk-cells.json'] : []), 'REVIEW.txt']);
   const undo = exportEditedProject(original, f.options); assert.equal(undo.report.unchanged, true); assert.equal(undo.report.exactMapBytes, true); assert.deepEqual(fileTreeHashes(f.root), before);
 });
 test('NPC no-op patches echo requested edits but retain original map and all CSV bytes', fixtureOptions, t => {
@@ -2131,4 +2132,122 @@ test('invalid composite leaf references never become editable map floor', fixtur
   const imported=createSyncProject({...f.options,mapName:'fixture'});
   assert.equal(JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).groundEditingSupported,false);
   assert.ok(JSON.parse(fs.readFileSync(path.join(imported.baselineDir,'manifest.json'))).unsupportedReasons.some(r=>r.includes('Tile_0_0')));
+});
+
+// ── Game WK-1: per-map walk tables (DT_Walk_<map>.csv + DT_MapMeta.WalkTable) ─────────────────────
+// These fixtures install the game's real scripts/lib/walk-table.cjs and convert a temp game folder
+// with its own migrate(), so the editor is tested against the format the game actually writes.
+const walkModuleSource = path.join(sourceRoot, 'scripts/lib/walk-table.cjs'), datasetPathSource = path.join(sourceRoot, 'scripts/dataset-path.cjs');
+const perMapOptions = { skip: (!builderSource || !fs.existsSync(walkModuleSource) || !fs.existsSync(datasetPathSource)) && 'Needs a game checkout with scripts/lib/walk-table.cjs (WK-1).' };
+const WALK_DIR = 'RootDesk/MyDesk/DataSet/walk/', META_REL = 'RootDesk/MyDesk/DataSet/world/DT_MapMeta.csv';
+function walkFixture(t, { perMap = true, emptyFixture = false } = {}) {
+  const f = runtimeFixture(t);
+  for (const [source, relative] of [[walkModuleSource, 'scripts/lib/walk-table.cjs'], [datasetPathSource, 'scripts/dataset-path.cjs']]) {
+    fs.mkdirSync(path.dirname(path.join(f.root, relative)), { recursive: true }); fs.copyFileSync(source, path.join(f.root, relative));
+  }
+  const mod = require(path.join(f.root, 'scripts/lib/walk-table.cjs')), meta = path.join(f.root, META_REL);
+  fs.writeFileSync(meta, '﻿MapName,InstanceKind,#Memo\r\nfixture,,\r\nother,,\r\nelsewhere,,\r\nlast,,note\r\n');
+  fs.writeFileSync(meta.replace(/\.csv$/, '.userdataset'), JSON.stringify({ CoreVersion: '26.10.0.0' }));
+  fs.writeFileSync(f.walkPath, 'MapName,CellX,CellY\nelsewhere,5,6\n' + (emptyFixture ? '' : 'fixture,2,2\nfixture,3,3\n') + 'last,7,8\n');
+  if (perMap) mod.migrate(f.root, { dropLegacy: true });
+  const put = (map, cells) => mod.applyPlan(f.root, mod.planMapWrite(f.root, map, cells, { coreVersion: mod.coreVersionOf(f.root) }));
+  return { ...f, mod, meta, put };
+}
+const cellSet = cells => new Set(cells.map(c => c.join(',')));
+test('per-map walk tables: import, edit, candidate, review and ZIP match what the game put command writes', perMapOptions, t => {
+  const f = walkFixture(t), table = WALK_DIR + 'DT_Walk_fixture.csv';
+  assert.equal(f.mod.mode(f.root), 'perMap'); assert.equal(fs.existsSync(f.walkPath), false);
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(cellSet(project.blocked), new Set(['2,2', '3,3']));
+  const base = previewEditedProject(project, f.options);
+  assert.equal(base.report.walkEditingSupported, true); assert.equal(base.runtimeSource.stale, false); assert.equal(base.portals.length, 2);
+  const untouched = exportEditedProject(project, f.options);
+  assert.equal(untouched.report.exactMapBytes, true); assert.deepEqual(untouched.report.applyFiles, ['map/fixture.map']); assert.equal(untouched.report.walkCells, undefined);
+  project.blocked = project.blocked.filter(c => c.join(',') !== '3,3').concat([[0, 7], [1, 7]]);
+  const before = fileTreeHashes(f.root), out = exportEditedProject(project, f.options);
+  assert.deepEqual(fileTreeHashes(f.root), before);   // the game folder is only read
+  assert.deepEqual(out.report.applyFiles, ['map/fixture.map', table]);
+  assert.deepEqual([out.report.walkComparison.mode, out.report.walkComparison.table, out.report.walkComparison.addedRows, out.report.walkComparison.removedRows], ['perMap', 'DT_Walk_fixture', 2, 1]);
+  const candidateTable = fs.readFileSync(path.join(out.candidateDir, table), 'utf8');
+  assert.equal(candidateTable, f.mod.tableCsvText(f.mod.cellsToRuns([[2, 2], [0, 7], [1, 7]])));
+  const cells = JSON.parse(fs.readFileSync(path.join(out.candidateDir, 'walk-cells.json'), 'utf8'));
+  assert.equal(cells.map, 'fixture'); assert.deepEqual(cellSet(cells.cells), new Set(['2,2', '0,7', '1,7']));
+  for (const other of ['DT_Walk_elsewhere.csv', 'DT_Walk_last.csv', 'DT_Walk_none.csv']) assert.equal(fs.existsSync(path.join(out.candidateDir, WALK_DIR + other)), false);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'ready');
+  const history = listCandidates(compareIdentity(project), f.options);
+  assert.deepEqual([history.candidates.length, history.skipped], [2, 0]);
+  const entries = unzipStored(packageCandidate(reviewInput(out, project), f.options).bytes);
+  assert.deepEqual([...entries.keys()], ['map/fixture.map', table, 'walk-cells.json', 'REVIEW.txt']);
+  assert.ok(entries.get('REVIEW.txt').toString('utf8').includes('node scripts/walk-table.cjs put fixture --from walk-cells.json'));
+  // Applying with the game's own command path produces exactly the candidate file.
+  f.put('fixture', cells.cells);
+  assert.equal(fs.readFileSync(path.join(f.root, table), 'utf8'), candidateTable);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'blocked');   // already applied: the source moved on
+  assert.throws(() => exportEditedProject(project, f.options), { code: 'STALE_WALK_ROWS' });
+  const fresh = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(cellSet(fresh.project.blocked), new Set(['2,2', '0,7', '1,7']));
+  assert.equal(exportEditedProject(fresh.project, f.options).report.exactMapBytes, true);
+});
+test('per-map walk tables: first blocked cell creates the table; DT_MapMeta is judged by this map WalkTable only', perMapOptions, t => {
+  const f = walkFixture(t, { emptyFixture: true }), own = WALK_DIR + 'DT_Walk_fixture';
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  assert.deepEqual(project.blocked, []); assert.equal(f.mod.tableOf(f.root, 'fixture'), 'DT_Walk_none');
+  project.blocked.push([0, 7]);
+  const out = exportEditedProject(project, f.options);
+  assert.deepEqual(out.report.applyFiles, ['map/fixture.map', own + '.csv', own + '.userdataset', META_REL]);
+  assert.equal(fs.readFileSync(path.join(out.candidateDir, own + '.userdataset'), 'utf8'), f.mod.userDatasetText('DT_Walk_fixture', '26.10.0.0'));
+  assert.equal(fs.readFileSync(path.join(out.candidateDir, META_REL), 'utf8'), f.mod.metaTextWithWalkTable(fs.readFileSync(f.meta, 'utf8'), { fixture: 'DT_Walk_fixture' }));
+  assert.equal(out.report.walkComparison.createdTable, true); assert.equal(out.report.removeFiles, undefined);
+  const review = () => reviewCandidate(reviewInput(out, project), f.options);
+  assert.deepEqual(review().issues, []); assert.equal(review().status, 'ready');
+  fs.writeFileSync(f.meta, fs.readFileSync(f.meta, 'utf8').replace('note', 'someone edited another map'));
+  assert.equal(review().status, 'ready');            // other rows of DT_MapMeta may change freely
+  f.put('fixture', [[5, 0]]);
+  assert.equal(review().status, 'blocked');          // this map's table and WalkTable changed in the game
+});
+test('per-map walk tables: clearing every blocked cell points the map at DT_Walk_none and lists its table for removal', perMapOptions, t => {
+  const f = walkFixture(t), own = WALK_DIR + 'DT_Walk_fixture';
+  const { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked = [];
+  const out = exportEditedProject(project, f.options);
+  assert.deepEqual(out.report.applyFiles, ['map/fixture.map', META_REL]);
+  assert.deepEqual(out.report.removeFiles, [own + '.csv', own + '.userdataset']);
+  assert.equal(out.report.walkComparison.table, 'DT_Walk_none'); assert.equal(out.report.walkComparison.removedTable, true);
+  assert.equal(reviewCandidate(reviewInput(out, project), f.options).status, 'ready');
+  const note = unzipStored(packageCandidate(reviewInput(out, project), f.options).bytes).get('REVIEW.txt').toString('utf8');
+  assert.ok(note.includes('Remove files') && note.includes(own + '.csv'));
+  f.put('fixture', []);
+  assert.equal(fs.existsSync(path.join(f.root, own + '.csv')), false);
+  assert.deepEqual(createSyncProject({ ...f.options, mapName: 'fixture' }).project.blocked, []);
+});
+test('per-map walk tables: runtime checks read destination maps and notice only relevant table changes', perMapOptions, t => {
+  const f = walkFixture(t), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.gamePortalEdits = runtimePatch([{ entityId: 'P1', destFacing: 'NE' }]);
+  f.put('elsewhere', [[5, 6], [1, 1]]);                                   // unrelated map
+  assert.equal(previewEditedProject(project, f.options).runtimeSource.stale, false);
+  assert.doesNotThrow(() => exportEditedProject(project, f.options));
+  f.put('other', [[2, 4]]);                                               // P1's destination map
+  const stale = previewEditedProject(project, f.options).runtimeSource;
+  assert.equal(stale.stale, true); assert.ok(stale.changedFiles.some(file => /DT_Walk_(other|none)\.csv$/.test(file)));
+  assert.throws(() => exportEditedProject(project, f.options), e => e.code === 'STALE_RUNTIME_SOURCE');
+  const refreshed = refreshRuntimeProject(project, f.options).project;
+  const source = path.join(f.options.baselineRoot, 'runtime-' + refreshed.gameRuntimeSync.sourceId);
+  assert.ok(fs.existsSync(path.join(source, 'snapshot', WALK_DIR + 'DT_Walk_other.csv')));
+  assert.equal(previewEditedProject(refreshed, f.options).runtimeSource.stale, false);
+  refreshed.gamePortalEdits = runtimePatch([{ entityId: 'P1', destCell: [2, 4] }]);
+  assert.throws(() => previewEditedProject(refreshed, f.options), e => e.code === 'BLOCKED_PORTAL');   // read from the refreshed table
+});
+test('walk storage conversion: a legacy baseline cannot emit walk edits afterwards and a fresh import switches shape', perMapOptions, t => {
+  const f = walkFixture(t, { perMap: false }), { project } = createSyncProject({ ...f.options, mapName: 'fixture' });
+  project.blocked.push([0, 7]);
+  const legacy = exportEditedProject(project, f.options);
+  assert.deepEqual(legacy.report.applyFiles, ['map/fixture.map', f.walkRelative]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacy.candidateDir, 'walk-cells.json'), 'utf8')).cells.length, 3);
+  assert.equal(legacy.report.walkComparison.mode, undefined);
+  f.mod.migrate(f.root, { dropLegacy: true });                            // the game converts
+  assert.throws(() => exportEditedProject(project, f.options), { code: 'STALE_WALK_ROWS' });
+  assert.equal(reviewCandidate(reviewInput(legacy, project), f.options).status, 'blocked');   // its whole-file DT_Walk.csv must not be applied now
+  const fresh = createSyncProject({ ...f.options, mapName: 'fixture' }).project;
+  fresh.blocked.push([0, 7]);
+  assert.deepEqual(exportEditedProject(fresh, f.options).report.applyFiles, ['map/fixture.map', WALK_DIR + 'DT_Walk_fixture.csv']);
 });

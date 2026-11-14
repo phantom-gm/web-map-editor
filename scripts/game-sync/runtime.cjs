@@ -36,11 +36,18 @@ function portalRows(files) { return identify(table(files,'DT_Portal',['PortalID'
 function boundsRows(files) { return identify(table(files,'DT_Bounds',['MapName','MinX','MaxX','MinY','MaxY','SpawnX','SpawnY']),'MapName','MapName').map(r=>({...r,bounds:{minX:int(r.data.MinX),maxX:int(r.data.MaxX),minY:int(r.data.MinY),maxY:int(r.data.MaxY)},cell:[int(r.data.SpawnX),int(r.data.SpawnY)]})); }
 function walkRows(files) { return table(files,'DT_Walk',['MapName','CellX','CellY']).rows.map(r=>({map:r.data.MapName,cell:[int(r.data.CellX),int(r.data.CellY)]})); }
 function inBounds(c,b) { return Array.isArray(c)&&c.length===2&&c.every(Number.isSafeInteger)&&b&&c[0]>=b.minX&&c[0]<=b.maxX&&c[1]>=b.minY&&c[1]<=b.maxY; }
-function analyzeRuntime(files,mapName,sourceId=null) {
+// walkView: null for the legacy single DT_Walk.csv (read from `files`), or the game's per-map walk
+// tables seen through its own module (core.walkView). Either way callers ask profile.walkOf(map).
+function analyzeRuntime(files,mapName,sourceId=null,walkView=null) {
   const out={files,mapName,sourceId,reasons:{monsters:[],portals:[],spawn:[]},supported:{monsters:false,portals:false,spawn:false},monsters:[],portals:[],bounds:[],walk:[],catalog:[],portalRuid:'',spawn:null};
   const tryKind=(kind,fn)=>{try{fn();out.supported[kind]=true;}catch(e){if(e.name!=='GameSyncError')throw e;out.reasons[kind].push(e.message);}};
   let placementReady=false;
-  try { out.bounds=boundsRows(files); out.walk=walkRows(files); placementReady=true; } catch(e) { if(e.name!=='GameSyncError')throw e; for(const k of Object.keys(out.reasons))out.reasons[k].push(e.message); }
+  out.walkView=walkView;
+  out.walkOf=map=>walkView?(walkView.cells(map)||[]):out.walk.filter(r=>r.map===map).map(r=>r.cell);
+  try { out.bounds=boundsRows(files);
+    if(walkView){if(walkView.cells(mapName)===null)fail('UNSUPPORTED_RUNTIME','현재 맵의 이동불가 표를 읽지 못했습니다(게임 DT_MapMeta.WalkTable 확인).');}
+    else out.walk=walkRows(files);
+    placementReady=true; } catch(e) { if(e.name!=='GameSyncError')throw e; for(const k of Object.keys(out.reasons))out.reasons[k].push(e.message); }
   const mapBounds=out.bounds.find(r=>r.map===mapName);
   out.traps=traps.analyze(files,mapName);out.supported.traps=out.traps.supported;out.reasons.traps=out.traps.reasons;
   tryKind('monsters',()=>{
@@ -84,7 +91,7 @@ function overlay(raw,fields,profile,kind) {
 function inspectRuntime(project,profile,constants,npcs=[]) {
   const bounds=profile.bounds.find(b=>b.map===profile.mapName)?.bounds,warnings=[];
   const mapByName=new Map(profile.bounds.map(b=>[b.map,b]));
-  const blockedFor=map=>map===profile.mapName?new Set(project.blocked.map(key)):new Set(profile.walk.filter(r=>r.map===map).map(r=>key(r.cell)));
+  const blockedFor=map=>map===profile.mapName?new Set(project.blocked.map(key)):new Set(profile.walkOf(map).map(key));
   const currentBlocked=blockedFor(profile.mapName),catalog=new Map(profile.catalog.map(r=>[r.monsterClassId,r]));
   const echoes={monsters:overlay(project.gameMonsterEdits,M_FIELDS,profile,'monsters'),portals:overlay(project.gamePortalEdits,P_FIELDS,profile,'portals'),spawn:null};
   const validateMonster=v=>{if(!catalog.get(v.monsterClassId)?.canAdd||!inBounds(v.cell,bounds)||!Number.isSafeInteger(v.count)||v.count<1||v.count>200||!Number.isSafeInteger(v.spread)||v.spread<0||v.spread>Math.max(bounds.maxX-bounds.minX+1,bounds.maxY-bounds.minY+1)||!['respawnMinSec','respawnMaxSec','firstSpawnSec'].every(k=>Number.isFinite(v[k])&&v[k]>=0&&v[k]<=31536000)||typeof v.enabled!=='boolean')fail('INVALID_RUNTIME_EDIT','몬스터 종류·중심·수량·범위·리젠 시간을 확인하세요.');
@@ -125,7 +132,7 @@ function inspectRuntime(project,profile,constants,npcs=[]) {
   // (also the base-map entrances a difficulty variant reuses, game MAPMETA-DIFFICULTY-ARRIVAL),
   // this map's portal sources, start point and revive/return points.
   if(profile.supported.portals){
-    const walkBefore=new Set(profile.walk.filter(r=>r.map===profile.mapName).map(r=>key(r.cell))),newlyBlocked=[...currentBlocked].filter(k=>!walkBefore.has(k));
+    const walkBefore=new Set(profile.walkOf(profile.mapName).map(key)),newlyBlocked=[...currentBlocked].filter(k=>!walkBefore.has(k));
     if(newlyBlocked.length){
       const arrivals=new Map(),add=(cell,label)=>{if(Array.isArray(cell)&&!arrivals.has(key(cell)))arrivals.set(key(cell),label);};
       const templates=new Set(profile.templates||[]),own=profile.meta?.find(r=>r.map===profile.mapName),base=own?.base&&own.base!==profile.mapName?own.base:null;
@@ -167,11 +174,17 @@ function signature(files,name,mapName,maps,deps){
   else return hash(file.bytes);
   return JSON.stringify(rows.map(canonical).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 }
-function sourceDrift(profile,currentFiles,edit){
+const walkSignature=cells=>cells===null||cells===undefined?'missing':cells.map(key).sort().join(' ');
+// currentWalk: the live game's walk view when the profile uses per-map tables (ignored for legacy,
+// where DT_Walk.csv is one of profile.files and compared by signature()).
+function sourceDrift(profile,currentFiles,edit,currentWalk=null){
   const portals = edit?.portals?.records ? [...edit.portals.records.values()] : profile.portals.filter(r=>r.map===profile.mapName);
   const maps=new Set([profile.mapName,...portals.map(r=>r.values.destMap)]);
   const deps = dependencies(profile, edit);
-  const changes=[];for(const [name,file]of Object.entries(profile.files)){try{if(signature(profile.files,name,profile.mapName,maps,deps)!==signature(currentFiles,name,profile.mapName,maps,deps))changes.push(file.relative);}catch{changes.push(file.relative);}}return [...new Set(changes)];
+  const changes=[];for(const [name,file]of Object.entries(profile.files)){try{if(signature(profile.files,name,profile.mapName,maps,deps)!==signature(currentFiles,name,profile.mapName,maps,deps))changes.push(file.relative);}catch{changes.push(file.relative);}}
+  if(profile.walkView)for(const map of maps){let now;try{now=currentWalk?currentWalk.cells(map):null;}catch{now=null;}
+    if(walkSignature(profile.walkView.cells(map))!==walkSignature(now))changes.push(profile.walkView.relativeOf(map));}
+  return [...new Set(changes)];
 }
 const quote=s=>/[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
 function patchTable(bytes,mapName,idColumn,mapColumn,changes,added,removed,render){const parsed=parseCsv(bytes,[idColumn,mapColumn]);identify(parsed,idColumn,mapColumn);const byId=new Map(parsed.rows.map(r=>[r.data[idColumn],r]));for(const r of added)if(byId.has(r.id))fail('RUNTIME_ID_COLLISION','새 런타임 행 ID가 최신 CSV에 이미 있습니다.');const changed=new Map(changes.map(r=>[r.id,r])),deleted=new Set(removed.map(r=>r.id)),rawRows=new Map(parsed.rows.map(r=>[r.raw,r]));const serialize=(r,original)=>parsed.header.map(h=>quote(String(render(r,original,parsed.header)[h]??''))).join(',');const incoming=added.map(r=>serialize(r,null)+parsed.newline).join('');let out='',inserted=false;const hasTarget=parsed.rows.some(r=>r.data[mapColumn]===mapName);
@@ -180,7 +193,7 @@ function patchTable(bytes,mapName,idColumn,mapColumn,changes,added,removed,rende
   for(const r of [...changes,...added]){const original=byId.get(r.id)?.data||null,expected=render(r,original,parsed.header),matches=after.rows.filter(row=>row.data[idColumn]===r.id);if(matches.length!==1||!same(matches[0].data,expected))fail('RUNTIME_PRESERVATION_FAILED','수정한 런타임 CSV 행 검증에 실패했습니다.');}
   if(after.rows.some(r=>deleted.has(r.data[idColumn])))fail('RUNTIME_PRESERVATION_FAILED','삭제한 런타임 CSV 행이 남아 있습니다.');return result;
 }
-function buildCandidates(edit,currentFiles){const {profile}=edit;if(sourceDrift(profile,currentFiles,edit).length)fail('STALE_RUNTIME_SOURCE','몬스터·포탈·시작점 원본이 변경되었습니다. 최신 원본을 다시 가져오세요.');const result=[];
+function buildCandidates(edit,currentFiles,currentWalk=null){const {profile}=edit;if(sourceDrift(profile,currentFiles,edit,currentWalk).length)fail('STALE_RUNTIME_SOURCE','몬스터·포탈·시작점 원본이 변경되었습니다. 최신 원본을 다시 가져오세요.');const result=[];
   const render=(kind)=>(r,original,header)=>{const v=r.values,data=original?{...original}:Object.fromEntries(header.map(h=>[h,''])),fields=kind==='monsters'?M_FIELDS:P_FIELDS,columns=kind==='monsters'?M_COLUMNS:P_COLUMNS;if(!original){data[kind==='monsters'?'MonsterSpawnID':'PortalID']=r.id;data[kind==='monsters'?'MapName':'SrcMap']=profile.mapName;}
     for(const k of fields){if(original&&same(v[k],r.source[k]))continue;if(k==='cell'){data[kind==='monsters'?'CellX':'SrcX']=String(v.cell[0]);data[kind==='monsters'?'CellY':'SrcY']=String(v.cell[1]);}else if(k==='destCell'){data.DestX=String(v.destCell[0]);data.DestY=String(v.destCell[1]);}else data[columns[k]]=typeof v[k]==='boolean'?(v[k]?'True':'False'):String(v[k]);}
     if(kind==='portals'&&edit.portals.forceBossCleared?.has(r.id)){if(!header.includes('OpenCondition'))fail('UNSUPPORTED_RUNTIME','DT_Portal에 OpenCondition 열이 없어 보스 구역 출구를 저장할 수 없습니다.');data.OpenCondition=OPEN_BOSS_CLEARED;}

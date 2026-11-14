@@ -104,4 +104,76 @@ function buildWalkCandidate(bytes, edit, mapName) {
     retainedCurrentMapRows: keptTargetRows, addedRows: additions.length,
     removedRows: current.rows.length - keptTargetRows, sourceSha256: hash(bytes), candidateSha256: hash(result) } };
 }
-module.exports = { analyzeWalk, inspectBlocked, buildWalkCandidate, blockedSet };
+
+// ── Per-map walk tables (game WK-1) ─────────────────────────────────────────────────────────────
+// After the game's conversion each map has its own DT_Walk_<map>.csv (Y,X0,X1 runs) and
+// DT_MapMeta.WalkTable names it; a map without blocked cells points at the shared DT_Walk_none.
+// The game's scripts/lib/walk-table.cjs owns that format: `view` reads through it and
+// planMapWrite decides which files change. The editor only stores those texts in a candidate.
+const DATASET_ROOT = 'RootDesk/MyDesk/DataSet/';
+const empty = Buffer.alloc(0);
+/** Game files a walk edit of this map may touch — never another map's table. */
+function walkFileAllowed(relative, mapName) {
+  if (typeof relative !== 'string' || !relative.startsWith(DATASET_ROOT) || relative.includes('..') || relative.includes('\\')) return false;
+  const name = relative.slice(relative.lastIndexOf('/') + 1);
+  return ['DT_Walk_' + mapName + '.csv', 'DT_Walk_' + mapName + '.userdataset', 'DT_Walk_none.csv', 'DT_Walk_none.userdataset',
+    'walk.directory', 'DT_MapMeta.csv'].includes(name);
+}
+function analyzeWalkTable(view, baseline, mapName) {
+  const before = blockedSet(baseline);
+  const result = { relative: null, before, supported: false, reasons: [], perMap: true };
+  let cells;
+  try { cells = view.cells(mapName); } catch { cells = null; }
+  if (cells === null) { result.reasons.push('이 맵의 이동불가 표를 읽지 못해 영역 편집을 지원하지 않습니다. 게임 DT_MapMeta의 WalkTable 칸과 표 파일을 확인하세요.'); return result; }
+  if (!sameKeys(before, new Set(cells.map(c => key(c[0], c[1]))))) result.reasons.push('게임 이동불가 표와 기준 이동불가 셀이 달라 영역 편집을 보호합니다.');
+  else Object.assign(result, { supported: true, table: view.tableOf(mapName), relative: view.relativeOf(mapName) });
+  return result;
+}
+function runsTextCells(text) {
+  const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
+  if (lines.shift() !== 'Y,X0,X1') fail('WALK_PRESERVATION_FAILED', '후보 이동불가 표의 헤더가 Y,X0,X1이 아닙니다.');
+  const out = new Set();
+  for (const line of lines) {
+    const [y, x0, x1] = line.split(',').map(Number);
+    if (![y, x0, x1].every(Number.isInteger) || x0 > x1) fail('WALK_PRESERVATION_FAILED', '후보 이동불가 표의 구간을 확인할 수 없습니다.');
+    for (let x = x0; x <= x1; x++) out.add(key(x, y));
+  }
+  return out;
+}
+/**
+ * mod: the game's walk-table module. gameRoot is only read. readSource(relative) returns the
+ * current game bytes of a planned file, or null when it does not exist yet.
+ */
+function buildWalkTableCandidate(mod, gameRoot, edit, mapName, readSource) {
+  let current = null, currentTable = '';
+  try { if (mod.mode(gameRoot) === 'perMap') { current = mod.blockedCells(gameRoot, mapName); currentTable = mod.tableOf(gameRoot, mapName); } } catch { current = null; }
+  if (current === null || currentTable !== edit.table || !sameKeys(new Set(current.map(c => key(c[0], c[1]))), edit.before)) {
+    fail('STALE_WALK_ROWS', '현재 맵의 이동불가 표가 기준 이후 변경되었습니다. 게임 원본을 다시 가져오세요.');
+  }
+  const cells = sorted(edit.after).map(k => k.split(',').map(Number));
+  let plan;
+  try { plan = mod.planMapWrite(gameRoot, mapName, cells, { coreVersion: mod.coreVersionOf(gameRoot) }); }
+  catch (e) { fail('UNSUPPORTED_WALK', '게임 이동불가 표 계획을 세우지 못했습니다: ' + e.message); }
+  if (!plan || plan.mode !== 'perMap' || !Array.isArray(plan.files) || !Array.isArray(plan.removed) || !plan.files.length) fail('UNSUPPORTED_WALK', '게임 이동불가 표 계획이 올바르지 않습니다.');
+  const own = 'DT_Walk_' + mapName;
+  if (plan.table !== (cells.length ? own : 'DT_Walk_none')) fail('WALK_PRESERVATION_FAILED', '후보 이동불가 표 이름이 맵과 맞지 않습니다: ' + plan.table);
+  for (const relative of [...plan.files.map(f => f.relative), ...plan.removed]) {
+    if (!walkFileAllowed(relative, mapName)) fail('WALK_PRESERVATION_FAILED', '이동불가 후보가 이 맵의 표가 아닌 파일을 바꾸려 합니다: ' + relative);
+  }
+  if (plan.removed.some(relative => !relative.includes('/' + own + '.'))) fail('WALK_PRESERVATION_FAILED', '이 맵의 표가 아닌 파일을 지우려 합니다.');
+  const files = plan.files.map(f => {
+    const source = readSource(f.relative);
+    return { relative: f.relative, bytes: Buffer.from(f.text, 'utf8'), sourceBytes: source || empty, sourceExists: !!source };
+  });
+  // The planned table must decode to exactly the edited cells.
+  const table = files.find(f => f.relative.endsWith('/' + own + '.csv'));
+  if (cells.length && (!table || !sameKeys(runsTextCells(table.bytes.toString('utf8')), edit.after))) fail('WALK_PRESERVATION_FAILED', '후보 이동불가 표의 영역이 일치하지 않습니다.');
+  if (!cells.length && table) fail('WALK_PRESERVATION_FAILED', '막힌 칸이 없는 맵에 표를 만들려 합니다.');
+  const added = [...edit.after].filter(k => !edit.before.has(k)).length, removed = [...edit.before].filter(k => !edit.after.has(k)).length;
+  return { files, removed: [...plan.removed],
+    comparison: { mode: 'perMap', table: plan.table, sourceTable: edit.table, createdTable: plan.createdTable === true, removedTable: plan.removedTable === true,
+      currentMapCellsExact: true, otherMapTablesUntouched: true, addedRows: added, removedRows: removed, cells: cells.length,
+      files: files.map(f => ({ relative: f.relative, sourceExists: f.sourceExists, sourceSha256: hash(f.sourceBytes), candidateSha256: hash(f.bytes) })),
+      removeFiles: [...plan.removed] } };
+}
+module.exports = { analyzeWalk, inspectBlocked, buildWalkCandidate, blockedSet, analyzeWalkTable, buildWalkTableCandidate, walkFileAllowed };

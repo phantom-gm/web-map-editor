@@ -93,7 +93,9 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 5. **게임용 출력 만들기**를 누릅니다. 무변경이면 화면에 **원본 맵과 완전 일치**가 표시됩니다.
 6. 결과는 `.game-sync/candidates/<map>-<id>/`에 있습니다:
    - `map/<map>.map`: 적용을 검토할 후보 맵 한 개. 이동불가 셀만 바꾸면 원본 맵 바이트를 그대로 복사합니다.
-   - `RootDesk/.../DT_Walk.csv`: 이동불가 셀을 바꾼 경우에만 생성하는 적용 검토용 CSV.
+   - 이동불가 표: 이동불가 셀을 바꾼 경우에만 생성합니다. 게임의 저장 모양에 따라 `RootDesk/.../world/DT_Walk.csv`(옛 한 표)
+     또는 `RootDesk/.../walk/DT_Walk_<map>.csv`(맵별 표 — 아래 "이동불가 저장 모양")가 들어갑니다.
+   - `walk-cells.json`: 이동불가 셀을 바꾼 경우 그 맵의 막힌 칸 전체 목록. 게임 repo의 반영 명령이 읽습니다.
    - `RootDesk/.../npc/DT_NpcSpawn.csv`: NPC를 바꾼 경우에만 생성하는 적용 검토용 CSV.
    - `report.json`: 원본/후보 SHA-256, 블록 수, 오브젝트 변경 수, 이동불가 변경 셀, 보존 검증과 `applyFiles` 목록.
    - `editor-project.json`: 다시 편집할 프로젝트.
@@ -154,9 +156,31 @@ npm run lint   # ESLint(flat config) — typescript-eslint + react-hooks + react
 해제됩니다. 묶음으로 바꾼 **실제 배치와 이동불가 셀은 자동 저장·작업 저장·후보 출력**에
 함께 반영됩니다.
 
-원본 DT_Walk와 기준 셀이 일치하는 맵에서만 이동불가 편집을 지원합니다. 후보 CSV는
-현재 맵의 명시적 수정만 반영하고 다른 맵의 행·미수정 행은 원문을 보존합니다.
+게임의 이동불가 표와 기준 셀이 일치하는 맵에서만 이동불가 편집을 지원합니다. 후보는
+현재 맵의 명시적 수정만 반영합니다. 옛 한 표에서는 다른 맵의 행·미수정 행을 원문 그대로 보존하고,
+맵별 표에서는 다른 맵의 표 파일을 후보에 아예 넣지 않습니다.
 적용 대상은 `report.json`의 `applyFiles`로 확인하세요. `reference/` 파일은 적용 대상이 아닙니다.
+
+#### 이동불가 저장 모양 (게임 WK-1)
+
+게임은 이동불가를 두 가지 모양 중 하나로 저장하고, 에디터는 둘 다 다룹니다. 어느 쪽인지는 게임의
+`scripts/lib/walk-table.cjs`가 가립니다(`DT_MapMeta.csv`에 `WalkTable` 칸이 있으면 맵별 표). 에디터는 형식을
+직접 만들지 않고 이 모듈로 읽고 계획합니다.
+
+| 모양 | 게임 파일 | 후보 적용 파일 |
+|---|---|---|
+| 옛 한 표 | `world/DT_Walk.csv` (`MapName,CellX,CellY`) | `DT_Walk.csv` 전체 |
+| 맵별 표 | `walk/DT_Walk_<map>.csv` (`Y,X0,X1` 구간) + `DT_MapMeta.WalkTable` | 그 맵의 표. 표가 새로 생기면 `.userdataset`, 표 이름이 바뀌면(막힌 칸 0 ↔ 1 이상) `DT_MapMeta.csv`도 |
+
+- **반영은 게임 repo의 명령을 권장합니다.** 후보(ZIP)의 `walk-cells.json`으로
+  `node scripts/walk-table.cjs put <map> --from walk-cells.json`을 실행하면, 반영하는 순간의 게임 파일을 기준으로
+  다시 계산해 그 맵의 표와 `DT_MapMeta`의 그 맵 줄만 고칩니다. 두 모양 모두에서 동작합니다.
+- 막힌 칸이 모두 없어지면 그 맵은 공용 빈 표 `DT_Walk_none`을 가리키고, 지워야 할 표 파일이 `report.json`의
+  `removeFiles`에 적힙니다(`put` 명령은 삭제까지 합니다. 손으로 복사할 때는 직접 지워야 합니다).
+- 검토에서 `DT_MapMeta.csv`는 파일 전체가 아니라 **그 맵의 `WalkTable` 값**이 후보를 만든 때와 같은지만 봅니다.
+  다른 맵의 줄이 바뀐 것은 원본 불일치로 보지 않습니다.
+- **게임이 저장 모양을 바꾼 뒤에는 맵 원본을 다시 가져와야 합니다.** 바꾸기 전 기준으로 만든 후보(옛 `DT_Walk.csv` 전체
+  파일이 들어 있습니다)는 반영하면 안 되고, 에디터도 그 기준의 이동불가 출력을 거절합니다.
 
 ### 지원 범위와 원본 보존
 
@@ -190,9 +214,9 @@ Sprite, 좌표·배율·회전·반전·색·정렬과 원본 이미지 크기·
 오래된 프로젝트를 새 기준으로 자동 덮어맞추지 않습니다.
 CSV 변경은 바닥·오브젝트 출력을 막지 않습니다. 출력 시점의 최신 CSV를 참고용으로
 복사하고, 기준 이후 추가·수정·삭제 내역을 `report.json`에 기록합니다. 이동불가 셀을
-출력할 때는 **현재 맵의 DT_Walk 행이 기준 이후 바뀌면 거절**합니다. 다른 맵의 최신 행은
-그대로 보존해 후보 CSV에 합칩니다. 출력 도중 CSV가 바뀌면 다시 굽도록 안내합니다.
-무변경이면 원본 맵과 참고 CSV 바이트가 유지되고, 오브젝트만 수정하면 DT_Walk 후보를
+출력할 때는 **현재 맵의 이동불가 칸이 기준 이후 바뀌면 거절**합니다. 옛 한 표에서는 다른 맵의 최신 행을
+그대로 보존해 후보 CSV에 합칩니다. 출력 도중 원본이 바뀌면 다시 굽도록 안내합니다.
+무변경이면 원본 맵과 참고 CSV 바이트가 유지되고, 오브젝트만 수정하면 이동불가 후보를
 생성하지 않습니다. 게임 원본에 자동으로 적용하는 단계는 없습니다.
 기존 blueprint Export / 게임 `nocode_map --build`는 이 동기화 계약을 소비하지 않으므로
 연결 프로젝트에서는 이 Export 버튼을 숨깁니다. **게임용 출력 만들기**를 사용하세요.
@@ -258,7 +282,8 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 **게임용 출력 만들기**가 끝나면 출력 경로 옆의 **후보 출력 검토**를 누릅니다.
 별도 창에서 적용 대상 파일, 변경 수량, 파일 검사 결과를 확인할 수 있습니다.
 
-- 적용 대상은 후보에 기록된 맵 파일과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
+- 적용 대상은 후보에 기록된 맵 파일과, 수정한 경우의 이동불가 표(`DT_Walk.csv` 또는 맵별 `DT_Walk_<map>.csv`
+  묶음 — 위 "이동불가 저장 모양") / `DT_NpcSpawn.csv` /
   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv`(시작점) / `DT_MapTrap.csv`입니다.
   새로 등록한 바닥 소재를 맵에 썼다면 게임 바닥 명단 `scripts/ground-tile-registry.json` 갱신본도 함께 들어갑니다.
   이 명단을 같이 적용해야 다른 PC에서 원본을 새로 가져와도 그 바닥을 편집할 수 있습니다.
@@ -287,12 +312,13 @@ npm run test -- src/__tests__/gameSyncIntegration.test.ts
 1. 기록에서 후보를 골라 **후보 출력 검토**를 엽니다. 파일 검사는 열 때 새로 수행합니다.
 2. **적용 파일 ZIP 받기**는 내려받기 직전에 다시 검사합니다. 게임 원본이나 후보가 바뀌거나
    누락되면 내려받기를 중단하고 문제를 표시합니다.
-3. ZIP에는 검사를 통과한 적용 대상 맵과, 수정한 경우의 `DT_Walk.csv` / `DT_NpcSpawn.csv` /
-   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv` / `DT_MapTrap.csv` / 바닥 명단, 그리고
-   검사 시각·파일 해시·변경 내역을 담은 `REVIEW.txt`만 들어갑니다. 게임 폴더와 같은 상대
+3. ZIP에는 검사를 통과한 적용 대상 맵과, 수정한 경우의 이동불가 표 / `DT_NpcSpawn.csv` /
+   `DT_MonsterSpawn.csv` / `DT_Portal.csv` / `DT_Bounds.csv` / `DT_MapTrap.csv` / 바닥 명단, 이동불가를 바꿨다면
+   `walk-cells.json`, 그리고 검사 시각·파일 해시·변경 내역·이동불가 반영 명령을 담은 `REVIEW.txt`만 들어갑니다. 게임 폴더와 같은 상대
    경로를 유지하며, 참고 CSV나 에디터 프로젝트·기준 스냅샷은 넣지 않습니다.
 
-4. 게임 폴더에 적용 파일을 복사한 뒤, **커밋 전에 게임 repo에서 전체 게이트를 반드시 실행**합니다.
+4. 게임 폴더에 적용 파일을 복사한 뒤(이동불가는 복사 대신 `node scripts/walk-table.cjs put <map> --from walk-cells.json` 권장),
+   **커밋 전에 게임 repo에서 전체 게이트를 반드시 실행**합니다.
 
    ```bash
    node scripts/check-all.cjs

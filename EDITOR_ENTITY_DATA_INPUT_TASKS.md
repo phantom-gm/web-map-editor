@@ -181,7 +181,7 @@ footprintCells?: [number, number][]; // 앵커(gx,gy) 기준 "상대 오프셋" 
 - **좌표 계약**: `footprintCells` 는 **절대 셀이 아니라 앵커 상대 오프셋** `[dx,dy]`. (변환기가 `gx+dx, gy+dy` 로 절대화 — 정규화 shift 안전.)
 
 **완료 기준**: `blocks:true` + footprint 를 지정한 오브젝트가 있는 맵을 export → 게임 repo
-`node scripts/convert_map.cjs <project.json>` → 산출 `DT_Walk`(또는 `--apply` 후 게임 내)에서 그
+`node scripts/convert_map.cjs <project.json>` → 산출 이동불가 표(`DT_Walk` — 게임 WK-1 전환 뒤에는 맵별 `DT_Walk_<map>`, 또는 `--apply` 후 게임 내)에서 그
 오브젝트 footprint 셀이 **이동불가**로 들어간다. (변환기 단위테스트 `Phase4/3b object` 가 이 계약을 이미 검증.)
 
 > 참고: `blocks` 미지정 오브젝트는 그대로 **시각만**(통과 가능) — 기존 하위호환 유지.

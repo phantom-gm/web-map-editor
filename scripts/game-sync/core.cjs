@@ -103,6 +103,78 @@ function sourceRelative(root, relative) {
   if (!contained(root, absolute)) fail('UNSUPPORTED_SOURCE_LINK', '게임 외부를 가리키는 원본 경로입니다.');
   return absolute;
 }
+// Game WK-1: blocked cells move from one DT_Walk.csv to a table per map (DT_Walk_<map>.csv, named by
+// DT_MapMeta.WalkTable). The game's scripts/lib/walk-table.cjs decides which shape a folder holds and
+// owns the per-map format, so the editor reads and plans through it instead of re-implementing it.
+// A null view means "legacy single table" (also a game checkout older than the module): every caller
+// then keeps the original DT_Walk.csv code path untouched.
+const WALK_MODULE = 'scripts/lib/walk-table.cjs', DATASET_PATH_MODULE = 'scripts/dataset-path.cjs';
+const WALK_DATASET_DIR = 'RootDesk/MyDesk/DataSet/walk/';
+const WALK_TABLE_FILE = /^RootDesk\/MyDesk\/DataSet\/(?:[^/]+\/)*DT_Walk_[a-z0-9_]+\.csv$/;
+const SNAPSHOT_WALK_VIEWS = new Map();   // immutable baseline/runtime snapshots only
+function walkModule(root) {
+  let file;
+  try { file = sourceRelative(root, WALK_MODULE); } catch { return null; }
+  if (!fs.existsSync(file)) return null;
+  try { return require(file); } catch { return null; }
+}
+/** live: the game folder itself — its file index is refreshed because the editor process outlives game edits. */
+function walkView(root, viewRoot, { live = false } = {}) {
+  const mod = walkModule(root);
+  if (!mod) return null;
+  const at = path.resolve(viewRoot);
+  if (!live && SNAPSHOT_WALK_VIEWS.has(at)) return SNAPSHOT_WALK_VIEWS.get(at);
+  if (live) { try { require(sourceRelative(root, DATASET_PATH_MODULE)).refresh(at); } catch { /* module layout differs: read as-is */ } }
+  let view = null;
+  try {
+    if (mod.mode(at) === 'perMap') {
+      const memo = new Map();
+      const cells = map => {
+        if (!memo.has(map)) { let value; try { value = mod.blockedCells(at, map); } catch { value = null; } memo.set(map, value); }
+        return memo.get(map);
+      };
+      const tableOf = map => { try { return mod.tableOf(at, map) || ''; } catch { return ''; } };
+      view = { mode: 'perMap', mod, viewRoot: at, cells, tableOf, relativeOf: map => WALK_DATASET_DIR + (tableOf(map) || 'DT_Walk_' + map) + '.csv' };
+    }
+  } catch { view = null; }
+  if (!live) SNAPSHOT_WALK_VIEWS.set(at, view);
+  return view;
+}
+/** Every per-map walk table in a game folder (game-relative paths). Empty before the game's conversion. */
+function walkTableFiles(root) {
+  const base = path.join(root, 'RootDesk/MyDesk/DataSet'), found = [];
+  const visit = dir => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) fail('UNSUPPORTED_SOURCE_LINK', 'DataSet의 링크 경로는 지원하지 않습니다: ' + file);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile() && /^DT_Walk_[a-z0-9_]+\.csv$/.test(entry.name)) found.push(path.relative(root, file).split(path.sep).join('/'));
+    }
+  };
+  visit(base);
+  return found.sort();
+}
+/** The baseline's own copy of the walk tables (manifest.walkTables), verified once per process. */
+function baselineWalkView(root, dir, manifest) {
+  const viewRoot = safeChild(dir, 'snapshot', root);
+  if (!SNAPSHOT_WALK_VIEWS.has(path.resolve(viewRoot))) for (const info of manifest.walkTables || []) {
+    if (!WALK_TABLE_FILE.test(info?.relative || '') || hash(fs.readFileSync(safeChild(dir, 'snapshot/' + info.relative, root))) !== info.sha256) fail('BASELINE_CORRUPT', '기준 이동불가 표 사본이 변경되었습니다. 다시 동기화하세요.');
+  }
+  return walkView(root, viewRoot);
+}
+const walkKeys = cells => stable([...new Set((cells || []).map(c => c.join(',')))].sort());
+/** Game-relative walk files a candidate applies. Legacy: the whole DT_Walk.csv. Per-map: what the game module planned. */
+function walkApplyPaths(report, manifest, walkChanged) {
+  const comparison = report?.walkComparison;
+  if (comparison?.mode === 'perMap') {
+    const files = Array.isArray(comparison.files) ? comparison.files.map(f => f?.relative) : [];
+    const valid = files.length >= 1 && files.length <= 6 && new Set(files).size === files.length && files.every(r => walkEdits.walkFileAllowed(r, manifest.mapName));
+    return valid ? files : ['<invalid walk files>'];
+  }
+  const walk = manifest.datasetFiles.filter(f => path.basename(f) === 'DT_Walk.csv');
+  return walkChanged && walk.length === 1 ? walk : [];
+}
 function loadDependencies(root) {
   const constantFile = sourceRelative(root, 'scripts/build_map.cjs');
   // build_map has require.main protection; only its exported constants are consumed.
@@ -507,12 +579,14 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
   }
   // Authoring JSON can lag behind an applied editor candidate. Import the
   // validated runtime walk table so a fresh baseline reflects actual collision.
-  const importedRuntime = runtimeEdits.analyzeRuntime(readRuntimeFiles(root, ds), mapName);
-  if (importedRuntime.files.DT_Walk && Object.values(importedRuntime.supported).some(Boolean)) {
-    project.blocked = importedRuntime.walk.filter(row => row.map === mapName).map(row => clone(row.cell));
+  const liveWalk = walkView(root, root, { live: true });
+  const walkTables = liveWalk ? walkTableFiles(root).map(relative => ({ relative, bytes: fs.readFileSync(sourceRelative(root, relative)) })) : [];
+  const importedRuntime = runtimeEdits.analyzeRuntime(readRuntimeFiles(root, ds), mapName, null, liveWalk);
+  if ((importedRuntime.files.DT_Walk || importedRuntime.walkView) && Object.values(importedRuntime.supported).some(Boolean)) {
+    project.blocked = importedRuntime.walkOf(mapName).map(cell => clone(cell));
     const outside = project.blocked.filter(c => c[0] < 0 || c[1] < 0 || c[0] >= project.size[0] || c[1] >= project.size[1]);
-    if (outside.length) fail('INVALID_BLOCKED', 'DT_Walk의 ' + mapName + ' 이동불가 칸 ' + outside.slice(0, 5).map(c => '(' + c.join(',') + ')').join(' ') +
-      (outside.length > 5 ? ' 외 ' + (outside.length - 5) + '개' : '') + '가 맵 크기 ' + project.size.join('×') + ' 밖입니다. 게임 데이터의 맵 크기나 DT_Walk 행을 먼저 맞춰 주세요.');
+    if (outside.length) fail('INVALID_BLOCKED', '게임 이동불가 표의 ' + mapName + ' 이동불가 칸 ' + outside.slice(0, 5).map(c => '(' + c.join(',') + ')').join(' ') +
+      (outside.length > 5 ? ' 외 ' + (outside.length - 5) + '개' : '') + '가 맵 크기 ' + project.size.join('×') + ' 밖입니다. 게임 데이터의 맵 크기나 이동불가 표를 먼저 맞춰 주세요.');
     walkEdits.blockedSet(project);
   }
   const baselineId = crypto.randomUUID();
@@ -522,6 +596,9 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
     createdAt: new Date().toISOString(), mapRelative, projectRelative, datasetFiles: ds,
     baselineProjectSha256: hash(jsonBytes(project)),
     sourceFiles: snapshots.map(f => ({ relative: f.relative, exists: f.exists, sha256: f.sha256 })), constants: deps.constants, ppu: deps.ppu, builderRelative: deps.builderRelative,
+    // Per-map walk tables (game WK-1) are copied for reading only. They stay out of sourceFiles so a walk
+    // edit of any other map never makes this baseline stale; this map's own cells are compared at export.
+    ...(walkTables.length ? { walkTables: walkTables.map(file => ({ relative: file.relative, sha256: hash(file.bytes) })) } : {}),
     groundRegistry: { relative: GROUND_REGISTRY, exists: !!registry.bytes, sha256: registry.bytes ? hash(registry.bytes) : null, tiles: registered.tiles.length },
     catalog, blocks: analysis.blocks, groundEditingSupported: analysis.supported, unsupportedReasons: analysis.reasons,
     totalEntities: analysis.totalEntities, counts: counts(analysis.blocks, analysis.coverage.size, analysis.groundEntities)
@@ -531,6 +608,7 @@ function createSyncProject({ gameRoot, mapName, baselineRoot, previousProject })
   if (fs.existsSync(baselineDir)) fail('BASELINE_EXISTS', '기준 폴더가 이미 있습니다.');
   fs.mkdirSync(baselineDir, { recursive: true });
   for (const f of snapshots) if (f.exists) writeFile(baselineDir, 'snapshot/' + f.relative, f.bytes, root);
+  for (const file of walkTables) writeFile(baselineDir, 'snapshot/' + file.relative, file.bytes, root);
   writeFile(baselineDir, 'project.json', jsonBytes(project), root);
   writeFile(baselineDir, 'manifest.json', jsonBytes(manifest), root);
   verifySources(root, manifest, { includeDatasets: true });
@@ -732,7 +810,7 @@ function loadRuntimeProfile(project, state) {
     const sourceDir = candidateChild(path.dirname(dir), 'runtime-' + sourceId, root);
     const saved = readJson(candidateChild(sourceDir, 'manifest.json', root));
     if (saved.version !== 1 || saved.sourceId !== sourceId || saved.baselineId !== manifest.baselineId || saved.mapName !== manifest.mapName || saved.gameRoot !== root ||
-      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 1 || saved.files.length > runtimeEdits.FILES.length ||
+      saved.baselineManifestSha256 !== hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))) || !Array.isArray(saved.files) || saved.files.length < 1 || saved.files.filter(f => !WALK_TABLE_FILE.test(f?.relative || '')).length > runtimeEdits.FILES.length ||
       new Set(saved.files.map(f => f.relative)).size !== saved.files.length) fail('RUNTIME_SOURCE_MISMATCH', '런타임 기준이 현재 맵·게임·동기화 기준과 다릅니다.');
     const savedByPath = new Map(saved.files.map(f => [f.relative, f]));
     files = readRuntimeFiles(root, saved.files.map(f => f.relative), relative => {
@@ -740,9 +818,17 @@ function loadRuntimeProfile(project, state) {
       if (!REVIEW_HASH.test(info.sha256 || '') || hash(bytes) !== info.sha256) fail('RUNTIME_SOURCE_CORRUPT', '런타임 기준 사본이 변경되었습니다. 다시 가져오세요.');
       return bytes;
     });
-    if (Object.keys(files).length !== saved.files.length) fail('INVALID_RUNTIME_SOURCE', '런타임 기준에 허용되지 않은 파일이 있습니다.');
-  } else files = readRuntimeFiles(root, manifest.datasetFiles, relative => fs.readFileSync(safeChild(dir, 'snapshot/' + relative, root)));
-  return runtimeEdits.analyzeRuntime(files, manifest.mapName, sourceId);
+    const walkTables = saved.files.filter(f => WALK_TABLE_FILE.test(f.relative));
+    if (Object.keys(files).length !== saved.files.length - walkTables.length) fail('INVALID_RUNTIME_SOURCE', '런타임 기준에 허용되지 않은 파일이 있습니다.');
+    const viewRoot = candidateChild(sourceDir, 'snapshot', root);
+    // Per-map walk tables captured with the runtime source are verified once, when its view is first built.
+    if (!SNAPSHOT_WALK_VIEWS.has(path.resolve(viewRoot))) for (const info of walkTables) {
+      if (!REVIEW_HASH.test(info.sha256 || '') || hash(fs.readFileSync(candidateChild(sourceDir, 'snapshot/' + info.relative, root))) !== info.sha256) fail('RUNTIME_SOURCE_CORRUPT', '런타임 기준 사본이 변경되었습니다. 다시 가져오세요.');
+    }
+    return runtimeEdits.analyzeRuntime(files, manifest.mapName, sourceId, walkView(root, viewRoot));
+  }
+  files = readRuntimeFiles(root, manifest.datasetFiles, relative => fs.readFileSync(safeChild(dir, 'snapshot/' + relative, root)));
+  return runtimeEdits.analyzeRuntime(files, manifest.mapName, sourceId, baselineWalkView(root, dir, manifest));
 }
 function currentRuntimeFiles(root, profile) {
   const out = {};
@@ -757,17 +843,20 @@ function refreshRuntimeProject(project, options) {
   const next = clone(project); delete next.gameMonsterEdits; delete next.gamePortalEdits; delete next.gameSpawnEdits; delete next.gameTrapEdits; delete next.gameRuntimeSync;
   // Keep every existing ground, object, blocked and legacy field; refresh only RUNTIME inputs.
   inspectLoadedProject(next, state);
-  const files = readRuntimeFiles(root, datasetFiles(root)), profile = runtimeEdits.analyzeRuntime(files, manifest.mapName);
+  const liveDatasets = datasetFiles(root), liveWalk = walkView(root, root, { live: true });
+  const files = readRuntimeFiles(root, liveDatasets), profile = runtimeEdits.analyzeRuntime(files, manifest.mapName, null, liveWalk);
   if (!Object.values(profile.supported).some(Boolean)) fail('UNSUPPORTED_RUNTIME', Object.values(profile.reasons).flat().join(' '));
-  if (profile.files.DT_Walk && stable([...new Set(profile.walk.filter(r => r.map === manifest.mapName).map(r => r.cell.join(',')))].sort()) !== stable([...new Set(state.baseline.blocked.map(c => c.join(',')))].sort())) fail('STALE_RUNTIME_WALK', '현재 맵의 게임 이동불가 원본이 바뀌었습니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
+  // Per-map walk tables travel with the runtime source so destination-map checks use the refreshed cells.
+  const runtimeWalkTables = liveWalk ? walkTableFiles(root).map(relative => ({ relative, bytes: fs.readFileSync(sourceRelative(root, relative)) })) : [];
+  if ((profile.files.DT_Walk || profile.walkView) && walkKeys(profile.walkOf(manifest.mapName)) !== walkKeys(state.baseline.blocked)) fail('STALE_RUNTIME_WALK', '현재 맵의 게임 이동불가 원본이 바뀌었습니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
   const sourceId = crypto.randomUUID(), sourceDir = candidateChild(path.dirname(dir), 'runtime-' + sourceId, root);
   const saved = { version: 1, sourceId, baselineId: manifest.baselineId, mapName: manifest.mapName, gameRoot: root,
     createdAt: new Date().toISOString(), baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
-    files: Object.values(files).map(file => ({ relative: file.relative, sha256: hash(file.bytes) })) };
+    files: [...Object.values(files), ...runtimeWalkTables].map(file => ({ relative: file.relative, sha256: hash(file.bytes) })) };
   fs.mkdirSync(sourceDir, { recursive: false });
-  for (const file of Object.values(files)) writeFile(sourceDir, 'snapshot/' + file.relative, file.bytes, root);
+  for (const file of [...Object.values(files), ...runtimeWalkTables]) writeFile(sourceDir, 'snapshot/' + file.relative, file.bytes, root);
   writeFile(sourceDir, 'manifest.json', jsonBytes(saved), root);
-  for (const file of Object.values(files)) if (hash(fs.readFileSync(sourceRelative(root, file.relative))) !== hash(file.bytes)) fail('RUNTIME_SOURCE_CHANGED', '몬스터·포탈·시작점 원본을 가져오는 동안 CSV가 변경되었습니다. 다시 시도하세요.');
+  for (const file of [...Object.values(files), ...runtimeWalkTables]) if (hash(fs.readFileSync(sourceRelative(root, file.relative))) !== hash(file.bytes)) fail('RUNTIME_SOURCE_CHANGED', '몬스터·포탈·시작점 원본을 가져오는 동안 CSV가 변경되었습니다. 다시 시도하세요.');
   next.gameRuntimeSync = { version: 1, sourceId };
   return { project: next, scene: previewEditedProject(next, options) };
 }
@@ -861,13 +950,16 @@ function inspectLoadedProject(project, state) {
   const walkFiles = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
   const walkRelative = walkFiles.length === 1 ? walkFiles[0] : null;
   const walkBytes = walkRelative ? fs.readFileSync(safeChild(state.dir, 'snapshot/' + walkRelative, root)) : null;
-  const walk = walkEdits.inspectBlocked(project, walkEdits.analyzeWalk(walkBytes, walkRelative, baseline, manifest.mapName));
+  const baselineWalk = baselineWalkView(root, state.dir, manifest);
+  const walk = walkEdits.inspectBlocked(project, baselineWalk
+    ? walkEdits.analyzeWalkTable(baselineWalk, baseline, manifest.mapName)
+    : walkEdits.analyzeWalk(walkBytes, walkRelative, baseline, manifest.mapName));
   const npcProfile = loadNpcProfile(project, state), npcs = npcEdits.inspectNpcs(project, npcProfile, manifest.constants);
   const npcChangedFiles = npcProfile.supported ? npcEdits.sourceDrift(npcProfile, currentNpcFiles(root, npcProfile)) : [];
   const npcSource = { sourceId: npcProfile.sourceId, stale: npcChangedFiles.length > 0, changedFiles: npcChangedFiles, refreshAvailable: true };
   const runtimeProfile = loadRuntimeProfile(project, state), runtime = runtimeEdits.inspectRuntime(project, runtimeProfile, manifest.constants, npcs.descriptors);
-  const runtimeChangedFiles = Object.values(runtimeProfile.supported).some(Boolean) ? runtimeEdits.sourceDrift(runtimeProfile, currentRuntimeFiles(root, runtimeProfile), runtime) : [];
-  if (runtime.edited && runtimeProfile.files.DT_Walk && stable([...new Set(runtimeProfile.walk.filter(r => r.map === manifest.mapName).map(r => r.cell.join(',')))].sort()) !== stable([...walk.before].sort())) fail('STALE_RUNTIME_WALK', '런타임 기준과 맵 이동불가 기준이 다릅니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
+  const runtimeChangedFiles = Object.values(runtimeProfile.supported).some(Boolean) ? runtimeEdits.sourceDrift(runtimeProfile, currentRuntimeFiles(root, runtimeProfile), runtime, runtimeProfile.walkView ? walkView(root, root, { live: true }) : null) : [];
+  if (runtime.edited && (runtimeProfile.files.DT_Walk || runtimeProfile.walkView) && walkKeys(runtimeProfile.walkOf(manifest.mapName)) !== stable([...walk.before].sort())) fail('STALE_RUNTIME_WALK', '런타임 기준과 맵 이동불가 기준이 다릅니다. 작업을 보관한 뒤 맵 원본 전체를 다시 동기화하세요.');
   const runtimeSource = { sourceId: runtimeProfile.sourceId, stale: runtimeChangedFiles.length > 0, changedFiles: runtimeChangedFiles, refreshAvailable: true };
   const before = groundMap(baseline), after = groundMap(project);
   const changed = changesBetween(before, after);
@@ -886,7 +978,7 @@ function inspectLoadedProject(project, state) {
   const mapUnchanged = changed.length === 0 && !objects.changed;
   const warnings = changed.length ? ['수정한 칸과 겹치는 기존 블록만 다시 구성했습니다. 그 블록 안의 무늬는 바뀔 수 있습니다.'] : [...manifest.unsupportedReasons];
   if (objects.changed) warnings.push('선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.');
-  if (walk.changed) warnings.push('후보 DT_Walk에 현재 맵에서 직접 수정한 이동불가 셀만 반영합니다. 게임 원본에는 적용하지 않습니다.');
+  if (walk.changed) warnings.push('후보 이동불가 표에 현재 맵에서 직접 수정한 이동불가 셀만 반영합니다. 게임 원본에는 적용하지 않습니다.');
   warnings.push(...npcs.warnings, ...runtime.warnings);
   if (runtimeSource.stale) warnings.push('몬스터·포탈·시작점 CSV가 변경되었습니다. 보관된 기준을 표시하며 변경 출력 전에 런타임 원본을 새로 가져오세요.');
   if (npcSource.stale) warnings.push('NPC 원본 CSV가 변경되었습니다. 현재 NPC는 보관된 기준을 표시하며, NPC 변경 출력 전에 NPC 원본을 새로 가져오세요.');
@@ -1148,14 +1240,26 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   if (checked.runtime.edited && checked.runtimeSource.stale) fail('STALE_RUNTIME_SOURCE',
     '이 맵에서 사용하는 배치·종류·외형 원본이 변경되었습니다: ' + checked.runtimeSource.changedFiles.map(file => path.basename(file)).join(', ') +
     '. 저장된 작업은 유지됩니다. 런타임 원본을 확인해 주세요.');
-  const runtimeCandidates = checked.runtime.edited ? runtimeEdits.buildCandidates(checked.runtime, readRuntimeFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)) : [];
+  const runtimeCandidates = checked.runtime.edited ? runtimeEdits.buildCandidates(checked.runtime, readRuntimeFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes),
+    checked.runtime.profile.walkView ? walkView(root, root, { live: true }) : null) : [];
   if (runtimeUsesNpcOccupancy(report) && npcEdits.sourceDrift(checked.npcs.profile, readNpcFiles(root, references.captured.map(f => f.relative), relative => references.captured.find(f => f.relative === relative).bytes)).includes(checked.npcs.profile.spawnRelative)) fail('STALE_NPC_SOURCE', '현재 맵 NPC 배치가 변경되어 스폰 위치를 검증할 수 없습니다. NPC 원본을 새로 가져오세요.');
   const npcReference = checked.npcs.edited ? references.captured.find(r => r.relative === checked.npcs.profile.spawnRelative) : null;
   if (checked.npcs.edited && !npcReference?.bytes) fail('STALE_NPC_SOURCE', 'NPC 배치 원본이 없어졌습니다.');
   const npcCandidate = checked.npcs.edited ? npcEdits.buildNpcCandidate(npcReference.bytes, checked.npcs) : null;
-  const walkReference = checked.walk.changed ? references.captured.find(r => r.relative === checked.walk.relative) : null;
-  if (checked.walk.changed && !walkReference?.bytes) fail('STALE_WALK_ROWS', 'DT_Walk 원본이 없어졌습니다. 게임 원본을 다시 가져오세요.');
-  const walkCandidate = checked.walk.changed ? walkEdits.buildWalkCandidate(walkReference.bytes, checked.walk, manifest.mapName) : null;
+  // walkCandidate: { files: [{ relative, bytes, sourceBytes, sourceExists }], removed: [relative], comparison }
+  let walkCandidate = null;
+  const readGameFile = relative => { try { return fs.readFileSync(sourceRelative(root, relative)); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
+  if (checked.walk.changed) {
+    const liveWalk = walkView(root, root, { live: true });
+    if (!!liveWalk !== (checked.walk.perMap === true)) fail('STALE_WALK_ROWS', '게임의 이동불가 저장 방식이 기준을 가져온 뒤 바뀌었습니다. 게임 원본을 다시 가져오세요.');
+    if (checked.walk.perMap) walkCandidate = walkEdits.buildWalkTableCandidate(liveWalk.mod, root, checked.walk, manifest.mapName, readGameFile);
+    else {
+      const walkReference = references.captured.find(r => r.relative === checked.walk.relative);
+      if (!walkReference?.bytes) fail('STALE_WALK_ROWS', 'DT_Walk 원본이 없어졌습니다. 게임 원본을 다시 가져오세요.');
+      const legacy = walkEdits.buildWalkCandidate(walkReference.bytes, checked.walk, manifest.mapName);
+      walkCandidate = { files: [{ relative: checked.walk.relative, bytes: legacy.bytes, sourceBytes: walkReference.bytes, sourceExists: true }], removed: [], comparison: legacy.comparison };
+    }
+  }
   const registryResult = buildRegistryCandidate(root, checked), registryCandidate = registryResult?.bytes ? registryResult : null;
   if (registryResult?.warning) report.warnings.push(registryResult.warning);
   const output = outsideGame(outputRoot, root);
@@ -1190,7 +1294,15 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
   report.gameDepthValidation = validateEditDepth(root, checked, mapPath, originalPath);
   if (report.gameDepthValidation.notices?.includes('occlStale')) report.warnings.push('편집으로 게임 깊이 검사의 동결된 가림 위반이 해소되었습니다. 게임 적용 시 depth-occlusion 기준 파일을 낮춰야 검사가 통과합니다.');
   if (report.gameDepthValidation.notices?.includes('bndHot')) report.warnings.push('포탈·NPC 근처 깊이 경계 뒤집힘(★)이 늘었습니다. 게임 적용 전 depth_check (11) 목록을 확인해 주세요.');
-  if (walkCandidate) writeFile(candidateDir, checked.walk.relative, walkCandidate.bytes, root);
+  let walkCells = null;
+  if (walkCandidate) {
+    for (const file of walkCandidate.files) writeFile(candidateDir, file.relative, file.bytes, root);
+    // The map's whole blocked set, for `node scripts/walk-table.cjs put <map> --from walk-cells.json` in the game repo.
+    // That command re-plans against the game files of that moment, so it works in either storage shape.
+    const bytes = Buffer.from(JSON.stringify({ map: manifest.mapName, cells: sortedKeys(checked.walk.after).map(coord) }) + '\n', 'utf8');
+    writeFile(candidateDir, 'walk-cells.json', bytes, root);
+    walkCells = { path: 'walk-cells.json', bytes: bytes.length, sha256: hash(bytes), cells: checked.walk.after.size };
+  }
   if (npcCandidate) writeFile(candidateDir, checked.npcs.profile.spawnRelative, npcCandidate.bytes, root);
   for (const candidate of runtimeCandidates) writeFile(candidateDir, candidate.relative, candidate.bytes, root);
   if (registryCandidate) writeFile(candidateDir, registryCandidate.relative, registryCandidate.bytes, root);
@@ -1209,9 +1321,11 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     datasetFilesCopied: references.captured.length, datasetsExact: true, datasetReferenceBasis: 'export-start',
     datasetsUnchangedSinceBaseline: references.changes.length === 0,
     datasetChangesSinceBaseline: references.changes, groundComparison,
-    applyFiles: [manifest.mapRelative, ...(walkCandidate ? [checked.walk.relative] : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : []), ...runtimeCandidates.map(c => c.relative), ...(registryCandidate ? [GROUND_REGISTRY] : [])], datasetReferenceDirectory: 'reference',
+    applyFiles: [manifest.mapRelative, ...(walkCandidate ? walkCandidate.files.map(file => file.relative) : []), ...(npcCandidate ? [checked.npcs.profile.spawnRelative] : []), ...runtimeCandidates.map(c => c.relative), ...(registryCandidate ? [GROUND_REGISTRY] : [])], datasetReferenceDirectory: 'reference',
     ...(registryCandidate ? { groundRegistryComparison: registryCandidate.comparison } : {}),
     walkComparison: walkCandidate ? walkCandidate.comparison : { unchanged: true },
+    ...(walkCells ? { walkCells } : {}),
+    ...(walkCandidate?.removed.length ? { removeFiles: walkCandidate.removed } : {}),
     ...(npcCandidate ? { npcComparison: npcCandidate.comparison, npcSourceFiles: Object.values(checked.npcs.profile.files).filter(f => f.relative !== checked.npcs.profile.spawnRelative).map(f => ({ relative: f.relative, sha256: hash(f.bytes) })) } : {}),
     ...(runtimeCandidates.length ? { runtimeComparisons: Object.fromEntries(runtimeCandidates.map(c => [c.relative, c.comparison])),
       runtimeNpcDependency: runtimeUsesNpcOccupancy(report) ? runtimeNpcDependency(checked.npcs.profile) : null,
@@ -1225,7 +1339,8 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     version: VERSION, candidateId, mapName: manifest.mapName, baselineId: manifest.baselineId, createdAt,
     baselineManifestSha256: hash(fs.readFileSync(safeChild(dir, 'manifest.json', root))),
     applyFiles: report.applyFiles.map(relative => {
-      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : relative === GROUND_REGISTRY ? registryCandidate.sourceBytes : references.captured.find(f => f.relative === relative).bytes;
+      const walkFile = walkCandidate?.files.find(file => file.relative === relative);
+      const candidate = descriptor(relative), source = relative === manifest.mapRelative ? originalBytes : walkFile ? walkFile.sourceBytes : relative === GROUND_REGISTRY ? registryCandidate.sourceBytes : references.captured.find(f => f.relative === relative).bytes;
       return { path: relative, bytes: candidate.bytes, sourceBytes: source.length, sourceSha256: hash(source), candidateSha256: candidate.sha256 };
     }),
     referenceFiles: references.captured.map(item => descriptor('reference/' + item.relative)),
@@ -1233,6 +1348,10 @@ function exportEditedProject(project, { gameRoot, baselineRoot, outputRoot }) {
     summary: candidateSummary(report)
   };
   if (registryCandidate && hash(readGroundRegistry(root).bytes || Buffer.alloc(0)) !== registryCandidate.comparison.sourceSha256) fail('REFERENCE_CHANGED_DURING_EXPORT', '후보를 만드는 동안 게임 바닥 명단이 변경되었습니다. 다시 시도하세요.');
+  if (walkCandidate?.comparison.mode === 'perMap') for (const file of walkCandidate.files) {
+    const now = readGameFile(file.relative);
+    if (!!now !== file.sourceExists || (now && hash(now) !== hash(file.sourceBytes))) fail('REFERENCE_CHANGED_DURING_EXPORT', '후보를 만드는 동안 게임 이동불가 표가 변경되었습니다. 다시 시도하세요.');
+  }
   writeFile(candidateDir, 'review-manifest.json', jsonBytes(reviewManifest), root);
   return { candidateId, candidateDir, mapPath, reportPath, report };
   } catch (error) {
@@ -1287,7 +1406,7 @@ function validReviewManifest(review, identity) {
   const artifact = item => sized(item) && REVIEW_HASH.test(item.sha256);
   return !!review && typeof review === 'object' && review.version === VERSION && review.candidateId === identity.candidateId && review.mapName === identity.mapName && review.baselineId === identity.baselineId &&
     typeof review.createdAt === 'string' && Number.isFinite(Date.parse(review.createdAt)) && REVIEW_HASH.test(review.baselineManifestSha256) &&
-    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 8 &&
+    Array.isArray(review.applyFiles) && review.applyFiles.length >= 1 && review.applyFiles.length <= 14 &&
     review.applyFiles.every(item => sized(item) && Number.isSafeInteger(item.sourceBytes) && item.sourceBytes >= 0 && REVIEW_HASH.test(item.sourceSha256) && REVIEW_HASH.test(item.candidateSha256)) &&
     Array.isArray(review.referenceFiles) && review.referenceFiles.length <= 10000 && review.referenceFiles.every(artifact) &&
     artifact(review.project) && review.project.path === 'editor-project.json' && artifact(review.report) && review.report.path === 'report.json';
@@ -1338,10 +1457,9 @@ function listCandidates(input, { gameRoot, baselineRoot, outputRoot }) {
       const summary = candidateSummary(report);
       if (Object.values(summary).some(n => !Number.isSafeInteger(n) || n < 0)) throw new Error('Invalid candidate summary.');
       const recorded = manifestFor(recordedBaseline);
-      const walk = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
       const npcFiles = recorded.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
       const npcChanged = Object.values(report.npcChanges || {}).some(n => n > 0);
-      const applyFiles = [recorded.mapRelative, ...(summary.walkChangedCells > 0 && walk.length === 1 ? walk : []), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, recorded), ...(report.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
+      const applyFiles = [recorded.mapRelative, ...walkApplyPaths(report, recorded, summary.walkChangedCells > 0), ...(npcChanged && npcFiles.length === 1 ? npcFiles : []), ...runtimeApplyPaths(report, recorded), ...(report.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
       if (stable(report.applyFiles) !== stable(applyFiles) || !Number.isSafeInteger(report.datasetFilesCopied) || report.datasetFilesCopied < 0 || report.datasetFilesCopied > 10000) throw new Error('Invalid candidate file list.');
       for (const relative of applyFiles) candidateChild(dir, relative, root);
       if (review) {
@@ -1414,6 +1532,20 @@ function packageCandidate(input, options) {
   const basis = review => ({ candidateId: review.candidateId, mapName: review.mapName, baselineId: review.baselineId, createdAt: review.createdAt,
     files: review.files, summary: review.summary, referenceFiles: review.referenceFiles });
   if (metadataHash !== hash(readLimitedCandidate(dir, 'review-manifest.json', root, 2 * 1024 * 1024)) || stable(basis(first)) !== stable(basis(final)) || entries.some((entry, i) => hash(entry.bytes) !== final.files[i]?.candidateSha256)) packageFailure('ZIP 준비 중 후보 검토 기준이 바뀌었습니다. 다시 검토해 주세요.');
+  let walkCellsNote = [];
+  try {
+    const candidateReport = JSON.parse(readLimitedCandidate(dir, 'report.json', root, 8 * 1024 * 1024));
+    if (candidateReport?.walkCells?.path === 'walk-cells.json') {
+      const bytes = readLimitedCandidate(dir, 'walk-cells.json', root, candidateReport.walkCells.bytes);
+      if (bytes.length !== candidateReport.walkCells.bytes || hash(bytes) !== candidateReport.walkCells.sha256) packageFailure('ZIP 준비 중 이동불가 칸 목록이 바뀌었습니다. 다시 검토해 주세요.');
+      entries.push({ name: 'walk-cells.json', bytes });
+      walkCellsNote = ['Blocked cells (recommended way to apply walk edits, run in the game repo):',
+        '  node scripts/walk-table.cjs put ' + mapName + ' --from walk-cells.json',
+        '  — 반영하는 순간의 게임 파일을 기준으로 다시 계산하므로, 위 이동불가 표·DT_MapMeta.csv 를 손으로 복사하는 것보다 안전합니다.',
+        ...(Array.isArray(candidateReport.removeFiles) && candidateReport.removeFiles.length
+          ? ['Remove files (the put command does this; when copying by hand delete them yourself):', ...candidateReport.removeFiles.map(relative => '  ' + relative)] : []), ''];
+    }
+  } catch (error) { if (error.code === 'CANDIDATE_BLOCKED') throw error; packageFailure('ZIP 준비 중 후보 보고서를 읽을 수 없습니다. 다시 검토해 주세요.'); }
   const lines = ['MAP CANDIDATE REVIEW — 파일 검토 기록', '',
     '이 ZIP은 게임에 적용되지 않은 후보 파일입니다. 파일 검토 통과는 Maker/실플레이 검증을 뜻하지 않습니다.',
     '게임 적용 전 별도 테스트 환경에서 확인하고 원본 백업과 복구 절차를 준비하세요.',
@@ -1422,7 +1554,7 @@ function packageCandidate(input, options) {
     'createdAt: ' + final.createdAt, 'checkedAt: ' + final.checkedAt, 'status: ready (file checks only)',
     'gameApplied: false', 'runtimeVerified: false', '', 'Change summary:',
     ...Object.entries(final.summary).map(([key, value]) => key + ': ' + value), '', 'Apply files (game-relative paths):',
-    ...final.files.flatMap(item => [item.path, '  bytes: ' + item.bytes, '  sourceSha256: ' + item.sourceSha256, '  candidateSha256: ' + item.candidateSha256]), ''];
+    ...final.files.flatMap(item => [item.path, '  bytes: ' + item.bytes, '  sourceSha256: ' + item.sourceSha256, '  candidateSha256: ' + item.candidateSha256]), '', ...walkCellsNote];
   entries.push({ name: 'REVIEW.txt', bytes: Buffer.from(lines.join('\r\n'), 'utf8') });
   return { filename: mapName + '-' + candidateId + '.zip', bytes: createStoredZip(entries, new Date(final.createdAt)), review: final };
 }
@@ -1483,7 +1615,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   const walkPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_Walk.csv');
   const npcPaths = manifest.datasetFiles.filter(p => path.basename(p) === 'DT_NpcSpawn.csv');
   const npcChanged = Object.values(report?.npcChanges || {}).some(n => n > 0);
-  const applyPaths = [manifest.mapRelative, ...(report?.walkChangedCells > 0 && walkPaths.length === 1 ? [walkPaths[0]] : []), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : []), ...runtimeApplyPaths(report, manifest), ...(report?.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
+  const applyPaths = [manifest.mapRelative, ...walkApplyPaths(report, manifest, report?.walkChangedCells > 0), ...(npcChanged && npcPaths.length === 1 ? [npcPaths[0]] : []), ...runtimeApplyPaths(report, manifest), ...(report?.groundRegistryComparison ? [GROUND_REGISTRY] : [])];
   const runtimeChanged = runtimeApplyPaths(report, manifest).length > 0;
   if (npcChanged && project) attempt('NPC 원본 기준', () => {
     const profile = loadNpcProfile(project, state), drift = npcEdits.sourceDrift(profile, currentNpcFiles(root, profile));
@@ -1493,7 +1625,7 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   });
   if (runtimeChanged && project) attempt('몬스터·포탈·시작점 원본 기준', () => {
     const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []);
-    if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited).length) throw new Error('런타임 원본이 변경되었습니다. 원본을 다시 가져오세요.');
+    if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited, profile.walkView ? walkView(root, root, { live: true }) : null).length) throw new Error('런타임 원본이 변경되었습니다. 원본을 다시 가져오세요.');
     const expected = Object.values(profile.files).map(f => ({ relative: f.relative, sha256: hash(f.bytes) }));
     if (stable(expected) !== stable(report.runtimeSourceFiles)) throw new Error('런타임 원본 파일 기록이 일치하지 않습니다.');
     if (runtimeUsesNpcOccupancy(report)) {
@@ -1503,24 +1635,48 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
   });
   const filePaths = review.applyFiles.map(item => item.path);
   if (!check('적용 대상 파일 목록', stable(filePaths) === stable(applyPaths) && stable(report?.applyFiles) === stable(applyPaths),
-    '후보 적용 파일은 해당 맵과 변경된 이동불가·NPC·몬스터·포탈·시작점 CSV, 바닥 명단만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+    '후보 적용 파일은 해당 맵과 변경된 이동불가 표·NPC·몬스터·포탈·시작점 CSV, 바닥 명단만 허용됩니다. 검토 기록과 출력 보고서 목록이 다르면 다시 구워 주세요.')) return result;
+  const sourceSeen = new Map();
   for (const item of review.applyFiles) {
     const sourceFile = sourceRelative(root, item.path), candidateBytes = read(item.path);
     let sourceBytes = null;
     try { sourceBytes = fs.readFileSync(sourceFile); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    const currentSourceSha256 = sourceBytes ? hash(sourceBytes) : null, currentCandidateSha256 = candidateBytes ? hash(candidateBytes) : null;
+    let currentSourceSha256 = sourceBytes ? hash(sourceBytes) : null;
+    sourceSeen.set(item.path, currentSourceSha256);   // what the game file really held, for the end-of-review recheck
+    const currentCandidateSha256 = candidateBytes ? hash(candidateBytes) : null;
     if (candidateBytes) captured.set(item.path, currentCandidateSha256);
-    const sourceMatches = currentSourceSha256 === item.sourceSha256 && sourceBytes?.length === item.sourceBytes;
+    let sourceMatches = currentSourceSha256 === item.sourceSha256 && sourceBytes?.length === item.sourceBytes;
+    // Per-map walk files: a table that did not exist yet has no source, and DT_MapMeta.csv is judged by this
+    // map's WalkTable value only — other maps' rows may change freely (the game's `put` command re-plans them).
+    const walkEntry = report?.walkComparison?.mode === 'perMap' ? (report.walkComparison.files || []).find(f => f?.relative === item.path) : null;
+    if (walkEntry) {
+      if (path.basename(item.path) === 'DT_MapMeta.csv') {
+        const liveWalk = walkView(root, root, { live: true });
+        sourceMatches = !!liveWalk && sourceBytes !== null && liveWalk.tableOf(mapName) === report.walkComparison.sourceTable;
+      } else if (walkEntry.sourceExists === false) sourceMatches = sourceBytes === null && item.sourceBytes === 0;
+      if (sourceMatches) currentSourceSha256 = item.sourceSha256;
+    }
     const candidateMatches = currentCandidateSha256 === item.candidateSha256 && candidateBytes?.length === item.bytes;
     result.files.push({ path: item.path, bytes: item.bytes, sourceSha256: item.sourceSha256, candidateSha256: item.candidateSha256,
       currentSourceSha256, currentCandidateSha256, sourceMatches, candidateMatches });
     const isMap = item.path === manifest.mapRelative, isRegistry = item.path === GROUND_REGISTRY;
-    const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : isRegistry ? report.groundRegistryComparison?.sourceSha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
-    const csvComparison = isRegistry ? report.groundRegistryComparison : item.path === npcPaths[0] ? report.npcComparison : item.path === walkPaths[0] ? report.walkComparison : report.runtimeComparisons?.[item.path];
+    const expectedSource = isMap ? manifest.sourceFiles.find(f => f.relative === manifest.mapRelative)?.sha256 : walkEntry ? walkEntry.sourceSha256 : isRegistry ? report.groundRegistryComparison?.sourceSha256 : review.referenceFiles.find(f => f.path === 'reference/' + item.path)?.sha256;
+    const csvComparison = walkEntry ? walkEntry : isRegistry ? report.groundRegistryComparison : item.path === npcPaths[0] ? report.npcComparison : item.path === walkPaths[0] ? report.walkComparison : report.runtimeComparisons?.[item.path];
     const expectedCandidate = isMap ? report.candidateMapSha256 : csvComparison?.candidateSha256;
     check(item.path + ' 기록 정합성', item.sourceSha256 === expectedSource && item.sourceSha256 === (isMap ? report.sourceMapSha256 : csvComparison?.sourceSha256) && item.candidateSha256 === expectedCandidate, item.path + ': 보고서와 파일 해시 기록이 다릅니다.');
     check(item.path + ' 현재 게임 원본', sourceMatches, sourceMatches ? undefined : item.path + ': 후보 작성 이후 게임 원본이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
     check(item.path + ' 후보 무결성', candidateMatches, candidateMatches ? undefined : item.path + ': 후보 파일이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
+  }
+  if (report?.walkComparison?.mode === 'perMap') {
+    const removes = Array.isArray(report.removeFiles) ? report.removeFiles : [];
+    const removesValid = stable(removes) === stable(report.walkComparison.removeFiles || []) &&
+      removes.every(relative => walkEdits.walkFileAllowed(relative, mapName) && relative.includes('/DT_Walk_' + mapName + '.'));
+    check('이동불가 표 삭제 목록', removesValid, removesValid ? undefined : '삭제 대상 목록이 이 맵의 이동불가 표가 아닙니다. 후보를 다시 구워 주세요.');
+  }
+  if (report?.walkCells) {
+    const cellsBytes = report.walkCells.path === 'walk-cells.json' ? read('walk-cells.json') : null;
+    const cellsValid = !!cellsBytes && cellsBytes.length === report.walkCells.bytes && hash(cellsBytes) === report.walkCells.sha256;
+    check('이동불가 칸 목록(walk-cells.json)', cellsValid, cellsValid ? undefined : '이동불가 칸 목록이 변경되었거나 없어졌습니다. 후보를 다시 구워 주세요.');
   }
   const referencesValid = new Set(review.referenceFiles.map(item => item.path)).size === review.referenceFiles.length &&
     review.referenceFiles.every(item => item.path.startsWith('reference/RootDesk/MyDesk/DataSet/') && item.path.endsWith('.csv')) &&
@@ -1539,10 +1695,10 @@ function reviewCandidate(input, { gameRoot, baselineRoot, outputRoot }) {
     for (const [relative, expected] of captured) { const bytes = read(relative); if (!bytes || hash(bytes) !== expected) throw new Error('검토 도중 후보 파일이 바뀌었습니다. 다시 검토해 주세요: ' + relative); }
     for (const item of result.files) {
       let bytes = null; try { bytes = fs.readFileSync(sourceRelative(root, item.path)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      if ((bytes ? hash(bytes) : null) !== item.currentSourceSha256) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
+      if ((bytes ? hash(bytes) : null) !== sourceSeen.get(item.path)) throw new Error('검토 도중 게임 원본이 바뀌었습니다. 다시 검토해 주세요: ' + item.path);
     }
     verifySources(root, manifest, { baselineDir: dir });
-    if (runtimeChanged && project) { const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []); if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited).length) throw new Error('검토 도중 런타임 원본이 변경되었습니다. 다시 검토해 주세요.'); }
+    if (runtimeChanged && project) { const profile = loadRuntimeProfile(project, state), edited = runtimeEdits.inspectRuntime(project, profile, manifest.constants, []); if (runtimeEdits.sourceDrift(profile, currentRuntimeFiles(root, profile), edited, profile.walkView ? walkView(root, root, { live: true }) : null).length) throw new Error('검토 도중 런타임 원본이 변경되었습니다. 다시 검토해 주세요.'); }
     if (runtimeUsesNpcOccupancy(report) && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).includes(profile.spawnRelative)) throw new Error('검토 도중 NPC 배치 원본이 변경되었습니다.'); }
     if (npcChanged && project) { const profile = loadNpcProfile(project, state); if (npcEdits.sourceDrift(profile, currentNpcFiles(root, profile)).length) throw new Error('검토 도중 NPC 원본이 변경되었습니다. 다시 검토해 주세요.'); }
   });
