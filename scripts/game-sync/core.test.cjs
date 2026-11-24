@@ -2088,7 +2088,8 @@ test('imported backdrop scaling preserves geometry and other entities in preview
  assert.equal(output.report.objectScalesChanged,1);assert.equal(output.report.walkChangedCells,0);assert.deepEqual(output.report.applyFiles,['map/fixture.map']);assert.deepEqual(fileTreeHashes(f.root),before);
  for(const e of source.listEntities().filter(e=>e.name!=='Obj_editable'))assert.deepEqual(candidate.find(e.path),source.find(e.path));
  project.gameObjectEdits.visualScales[0].scale=1;assert.equal(exportEditedProject(project,f.options).report.exactMapBytes,true);
- project.gameObjectEdits.visualScales=[{entityId:base.objects.find(o=>o.name==='Obj_floor').entityId,scale:1.2}];assert.throws(()=>previewEditedProject(project,f.options),{code:'INVALID_OBJECT_SCALE'});
+ project.gameObjectEdits.visualScales=[{entityId:base.objects.find(o=>o.name==='Obj_floor').entityId,scale:1.2}];
+ assert.equal(previewEditedProject(project,f.options).objects.find(o=>o.name==='Obj_floor').visualScale,1.2);
 });
 
 test('phase composites round-trip every source cell and preserve neighbours when one cell is erased', fixtureOptions, t => {
@@ -2250,4 +2251,36 @@ test('walk storage conversion: a legacy baseline cannot emit walk edits afterwar
   const fresh = createSyncProject({ ...f.options, mapName: 'fixture' }).project;
   fresh.blocked.push([0, 7]);
   assert.deepEqual(exportEditedProject(fresh, f.options).report.applyFiles, ['map/fixture.map', WALK_DIR + 'DT_Walk_fixture.csv']);
+});
+
+test('ordinary furniture scaling preserves footprint, position and unrelated objects while updating depth scale', fixtureOptions, t => {
+ const f=objectFixture(t), TF='MOD.Core.TransformComponent', DEPTH='script.IsoDepthMetaComponent';
+ const source=f.MapBuilder.read(f.mapPath), hashes=fileTreeHashes(f.root);
+ const {project}=createSyncProject({...f.options,mapName:'fixture'});
+ const item=previewEditedProject(project,f.options).objects.find(o=>o.name==='Obj_editable');
+ assert.equal(item.canScale,true);assert.equal(item.sortInfo.order,0);
+ project.gameObjectEdits={...objectPatch(),visualScales:[{entityId:item.entityId,scale:.8}]};
+ for(const explicitSort of [false,true]) {
+  if(explicitSort)project.gameObjectEdits.sorting=[{entityId:item.entityId,setting:{mode:'floor',offset:[-1,-2],size:[3,2],bounds:[7,5],padX:.3}}];
+  const preview=previewEditedProject(project,f.options), output=exportEditedProject(project,f.options), candidate=f.MapBuilder.read(output.mapPath);
+  const tf=candidate.component('Obj_editable',TF), meta=candidate.component('Obj_editable',DEPTH), originalMeta=source.component('Obj_editable',DEPTH);
+  assert.ok(Math.abs(tf.Scale.x-1.12)<1e-10);assert.ok(Math.abs(tf.Scale.y-.56)<1e-10);
+  assert.deepEqual(tf.Position,source.component('Obj_editable',TF).Position);
+  assert.equal(meta.ScaleX,Math.abs(tf.Scale.x));assert.equal(meta.ScaleY,Math.abs(tf.Scale.y));
+  for(const key of ['BaseW','BaseH','Fade','SortPadX','StaticZ','StaticOrder'])assert.deepEqual(meta[key],originalMeta[key]);
+  if(!explicitSort)for(const key of ['GX','GY','W','H'])assert.equal(meta[key],originalMeta[key]);
+  assert.deepEqual(preview.sprites.find(s=>s.objectEntityId===item.entityId).scale,[tf.Scale.x,tf.Scale.y]);
+  assert.equal(output.report.walkChangedCells,0);assert.equal(output.report.objectScalesChanged,1);
+  for(const e of source.listEntities().filter(e=>e.name!=='Obj_editable'))assert.deepEqual(candidate.find(e.path),source.find(e.path));
+ }
+ assert.deepEqual(fileTreeHashes(f.root),hashes);
+});
+test('protected imported objects remain unavailable for scaling', fixtureOptions, t => {
+ const f=objectFixture(t), source=f.MapBuilder.read(f.mapPath);
+ source.upsertComponent('Obj_editable','script.CustomComponent',{'@type':'script.CustomComponent',Enable:true});source.write(f.mapPath);
+ const {project}=createSyncProject({...f.options,mapName:'fixture'});
+ const item=previewEditedProject(project,f.options).objects.find(o=>o.name==='Obj_editable');
+ assert.equal(item.canScale,false);
+ project.gameObjectEdits={...objectPatch(),visualScales:[{entityId:item.entityId,scale:.8}]};
+ assert.throws(()=>previewEditedProject(project,f.options),{code:'INVALID_OBJECT_SCALE'});
 });

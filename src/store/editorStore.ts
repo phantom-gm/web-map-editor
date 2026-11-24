@@ -1027,7 +1027,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!s.gameSync) return {};
     try {
       const object = currentGameObjects(s, scene).get(entityId);
-      if (!object?.canScale) throw new Error("이 배치는 배경 크기 조정을 지원하지 않습니다.");
+      if (!object?.canScale) throw new Error("이 배치는 오브젝트 크기 조정을 지원하지 않습니다.");
       const gameObjectEdits = setGameObjectVisualScale(s.gameObjectEdits, entityId, scale);
       if (JSON.stringify(gameObjectEdits) === JSON.stringify(s.gameObjectEdits)) return {};
       return { gameObjectEdits, gameObjectsVer: s.gameObjectsVer + 1, dirty: true, gameSelectionError: null, gameMoveFeedback: null,

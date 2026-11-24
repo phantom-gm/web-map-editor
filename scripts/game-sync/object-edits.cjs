@@ -66,7 +66,7 @@ function analyzeObjects(mb, project, preview) {
       ? '선택하지 않은 이동불가 영역은 그대로 유지됩니다. 함께 수정하려면 해당 칸을 직접 선택해 묶음으로 편집하세요.' : undefined;
     records.set(item.id, { item, native: clone(native), meta: meta && clone(meta),
       descriptor: { entityId: item.id, prototypeId: item.id, spriteId: item.id, name, ruid: ruid || '',
-        canScale: reasons.length === 0 && sr.OrderInLayer === BACKDROP_ORDER && vector(tf.Scale, [1, 1, 1]).every(Number.isFinite),
+        canScale: reasons.length === 0 && vector(tf.Scale, [1, 1, 1]).every(Number.isFinite),
         position, sourcePosition: [...position], flipX: sr.FlipX === true, sortInfo: sortInfo(mb, item.path), canMove: reasons.length === 0,
         canDelete: reasons.length === 0, canDuplicate: reasons.length === 0 && !cloneReason,
         ...(reasons.length || cloneReason ? { reason: [...reasons, cloneReason].filter(Boolean).join(' ') } : {}),
@@ -174,8 +174,7 @@ function inspectObjectEdits(value, profile, constants) {
   try { scales = parseObjectVisualScales(value.visualScales); } catch (e) { fail('INVALID_OBJECT_SCALE', e.message); }
   for (const row of scales) {
     const record = additions.get(row.entityId)?.record || profile.records.get(row.entityId);
-    const sort = result.sorting.find(e => e.entityId === row.entityId);
-    if (!record?.descriptor.canScale || removed.has(row.entityId) || record.resource || sort && sort.setting.mode !== 'wall') fail('INVALID_OBJECT_SCALE', '가져온 배경 배치만 크기를 조정할 수 있습니다.');
+    if (!record?.descriptor.canScale || removed.has(row.entityId) || record.resource) fail('INVALID_OBJECT_SCALE', '편집 가능한 기존 오브젝트만 크기를 조정할 수 있습니다.');
     result.visualScales.push({ ...row, record, added: additions.has(row.entityId) });
   }
   let offsets;
@@ -232,7 +231,7 @@ function applyObjectEdits(mb, edits, stable) {
   const byId = new Map(edits.added.map(e => [e.entityId, 'Obj_Editor_' + e.entityId]));
   for (const row of edits.sorting || []) if (!byId.has(row.entityId)) byId.set(row.entityId, row.record.item.path);
   const pathFor = id => byId.get(id) || mb.listEntities().find(e => e.id === id)?.path;
-  // Scale imported backdrops around their existing pivot, preserving XY ratio and signs.
+  // Scale editable imported objects around their existing pivot, preserving XY ratio and signs.
   for (const row of edits.visualScales || []) {
     const name = pathFor(row.entityId), expected = clone(mb.find(name));
     const components = expected.jsonString['@components'], tf = components.find(c => c['@type'] === TF);
@@ -245,7 +244,7 @@ function applyObjectEdits(mb, edits, stable) {
       for (const [key, axis] of [['ScaleX', 'x'], ['ScaleY', 'y']]) if (key in meta) patch[key] = meta[key] = Math.abs(tf.Scale[axis]);
       if (Object.keys(patch).length) mb.patchComponent(name, DEPTH, patch);
     }
-    if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '배경 크기 조정이 허용된 값 이외의 항목을 변경했습니다.');
+    if (stable(mb.find(name)) !== stable(expected)) fail('PRESERVATION_FAILED', '오브젝트 크기 조정이 허용된 값 이외의 항목을 변경했습니다.');
     const actualPath = mb.find(name).path, old = edited.findIndex(e => e[0] === actualPath);
     if (old >= 0) edited.splice(old, 1);
     edited.push([actualPath, stable(expected)]);
