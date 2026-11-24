@@ -550,7 +550,7 @@ test('surface sorting follows moved supports for both native and newly added obj
     const object = scene.objects.find(o => o.entityId === id), sprite = scene.sprites.find(s => s.objectEntityId === id);
     assert.equal(object.position[2], z); assert.equal(sprite.position[2], z); assert.equal(sprite.orderInLayer, 0);
     const meta = mb.component(sprite.path, 'script.IsoDepthMetaComponent');
-    assert.equal(meta.W, 1); assert.equal(meta.H, 1); assert.equal(meta.StaticZ, z);
+    assert.equal(meta, null, 'surface props must not create a second ground footprint');
   }
 });
 test('surface props stay just in front of a support whose image is shifted down', fixtureOptions, t => {
@@ -562,7 +562,7 @@ test('surface props stay just in front of a support whose image is shifted down'
   const tableZ = mb.component('Obj_editable', 'MOD.Core.TransformComponent').Position.z, propSprite = scene.sprites.find(s => s.objectEntityId === prop.entityId);
   assert.ok(Math.abs(tableZ - (table.position[2] - 0.4 * 0.21875)) < 1e-9);
   assert.equal(mb.component(propSprite.path, 'MOD.Core.TransformComponent').Position.z, tableZ - .0001);
-  assert.equal(mb.component(propSprite.path, 'script.IsoDepthMetaComponent').StaticZ, tableZ - .0001);
+  assert.equal(mb.component(propSprite.path, 'script.IsoDepthMetaComponent'), null);
   assert.equal(scene.objects.find(o => o.entityId === prop.entityId).position[2], tableZ - .0001);
 });
 test('sorting rejects protected targets, dangling links, self links, chains and invalid footprints', fixtureOptions, t => {
@@ -2283,4 +2283,22 @@ test('protected imported objects remain unavailable for scaling', fixtureOptions
  assert.equal(item.canScale,false);
  project.gameObjectEdits={...objectPatch(),visualScales:[{entityId:item.entityId,scale:.8}]};
  assert.throws(()=>previewEditedProject(project,f.options),{code:'INVALID_OBJECT_SCALE'});
+});
+
+test('turning an existing floor object into a counter-top prop removes only its independent depth metadata', fixtureOptions, t => {
+ const f=objectFixture(t), source=f.MapBuilder.read(f.mapPath), TF='MOD.Core.TransformComponent', DEPTH='script.IsoDepthMetaComponent';
+ source.sprite('Obj_counter',{ruid:'counter-ruid',pos:[0,0,1.5],order:0});source.write(f.mapPath);
+ const hashes=fileTreeHashes(f.root), {project}=createSyncProject({...f.options,mapName:'fixture'});
+ const scene=previewEditedProject(project,f.options), prop=scene.objects.find(o=>o.name==='Obj_editable'), support=scene.objects.find(o=>o.name==='Obj_counter');
+ project.gameObjectEdits={...objectPatch(),sorting:[{entityId:prop.entityId,setting:{mode:'surface',supportId:support.entityId}}]};
+ const out=exportEditedProject(project,f.options), candidate=f.MapBuilder.read(out.mapPath), before=source.find('Obj_editable'), expected=JSON.parse(JSON.stringify(before));
+ const components=expected.jsonString['@components'];components.splice(components.findIndex(c=>c['@type']===DEPTH),1);
+ components.find(c=>c['@type']===TF).Position.z=1.5-.0001;
+ expected.componentNames=components.map(c=>c['@type']).join(',');
+ assert.deepEqual(candidate.find('Obj_editable'),expected);
+ assert.equal(candidate.component('Obj_editable',DEPTH),null);
+ const sprite=previewEditedProject(project,f.options).sprites.find(s=>s.objectEntityId===prop.entityId);
+ assert.equal(sprite.position[2],1.5-.0001);
+ assert.deepEqual(fileTreeHashes(f.root),hashes);
+ for(const e of source.listEntities().filter(e=>e.name!=='Obj_editable'))assert.deepEqual(candidate.find(e.path),source.find(e.path));
 });

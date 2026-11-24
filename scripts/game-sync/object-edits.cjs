@@ -264,13 +264,19 @@ function applyObjectEdits(mb, edits, stable) {
     meta.StaticZ = tf.Position.z;
     mb.patchComponent(name, TF, { Position: tf.Position });
     mb.patchComponent(name, SR, { OrderInLayer: order });
-    mb.upsertComponent(name, DEPTH, meta);
-    // Verify the narrow mutation whitelist, including newly added depth metadata.
+    // A counter-top prop has no ground footprint: only its support participates
+    // in actor depth clamping. Keep its renderer just ahead of the support.
+    if (s.mode === 'surface') {
+      if (mb.component(name, DEPTH)) mb.removeComponent(name, DEPTH);
+    } else mb.upsertComponent(name, DEPTH, meta);
+    // Verify the narrow mutation whitelist, including depth metadata removal.
     const expected = before.jsonString['@components'];
     expected.find(c => c['@type'] === TF).Position = tf.Position;
     expected.find(c => c['@type'] === SR).OrderInLayer = order;
     const index = expected.findIndex(c => c['@type'] === DEPTH);
-    if (index >= 0) expected[index] = meta; else expected.push(meta);
+    if (s.mode === 'surface') {
+      if (index >= 0) expected.splice(index, 1);
+    } else if (index >= 0) expected[index] = meta; else expected.push(meta);
     before.componentNames = expected.map(c => c['@type']).join(',');
     if (stable(mb.find(name)) !== stable(before)) fail('PRESERVATION_FAILED', '정렬 설정이 허용된 값 이외의 항목을 변경했습니다.');
     const actualPath = mb.find(name).path;
